@@ -91,11 +91,25 @@ def environment_bool(name: str, default: str) -> bool:
 
 PROCTORING_REQUIRED = environment_bool("SKILLSPHERE_PROCTORING_REQUIRED", "true")
 try:
-    PROCTORING_FACE_MISSING_SECONDS = int(os.environ.get("SKILLSPHERE_PROCTORING_FACE_MISSING_SECONDS", "10"))
-    PROCTORING_MAX_WARNINGS = int(os.environ.get("SKILLSPHERE_PROCTORING_MAX_WARNINGS", "3"))
+    PROCTORING_FACE_MISSING_SECONDS = int(
+        os.environ.get("SKILLSPHERE_PROCTORING_FACE_MISSING_SECONDS")
+        or os.environ.get("SKILLSPHERE_FACE_MISSING_WARNING_SECONDS")
+        or "10"
+    )
+    PROCTORING_MAX_WARNINGS = int(
+        os.environ.get("SKILLSPHERE_PROCTORING_MAX_WARNINGS")
+        or os.environ.get("SKILLSPHERE_MAX_PROCTORING_WARNINGS")
+        or "3"
+    )
 except ValueError as error:
     raise RuntimeError("Proctoring warning thresholds must be positive integers") from error
-PROCTORING_AUTO_SUBMIT = environment_bool("SKILLSPHERE_PROCTORING_AUTO_SUBMIT", "false")
+
+_auto_submit_val = (
+    os.environ.get("SKILLSPHERE_PROCTORING_AUTO_SUBMIT")
+    or os.environ.get("SKILLSPHERE_AUTO_SUBMIT_ON_MAX_WARNINGS")
+    or "false"
+).lower()
+PROCTORING_AUTO_SUBMIT = _auto_submit_val == "true"
 if PROCTORING_FACE_MISSING_SECONDS < 1 or PROCTORING_MAX_WARNINGS < 1:
     raise RuntimeError("Proctoring warning thresholds must be positive integers")
 logger = logging.getLogger(__name__)

@@ -1797,6 +1797,176 @@ Answer: A
         )
         self.assertEqual(denied.status_code, 404)
 
+    def test_health_endpoint_returns_db_status(self):
+        response = self.client.get("/health")
+        self.assertEqual(response.status_code, 200, response.text)
+        data = response.json()
+        self.assertEqual(data["status"], "ok")
+        self.assertEqual(data["database"], "ok")
+        self.assertEqual(data["version"], "1.0.0")
+
+    def test_cors_headers_configured(self):
+        response = self.client.options(
+            "/api/jobs",
+            headers={
+                "Origin": "http://localhost:3000",
+                "Access-Control-Request-Method": "GET",
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("access-control-allow-origin", response.headers)
+
+    def test_detect_profile_expanded_skills(self):
+        text = "Experienced Senior Developer with deep knowledge in FastAPI, React, Next.js, Docker, Kubernetes, PostgreSQL, Go, Rust, PyTorch, and Tailwind CSS."
+        profile = main.detect_profile(text)
+        detected = {s.lower() for s in profile["skills"]}
+        expected_subset = {"fastapi", "react", "next.js", "docker", "kubernetes", "postgresql", "go", "rust", "pytorch", "tailwind"}
+        for skill in expected_subset:
+            self.assertIn(skill, detected, f"Expected {skill} to be detected in resume text")
+
+    def test_auth_token_tampering_and_expiration(self):
+        candidate = self.login()
+        token = candidate["Authorization"].split(" ")[1]
+        parts = token.split(".")
+        # Tamper signature
+        tampered_token = f"{parts[0]}.{parts[1]}.tampered_signature"
+        tampered_res = self.client.get("/api/me", headers={"Authorization": f"Bearer {tampered_token}"})
+        self.assertEqual(tampered_res.status_code, 401)
+        self.assertIn("Invalid or expired authentication token", tampered_res.json()["detail"])
+
+        # Expired token
+        header, body, _ = parts
+        import base64
+        body_data = json.loads(base64.urlsafe_b64decode(body + "=" * (-len(body) % 4)))
+        body_data["exp"] = int(main.time.time()) - 3600  # 1 hour ago
+        new_body = base64.urlsafe_b64encode(json.dumps(body_data, separators=(",", ":")).encode()).rstrip(b"=").decode()
+        new_sig = main.hmac.new(main.TOKEN_SECRET.encode(), f"{header}.{new_body}".encode(), main.hashlib.sha256).digest()
+        expired_token = f"{header}.{new_body}.{base64.urlsafe_b64encode(new_sig).rstrip(b'=').decode()}"
+        expired_res = self.client.get("/api/me", headers={"Authorization": f"Bearer {expired_token}"})
+        self.assertEqual(expired_res.status_code, 401)
+        self.assertIn("Invalid or expired authentication token", expired_res.json()["detail"])
+
+    def test_disabled_user_token_rejected(self):
+        candidate = self.login()
+        with main.connect() as db:
+            db.execute("UPDATE users SET active = 0 WHERE email = 'candidate@skillsphere.dev'")
+        res = self.client.get("/api/me", headers=candidate)
+        self.assertEqual(res.status_code, 401)
+        self.assertIn("Account no longer exists", res.json()["detail"])
+
+    def test_notifications_mark_read_and_read_all(self):
+        candidate = self.login()
+        with main.connect() as db:
+            user_id = db.execute("SELECT id FROM users WHERE email = 'candidate@skillsphere.dev'").fetchone()["id"]
+            n1 = main.add_notification(db, user_id, "test_1", "Test Notice 1", "Message 1")
+            n2 = main.add_notification(db, user_id, "test_2", "Test Notice 2", "Message 2")
+
+        res_before = self.client.get("/api/notifications", headers=candidate)
+        self.assertEqual(res_before.status_code, 200)
+        self.assertGreaterEqual(res_before.json()["unread_count"], 2)
+
+        # Mark single read
+        patch_res = self.client.patch(f"/api/notifications/{n1}/read", headers=candidate, json={"is_read": True})
+        self.assertEqual(patch_res.status_code, 200)
+        self.assertEqual(patch_res.json()["is_read"], 1)
+
+        # Mark all read
+        read_all_res = self.client.patch("/api/notifications/read-all", headers=candidate)
+        self.assertEqual(read_all_res.status_code, 200)
+
+        res_after = self.client.get("/api/notifications", headers=candidate)
+        self.assertEqual(res_after.json()["unread_count"], 0)
+
+    def test_proctoring_flagged_at_threshold_and_auto_submit(self):
+        _, _, application = self.apply_with_match(["Python"], ["Python"])
+        self.create_job_question_bank(application["job_id"])
+        _, token = self.send_assessment(application["id"])
+        self.start_assessment_proctoring(token)
+        self.client.post(f"/api/assessments/{token}/start")
+
+        # Emit face_missing warnings up to threshold (default max 3)
+        for i in range(1, 3):
+            res = self.client.post(
+                f"/api/assessments/{token}/proctoring/events",
+                json={"event_type": "face_missing", "duration_seconds": 12},
+            )
+            self.assertEqual(res.status_code, 200)
+            self.assertEqual(res.json()["warning_count"], i)
+            self.assertFalse(res.json()["flagged"])
+
+        # 3rd warning reaches threshold
+        with patch.object(main, "PROCTORING_AUTO_SUBMIT", True):
+            res_flagged = self.client.post(
+                f"/api/assessments/{token}/proctoring/events",
+                json={"event_type": "face_missing", "duration_seconds": 15},
+            )
+            self.assertEqual(res_flagged.status_code, 200)
+            self.assertEqual(res_flagged.json()["warning_count"], 3)
+            self.assertTrue(res_flagged.json()["flagged"])
+            self.assertTrue(res_flagged.json()["should_auto_submit"])
+
+    def test_job_status_closed_filter(self):
+        admin = self.login("admin@skillsphere.dev")
+        candidate = self.login("candidate@skillsphere.dev")
+        jobs = self.client.get("/api/jobs", headers=candidate).json()["items"]
+        first_job = jobs[0]
+
+        # Close the job as admin
+        patch_res = self.client.patch(
+            f"/api/admin/jobs/{first_job['id']}/status",
+            headers=admin,
+            json={"status": "Closed"},
+        )
+        self.assertEqual(patch_res.status_code, 200)
+        self.assertEqual(patch_res.json()["status"], "Closed")
+
+        # Candidate should no longer see it in active jobs
+        active_jobs = self.client.get("/api/jobs", headers=candidate).json()["items"]
+        self.assertNotIn(first_job["id"], [j["id"] for j in active_jobs])
+
+    def test_interview_realtime_websocket_workspace(self):
+        candidate, recruiter, application = self.apply_with_match(["Python"], ["Python"])
+        schedule = self.client.post(
+            f"/api/applications/{application['id']}/interviews",
+            headers=recruiter,
+            json={
+                "scheduled_at": (datetime.now(timezone.utc) + timedelta(days=2)).isoformat(),
+                "timezone": "UTC",
+                "duration_minutes": 60,
+                "meeting_platform": "Google Meet",
+                "meeting_url": "https://meet.google.com/abc-defg-hij",
+                "recruiter_message": "Looking forward to it",
+            },
+        )
+        self.assertEqual(schedule.status_code, 201)
+        interview_id = schedule.json()["id"]
+        candidate_token = candidate["Authorization"].split(" ")[1]
+        recruiter_token = recruiter["Authorization"].split(" ")[1]
+
+        # Connect candidate to the websocket room
+        with self.client.websocket_connect(f"/ws/interviews/{interview_id}?token={candidate_token}") as ws:
+            init = ws.receive_json()
+            self.assertEqual(init["type"], "sync")
+
+            # Candidate sends code change
+            ws.send_json({
+                "type": "code_change",
+                "code": "def solution():\n    return 42",
+                "language": "python",
+            })
+
+        # Check DB persistence
+        with main.connect() as db:
+            row = db.execute("SELECT code, language FROM interviews WHERE id = ?", (interview_id,)).fetchone()
+            self.assertEqual(row["code"], "def solution():\n    return 42")
+            self.assertEqual(row["language"], "python")
+
+        # Test invalid token rejected
+        from starlette.websockets import WebSocketDisconnect
+        with self.assertRaises((WebSocketDisconnect, Exception)):
+            with self.client.websocket_connect(f"/ws/interviews/{interview_id}?token=invalid.token.here"):
+                pass
+
 
 if __name__ == "__main__":
     unittest.main()

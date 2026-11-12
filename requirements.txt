@@ -8,3 +8,4 @@ pypdfium2>=4.30,<5.0
 pillow>=10.3,<13.0
 pytesseract>=0.3.10,<1.0
 tzdata>=2024.1
+slowapi>=0.1.9,<1.0

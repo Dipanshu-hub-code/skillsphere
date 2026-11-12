@@ -1,0 +1,23 @@
+version: "3.8"
+
+services:
+  skillsphere:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: skillsphere-app
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - SKILLSPHERE_ENV=development
+      - SKILLSPHERE_SECRET_KEY=development-docker-secret-change-for-production
+      - SKILLSPHERE_PUBLIC_BASE_URL=http://localhost:8000
+      - SKILLSPHERE_PROCTORING_REQUIRED=true
+      - SKILLSPHERE_ROUND1_PASS_PERCENTAGE=75
+    volumes:
+      - skillsphere-data:/app/data
+
+volumes:
+  skillsphere-data:
+    driver: local

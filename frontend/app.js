@@ -35,6 +35,7 @@ const state = {
   currentInterview: null,
   editInterviewId: null,
   interviewPoll: null,
+  interviewSocket: null,
   editorSaveTimer: null,
   editorDirty: false,
   editorSaveInFlight: false,
@@ -518,6 +519,25 @@ function navItems() {
   return [...common, ["Interviews", "◷"]];
 }
 
+function updatePageTitle(pageName) {
+  const titles = {
+    "Dashboard": "Dashboard — SkillSphere",
+    "Find jobs": "Find Jobs — SkillSphere",
+    "Applications": "My Applications — SkillSphere",
+    "Assessments": "Assessments — SkillSphere",
+    "My profile": "My Profile — SkillSphere",
+    "Applicants": "Applicants — SkillSphere",
+    "My jobs": "My Jobs — SkillSphere",
+    "Question bank": "Question Bank — SkillSphere",
+    "Interviews": "Interviews — SkillSphere",
+    "Interview room": "Interview Room — SkillSphere",
+    "Company profile": "Company Profile — SkillSphere",
+    "Users": "Users — SkillSphere",
+    "Job listings": "Job Listings — SkillSphere",
+  };
+  document.title = titles[pageName] || "SkillSphere — find your next move";
+}
+
 function notificationPanel() {
   if (!state.notificationsOpen) return "";
   const rows = state.notifications;
@@ -533,6 +553,7 @@ function notificationPanel() {
 }
 
 function shell(content) {
+  updatePageTitle(state.page);
   const active = name => state.page === name ? " active" : "";
   const nav = navItems().map(([name, glyph]) =>
     `<button class="nav-item${active(name)}" data-page="${esc(name)}">${icon(glyph, name)}</button>`).join("");
@@ -553,7 +574,7 @@ function shell(content) {
           <div class="nav-caption">Workspace</div><nav class="nav-list" aria-label="Main navigation">${nav}</nav>
           <div class="sidebar-foot"><button data-action="logout">↗ &nbsp; Sign out</button></div>
         </aside>
-        <main class="main">${content}</main>
+        <main class="main" id="main-content">${content}</main>
       </div>
     </div>
     ${notificationPanel()}
@@ -1286,12 +1307,13 @@ async function loadAnalytics(reportRange = state.analyticsRange, startDate = "",
 function renderWorkspace() {
   if (!state.user) return;
   shell(currentContent());
+  // Scroll main content area back to top on page changes (mobile-friendly)
+  window.scrollTo({ top: 0, behavior: "instant" });
 }
 
 async function signOut(announce = true) {
-  clearInterval(state.interviewPoll);
+  disconnectInterviewWebSocket();
   clearTimeout(state.editorSaveTimer);
-  state.interviewPoll = null;
   state.editorSaveTimer = null;
   state.currentInterview = null;
   state.editorDirty = false;
@@ -1621,19 +1643,83 @@ app.addEventListener("change", async event => {
   }
 });
 
+function connectInterviewWebSocket(interviewId) {
+  disconnectInterviewWebSocket();
+  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+  const wsUrl = `${protocol}//${window.location.host}/ws/interviews/${encodeURIComponent(interviewId)}?token=${encodeURIComponent(state.token)}`;
+  try {
+    const socket = new WebSocket(wsUrl);
+    state.interviewSocket = socket;
+    socket.addEventListener("open", () => {
+      const status = document.querySelector("#editor-sync-status");
+      if (status) status.textContent = "Live · Real-time";
+      clearInterval(state.interviewPoll);
+      state.interviewPoll = null;
+    });
+    socket.addEventListener("message", event => {
+      try {
+        const msg = JSON.parse(event.data);
+        if (msg.type === "sync" || msg.type === "code_change") {
+          const editor = document.querySelector("#interview-code");
+          const language = document.querySelector("#editor-language");
+          if (!state.editorDirty && editor) {
+            if (msg.code !== undefined && editor.value !== msg.code) editor.value = msg.code;
+            if (msg.language && language && language.value !== msg.language) language.value = msg.language;
+            const status = document.querySelector("#editor-sync-status");
+            if (status) status.textContent = "Live · Synced";
+          }
+        }
+      } catch {}
+    });
+    socket.addEventListener("close", () => {
+      if (state.page === "Interview room" && !state.interviewPoll) {
+        state.interviewPoll = setInterval(refreshInterviewWorkspace, 2000);
+      }
+    });
+    socket.addEventListener("error", () => {
+      if (state.page === "Interview room" && !state.interviewPoll) {
+        state.interviewPoll = setInterval(refreshInterviewWorkspace, 2000);
+      }
+    });
+  } catch {
+    state.interviewPoll = setInterval(refreshInterviewWorkspace, 1500);
+  }
+}
+
+function disconnectInterviewWebSocket() {
+  if (state.interviewSocket) {
+    try { state.interviewSocket.close(); } catch {}
+    state.interviewSocket = null;
+  }
+  clearInterval(state.interviewPoll);
+  state.interviewPoll = null;
+}
+
 async function saveInterviewWorkspace() {
   const editor = document.querySelector("#interview-code");
   const language = document.querySelector("#editor-language");
   if (!editor || !language || !state.currentInterview) return;
+  const code = editor.value;
+  const selectedLanguage = language.value;
+  const status = document.querySelector("#editor-sync-status");
+
+  // Send over real-time WebSocket if connected
+  if (state.interviewSocket && state.interviewSocket.readyState === WebSocket.OPEN) {
+    try {
+      state.interviewSocket.send(JSON.stringify({ type: "code_change", code, language: selectedLanguage }));
+      state.editorDirty = false;
+      if (status) status.textContent = "Live · Saved";
+      return;
+    } catch {}
+  }
+
+  // Fallback to HTTP PUT
   if (state.editorSaveInFlight) {
     clearTimeout(state.editorSaveTimer);
     state.editorSaveTimer = setTimeout(saveInterviewWorkspace, 150);
     return;
   }
-  const code = editor.value;
-  const selectedLanguage = language.value;
   state.editorSaveInFlight = true;
-  const status = document.querySelector("#editor-sync-status");
   if (status) status.textContent = "Saving…";
   try {
     const result = await api(`/interviews/${encodeURIComponent(state.currentInterview.id)}/workspace`, {
@@ -1688,8 +1774,7 @@ app.addEventListener("click", async event => {
   }
   if (target.dataset.page) {
     event.preventDefault();
-    clearInterval(state.interviewPoll);
-    state.interviewPoll = null;
+    disconnectInterviewWebSocket();
     state.currentInterview = null;
     state.page = target.dataset.page;
     state.modal = "";
@@ -1907,8 +1992,7 @@ app.addEventListener("click", async event => {
       state.page = "Interview room";
       state.editorDirty = false;
       renderWorkspace();
-      clearInterval(state.interviewPoll);
-      state.interviewPoll = setInterval(refreshInterviewWorkspace, 1500);
+      connectInterviewWebSocket(target.dataset.id);
     } catch (error) { showToast(error.message, true); }
     return;
   }

@@ -21,10 +21,36 @@ from typing import Any, Iterator
 from urllib.parse import urlencode, urlparse
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi import Depends, FastAPI, File, Header, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, EmailStr, Field
+try:
+    from slowapi import Limiter, _rate_limit_exceeded_handler
+    from slowapi.errors import RateLimitExceeded
+    from slowapi.util import get_remote_address
+    HAS_SLOWAPI = True
+except ImportError:
+    HAS_SLOWAPI = False
+
+    class RateLimitExceeded(Exception):
+        pass
+
+    class Limiter:  # type: ignore[no-redef]
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+        def limit(self, *args: Any, **kwargs: Any) -> Any:
+            def decorator(func: Any) -> Any:
+                return func
+            return decorator
+
+    def get_remote_address(request: Request) -> str:  # type: ignore[no-redef]
+        return "127.0.0.1"
+
+    def _rate_limit_exceeded_handler(request: Request, exc: RateLimitExceeded) -> JSONResponse:  # type: ignore[no-redef]
+        return JSONResponse(status_code=429, content={"detail": "Rate limit exceeded"})
 from starlette.concurrency import run_in_threadpool
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -74,7 +100,41 @@ if PROCTORING_FACE_MISSING_SECONDS < 1 or PROCTORING_MAX_WARNINGS < 1:
     raise RuntimeError("Proctoring warning thresholds must be positive integers")
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Allowed CORS origins — add your production domain here or set via env var
+# e.g. SKILLSPHERE_CORS_ORIGINS="https://app.example.com,https://www.example.com"
+# ---------------------------------------------------------------------------
+_raw_origins = os.environ.get("SKILLSPHERE_CORS_ORIGINS", "")
+CORS_ORIGINS: list[str] = (
+    [o.strip() for o in _raw_origins.split(",") if o.strip()]
+    if _raw_origins
+    else (["*"] if not IS_PRODUCTION else [PUBLIC_BASE_URL])
+)
+
+# ---------------------------------------------------------------------------
+# Rate limiter (slowapi) — limits applied per remote IP
+# ---------------------------------------------------------------------------
+limiter = Limiter(key_func=get_remote_address, default_limits=["200/minute"])
+
 app = FastAPI(title="SkillSphere API", version="1.0.0")
+
+# CORS — must be added before routes
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=CORS_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+if not IS_PRODUCTION:
+    logger.warning(
+        "Running in DEVELOPMENT mode. "
+        "Set SKILLSPHERE_ENV=production and SKILLSPHERE_SECRET_KEY before deploying."
+    )
 
 
 def now() -> str:
@@ -197,7 +257,11 @@ def connect() -> Iterator[sqlite3.Connection]:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     connection = sqlite3.connect(DB_PATH, timeout=10)
     connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA journal_mode=WAL")       # concurrent reads + writes
+    connection.execute("PRAGMA synchronous=NORMAL")     # safe & faster than FULL
     connection.execute("PRAGMA foreign_keys = ON")
+    connection.execute("PRAGMA cache_size=-8000")       # ~8 MB page cache
+    connection.execute("PRAGMA temp_store=MEMORY")
     try:
         yield connection
         connection.commit()
@@ -908,6 +972,13 @@ def initialize_database() -> None:
         db.execute(
             "CREATE INDEX IF NOT EXISTS idx_assessments_proctoring_flagged ON assessments(proctoring_flagged_at, starts_at)"
         )
+        # Additional performance indexes
+        db.execute("CREATE INDEX IF NOT EXISTS idx_applications_status ON applications(status)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_applications_candidate ON applications(candidate_id, applied_at)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_jobs_status_created ON jobs(status, created_at)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_jobs_recruiter ON jobs(recruiter_id, status)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_users_email ON users(email)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_assessments_status ON assessments(status, submitted_at)")
         db.execute(
             """INSERT INTO application_status_history
             (application_id, status, actor_role, created_at)
@@ -992,10 +1063,33 @@ def detect_profile(text: str) -> dict[str, Any]:
             name = line
             break
     known_skills = (
-        "python", "javascript", "typescript", "react", "fastapi", "sql", "postgresql",
-        "figma", "ux research", "product design", "project management", "excel",
-        "tableau", "data analysis", "html", "css", "node.js", "communication",
-        "leadership", "machine learning", "java", "aws", "docker",
+        # Languages
+        "python", "javascript", "typescript", "java", "kotlin", "swift",
+        "go", "golang", "rust", "c++", "c#", "php", "ruby", "scala", "dart",
+        # Frontend
+        "react", "next.js", "nextjs", "vue", "vue.js", "nuxt", "angular",
+        "svelte", "html", "css", "sass", "tailwind", "webpack", "vite",
+        # Backend / APIs
+        "fastapi", "django", "flask", "node.js", "nodejs", "express",
+        "spring boot", "rails", "graphql", "rest", "grpc",
+        # Databases
+        "sql", "postgresql", "postgres", "mysql", "mongodb", "redis",
+        "sqlite", "elasticsearch", "dynamodb", "firebase",
+        # Cloud / DevOps
+        "aws", "azure", "google cloud", "gcp", "docker", "kubernetes",
+        "terraform", "ansible", "ci/cd", "github actions", "jenkins",
+        "linux", "bash", "shell scripting",
+        # Data / ML / AI
+        "machine learning", "deep learning", "pytorch", "tensorflow",
+        "scikit-learn", "pandas", "numpy", "data analysis", "data science",
+        "llm", "nlp", "computer vision", "tableau", "power bi", "excel",
+        "spark", "airflow", "dbt",
+        # Design / Product
+        "figma", "sketch", "ux research", "product design", "prototyping",
+        "design systems", "user research", "wireframing", "adobe xd",
+        # Soft / management
+        "project management", "agile", "scrum", "communication",
+        "leadership", "product management", "jira",
     )
     skills = [
         skill.title()
@@ -1325,12 +1419,22 @@ def home() -> FileResponse:
 
 
 @app.get("/health")
-def health() -> dict[str, str]:
-    return {"status": "ok"}
+def health() -> dict[str, Any]:
+    """Health-check endpoint for load balancers and uptime monitors."""
+    db_ok = False
+    try:
+        with connect() as db:
+            db.execute("SELECT 1").fetchone()
+        db_ok = True
+    except Exception:
+        logger.exception("Health check: database is unavailable")
+    status = "ok" if db_ok else "degraded"
+    return {"status": status, "database": "ok" if db_ok else "unavailable", "version": "1.0.0"}
 
 
 @app.post("/api/auth/register", status_code=201)
-def register(body: RegisterBody) -> dict[str, Any]:
+@limiter.limit("10/minute")
+def register(request: Request, body: RegisterBody) -> dict[str, Any]:
     role = body.role.lower()
     if role not in {"candidate", "recruiter"}:
         raise HTTPException(status_code=422, detail="Choose a job seeker or recruiter account")
@@ -1348,7 +1452,8 @@ def register(body: RegisterBody) -> dict[str, Any]:
 
 
 @app.post("/api/auth/login")
-def login(body: LoginBody) -> dict[str, Any]:
+@limiter.limit("20/minute")
+def login(request: Request, body: LoginBody) -> dict[str, Any]:
     with connect() as db:
         row = db.execute("SELECT * FROM users WHERE email = ?", (body.email.lower(),)).fetchone()
     if not row or not row["active"] or not check_password(body.password, row["password_hash"]):
@@ -3969,8 +4074,36 @@ def get_interview(
     return public_interview(interview, user)
 
 
+class InterviewConnectionManager:
+    def __init__(self) -> None:
+        self.active_rooms: dict[int, set[WebSocket]] = {}
+
+    async def connect(self, interview_id: int, websocket: WebSocket) -> None:
+        await websocket.accept()
+        if interview_id not in self.active_rooms:
+            self.active_rooms[interview_id] = set()
+        self.active_rooms[interview_id].add(websocket)
+
+    def disconnect(self, interview_id: int, websocket: WebSocket) -> None:
+        if interview_id in self.active_rooms:
+            self.active_rooms[interview_id].discard(websocket)
+            if not self.active_rooms[interview_id]:
+                del self.active_rooms[interview_id]
+
+    async def broadcast(self, interview_id: int, message: dict[str, Any], sender: WebSocket | None = None) -> None:
+        for connection in list(self.active_rooms.get(interview_id, set())):
+            if connection != sender:
+                try:
+                    await connection.send_json(message)
+                except Exception:
+                    pass
+
+
+interview_manager = InterviewConnectionManager()
+
+
 @app.put("/api/interviews/{interview_id}/workspace")
-def update_interview_workspace(
+async def update_interview_workspace(
     interview_id: int,
     body: InterviewWorkspaceBody,
     user: dict[str, Any] = Depends(current_user),
@@ -3985,7 +4118,58 @@ def update_interview_workspace(
             (body.code, body.language, updated_at, interview_id),
         )
         interview = interview_details(db, interview_id, user)
+    # Broadcast to active WebSockets in this room
+    await interview_manager.broadcast(
+        interview_id,
+        {"type": "code_change", "code": body.code, "language": body.language, "sender": user["name"]},
+    )
     return dict(interview)
+
+
+@app.websocket("/ws/interviews/{interview_id}")
+async def interview_websocket(websocket: WebSocket, interview_id: int, token: str = "") -> None:
+    try:
+        if not token:
+            await websocket.close(code=1008)
+            return
+        payload = decode_token(token)
+        with connect() as db:
+            row = db.execute("SELECT * FROM users WHERE id = ?", (payload.get("sub"),)).fetchone()
+            if not row or not row["active"]:
+                await websocket.close(code=1008)
+                return
+            user = public_user(row)
+            interview = interview_details(db, interview_id, user)
+    except Exception:
+        await websocket.close(code=1008)
+        return
+
+    await interview_manager.connect(interview_id, websocket)
+    try:
+        await websocket.send_json({
+            "type": "sync",
+            "code": interview["code"] or "",
+            "language": interview["language"] or "python",
+        })
+        while True:
+            data = await websocket.receive_json()
+            if data.get("type") == "code_change":
+                new_code = str(data.get("code", ""))[:50_000]
+                new_lang = str(data.get("language", "python"))
+                if new_lang not in {"python", "javascript", "typescript", "java", "cpp"}:
+                    new_lang = "python"
+                with connect() as db:
+                    db.execute(
+                        "UPDATE interviews SET code = ?, language = ?, updated_at = ? WHERE id = ?",
+                        (new_code, new_lang, now(), interview_id),
+                    )
+                await interview_manager.broadcast(
+                    interview_id,
+                    {"type": "code_change", "code": new_code, "language": new_lang, "sender": user["name"]},
+                    sender=websocket,
+                )
+    except (WebSocketDisconnect, Exception):
+        interview_manager.disconnect(interview_id, websocket)
 
 
 @app.patch("/api/applications/{application_id}/withdraw")

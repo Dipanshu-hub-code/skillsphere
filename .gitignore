@@ -1,5 +1,32 @@
+# Python
 __pycache__/
 *.py[cod]
-data/
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
 .venv/
 venv/
+env/
+.env
+
+# App data — SQLite DB, uploaded resumes, question-bank PDFs
+# These are runtime artefacts; never commit user data to source control
+data/
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Test / coverage
+.coverage
+htmlcov/
+.pytest_cache/

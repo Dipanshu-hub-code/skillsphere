@@ -1,0 +1,10 @@
+fastapi>=0.110,<1.0
+uvicorn[standard]>=0.29,<1.0
+python-multipart>=0.0.9
+email-validator>=2.0,<3.0
+httpx>=0.27,<1.0
+pypdf>=4.2,<6.0
+pypdfium2>=4.30,<5.0
+pillow>=10.3,<13.0
+pytesseract>=0.3.10,<1.0
+tzdata>=2024.1

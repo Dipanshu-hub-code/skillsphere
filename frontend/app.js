@@ -502,7 +502,7 @@ function renderAuth(register = false) {
           ${register ? `<div class="field"><label for="auth-name">Full name</label><input class="input" id="auth-name" name="name" autocomplete="name" placeholder="Alex Morgan" required minlength="2" /></div>` : ""}
           <div class="field"><label for="auth-email">Email address</label><input class="input" id="auth-email" name="email" type="email" autocomplete="email" placeholder="you@example.com" required /></div>
           ${register ? `<div class="field"><label for="auth-role">I am a</label><select class="select" id="auth-role" name="role"><option value="candidate">Job seeker</option><option value="recruiter">Recruiter</option></select></div>` : ""}
-          <div class="field"><label for="auth-password">Password</label><input class="input" id="auth-password" name="password" type="password" autocomplete="${register ? "new-password" : "current-password"}" placeholder="${register ? "At least 8 characters" : "Enter your password"}" minlength="${register ? "8" : "1"}" required /></div>
+          <div class="field"><label for="auth-password">Password</label><div class="password-wrap"><input class="input" id="auth-password" name="password" type="password" autocomplete="${register ? "new-password" : "current-password"}" placeholder="${register ? "At least 8 characters" : "Enter your password"}" minlength="${register ? "8" : "1"}" required /><button type="button" class="password-toggle" data-toggle-password="auth-password" aria-label="Show password" title="Show password">👁</button></div></div>
           <button class="btn btn-primary auth-submit" type="submit" ${state.busy ? "disabled" : ""}>${state.busy ? "Please wait…" : register ? "Create account →" : "Sign in →"}</button>
         </form>
         <div class="auth-switch">${register ? "Already have an account?" : "New to SkillSphere?"} <button type="button" data-action="toggle-auth">${register ? "Sign in" : "Create an account"}</button></div>
@@ -663,22 +663,86 @@ function currentLocalDateTimeInput() {
   return date.toISOString().slice(0, 16);
 }
 
+function candidateAssessmentsListHtml(assessments) {
+  if (!assessments.length) {
+    return empty("No assessments assigned yet", "When you apply for a role with a 70% or higher match, your technical assessment will appear here.", "✓");
+  }
+  return `<div class="application-list">
+    ${assessments.slice(0, 4).map(item => `
+      <div class="application-row" style="display:flex;align-items:center;justify-content:space-between;padding:11px 0;border-bottom:1px solid var(--line,#f0f0f0);gap:12px;flex-wrap:wrap">
+        <div>
+          <strong>${esc(item.title)}</strong>
+          <small style="display:block;color:var(--muted,#666);margin-top:2px">${esc(item.company)} · ${esc(item.technology || "General")} (${esc(item.total_questions || 20)} questions · ${esc(item.duration_minutes || 20)} min)</small>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px">
+          ${item.result
+            ? `<span class="badge ${item.result === "Passed" ? "badge-green" : "badge-red"}">${esc(item.result)} · ${esc(item.score_percentage)}%</span>`
+            : `<span class="badge badge-amber">${esc(item.assessment_status)}</span>`}
+          ${item.assessment_status === "Completed"
+            ? `<button class="btn btn-quiet btn-small" data-action="review-assessment" data-id="${esc(item.id)}">Review</button>`
+            : ["Sent", "Started"].includes(item.assessment_status)
+            ? `<button class="btn btn-primary btn-small" data-action="take-assessment" data-url="${esc(item.action_url || "")}">${item.assessment_status === "Started" ? "Resume test →" : "Start test →"}</button>`
+            : ""}
+        </div>
+      </div>
+    `).join("")}
+  </div>`;
+}
+
 function candidateDashboard() {
   const candidateApps = state.applications;
   const latest = state.jobs.slice(0, 3);
   const upcomingInterview = state.upcomingInterviews[0];
+  const analytics = state.candidateAnalytics || {};
+  const strengths = analytics.strengths || [];
+  const areasToImprove = analytics.areas_to_improve || [];
+  const assessments = state.assessments || [];
+  const pendingAssessments = assessments.filter(item => ["Sent", "Started"].includes(item.assessment_status));
+
   return `${heading("Your career, in motion", `Good to see you, ${esc(state.user.name.split(" ")[0])} <span style="color:#c83b42">✳</span>`, "A little progress today can open a big door tomorrow.", `<button class="btn btn-primary" data-page="Find jobs">Find your next role&nbsp; →</button>`)}
     <section class="grid stats-grid">
-      ${stat("Active applications", candidateApps.filter(item => !["Rejected", "Withdrawn", "Accepted", "Selected"].includes(item.status)).length, "Your opportunities in progress", "↗")}
-      ${stat("Roles to explore", state.jobs.length, "Open roles picked for you", "⌕")}
-      ${stat("Resume status", state.resume ? "Ready" : "Add", state.resume ? "Your profile is on file" : "Upload to unlock matching", "▤")}
-      ${stat("Profile strength", state.resume ? "78%" : "36%", state.resume ? "Keep your details up to date" : "A resume is a great start", "◉")}
+      ${stat("Active applications", analytics.active_applications ?? candidateApps.filter(item => !["Rejected", "Withdrawn", "Accepted", "Selected"].includes(item.status)).length, "Your opportunities in progress", "↗")}
+      ${stat("Technical tests", assessments.length, pendingAssessments.length ? `${pendingAssessments.length} pending action` : "Assigned evaluations", "✓")}
+      ${stat("Average test score", analytics.average_score_percentage != null ? `${analytics.average_score_percentage}%` : "—", "Across completed assessments", "★")}
+      ${stat("Interviews", analytics.interviews_scheduled ?? state.interviews.length, "Conversations in pipeline", "◷")}
     </section>
+    ${pendingAssessments.length ? `
+      <div class="pending-assessment-banner">
+        <div>
+          <strong>⚡ Action required: ${esc(pendingAssessments[0].title)} assessment is ready</strong>
+          <p>${esc(pendingAssessments[0].company)} · ${esc(pendingAssessments[0].technology)} · ${esc(pendingAssessments[0].total_questions)} questions (${esc(pendingAssessments[0].duration_minutes)} min) · Camera proctored</p>
+        </div>
+        <button class="btn btn-primary btn-small" data-action="take-assessment" data-url="${esc(pendingAssessments[0].action_url || "")}">${pendingAssessments[0].assessment_status === "Started" ? "Resume test →" : "Take assessment now →"}</button>
+      </div>
+    ` : ""}
+    ${(strengths.length || areasToImprove.length) ? `
+      <section class="card" style="margin-bottom:16px">
+        <div class="card-heading"><div><h2>Skill performance overview</h2><p>Insights from your completed technical assessments</p></div><button class="btn btn-quiet btn-small" data-page="Assessments">View test reviews →</button></div>
+        <div style="display:flex;gap:16px;flex-wrap:wrap">
+          <div style="flex:1;min-width:220px">
+            <strong style="font-size:11px;color:#2f855a">Top Strengths (≥ 70%)</strong>
+            <div class="chips-row">
+              ${strengths.length ? strengths.map(s => `<span class="chip-green">★ ${esc(s)}</span>`).join("") : `<span class="stat-note">Complete assessments to showcase strengths</span>`}
+            </div>
+          </div>
+          <div style="flex:1;min-width:220px">
+            <strong style="font-size:11px;color:#b45309">Recommended Focus Areas (&lt; 70%)</strong>
+            <div class="chips-row">
+              ${areasToImprove.length ? areasToImprove.map(w => `<span class="chip-amber">▲ Practice ${esc(w)}</span>`).join("") : `<span class="chip-green">No low scoring topics</span>`}
+            </div>
+          </div>
+        </div>
+      </section>
+    ` : ""}
     <section class="columns">
       <article class="card"><div class="card-heading"><div><h2>Roles to explore</h2><p>Thoughtful opportunities for your next chapter</p></div><button class="text-button" data-page="Find jobs">See all →</button></div><div class="job-list">${latest.length ? latest.map(job => jobRow(job)).join("") : empty("No open roles yet", "Check back soon for new opportunities.")}</div></article>
       <article class="card"><div class="card-heading"><div><h2>Your applications</h2><p>A quick look at where things stand</p></div><button class="text-button" data-page="Applications">View all →</button></div><div class="application-list">${applicationRows(candidateApps)}</div></article>
     </section>
-    <section class="card upcoming-interview-card"><div class="card-heading"><div><h2>Upcoming interviews</h2><p>Your next conversation, all in one place</p></div><button class="text-button" data-page="Interviews">View all →</button></div>
+    <section class="card" style="margin-top:16px">
+      <div class="card-heading"><div><h2>Technical assessments <span class="badge">${assessments.length}</span></h2><p>Assigned evaluations and Round 1 results</p></div><button class="text-button" data-page="Assessments">View all →</button></div>
+      ${candidateAssessmentsListHtml(assessments)}
+    </section>
+    <section class="card upcoming-interview-card" style="margin-top:16px"><div class="card-heading"><div><h2>Upcoming interviews</h2><p>Your next conversation, all in one place</p></div><button class="text-button" data-page="Interviews">View all →</button></div>
       ${upcomingInterview ? `<article class="upcoming-interview"><span class="eyebrow">${esc(upcomingInterview.company)}</span><h3>${esc(upcomingInterview.title)}</h3><p>${esc(candidateInterviewTime(upcomingInterview))} · ${esc(upcomingInterview.duration_minutes)} minutes</p><div class="interview-actions">${/^https:\/\//i.test(upcomingInterview.meeting_url || "") ? `<a class="btn btn-primary btn-small join-interview" href="${esc(upcomingInterview.meeting_url)}" target="_blank" rel="noopener noreferrer">Join Interview ↗</a>` : `<span class="stat-note">The recruiter has not added a meeting link yet.</span>`}<button class="text-button" data-action="view-interview" data-id="${esc(upcomingInterview.id)}">View Interview Details</button></div></article>` : empty("No upcoming interviews", "When a recruiter schedules an interview, it will appear here.", "◷")}
     </section>
     <section class="card" style="margin-top:16px"><div class="card-heading"><div><h2>${state.resume ? "Your resume is ready" : "Take the guesswork out of your search"}</h2><p>${state.resume ? `${esc(state.resume.filename)} · ${esc(state.resume.processing_status)}` : "Upload a resume to discover which roles match your skills."}</p></div><button class="btn btn-quiet btn-small" data-page="My profile">${state.resume ? "View profile" : "Add your resume"}</button></div>
@@ -718,7 +782,7 @@ function applicationsPage() {
       <td><strong>${esc(item.title)}</strong><small>${esc(item.company)} · <button class="text-button" data-action="application-history" data-id="${esc(item.id)}">View timeline</button></small></td>
       <td><strong>${item.match_percentage == null ? "—" : `${esc(item.match_percentage)}%`}</strong><details class="skill-details"><summary>Skills</summary><small>Matched: ${esc((item.matched_skills || []).join(", ") || "None")}</small><small>To develop: ${esc((item.missing_skills || []).join(", ") || "None")}</small></details></td>
       <td>${dateLabel(item.applied_at)}</td><td><span class="badge ${["Accepted", "Selected"].includes(item.status) ? "badge-green" : item.status === "Rejected" ? "" : "badge-red"}">${esc(item.status)}</span></td>
-      <td>${item.assessment_status ? `<span class="badge ${item.assessment_result === "Passed" ? "badge-green" : item.assessment_result === "Failed" ? "badge-red" : "badge-amber"}">${esc(item.assessment_result || item.assessment_status)}</span>${item.assessment_score_percentage == null ? "" : `<small class="assessment-result">${esc(item.assessment_score_percentage)}% · ${esc(item.assessment_correct_count)}/20</small>`}` : "—"}</td>
+      <td>${item.assessment_status ? `<span class="badge ${item.assessment_result === "Passed" ? "badge-green" : item.assessment_result === "Failed" ? "badge-red" : "badge-amber"}">${esc(item.assessment_result || item.assessment_status)}</span>${item.assessment_score_percentage == null ? "" : `<small class="assessment-result">${esc(item.assessment_score_percentage)}% · ${esc(item.assessment_correct_count ?? item.assessment_score ?? "")}/${esc(item.assessment_total_questions || 20)}</small>`}${item.assessment_id && item.assessment_status === "Completed" ? `<button class="text-button" style="display:block;margin-top:4px" data-action="review-assessment" data-id="${esc(item.assessment_id)}">Review performance →</button>` : ""}${["Sent", "Assessment Sent", "Started", "Assessment Started"].includes(item.assessment_status) ? `<button class="btn btn-primary btn-small" style="display:inline-block;margin-top:4px" data-action="take-assessment" data-url="${esc(item.assessment_action_url || "")}">${item.assessment_status.includes("Started") ? "Resume test →" : "Take test →"}</button>` : ""}` : "—"}</td>
       <td>${item.interview ? interviewScheduleDetails(item.interview) : "—"}</td>
       <td>${["Applied", "Under Review", "Shortlisted", "Assessment Sent", "Assessment Started"].includes(item.status) ? `<button class="text-button" data-action="withdraw" data-id="${esc(item.id)}">Withdraw</button>` : "—"}</td>
     </tr>`).join("")}</tbody></table></div>` : empty("Your story starts here", "Find a role that feels right and apply when you're ready.")}
@@ -747,7 +811,78 @@ function statusOptions(current) {
 
 function assessmentsPage() {
   const rows = state.assessments;
-  const filters = state.user.role === "candidate" ? "" : `<form id="assessment-filter-form" class="filters assessment-filters">
+
+  if (state.user.role === "candidate") {
+    const active = rows.filter(item => ["Sent", "Started"].includes(item.assessment_status));
+    const completed = rows.filter(item => item.assessment_status === "Completed");
+    const passed = completed.filter(item => item.result === "Passed").length;
+    const avgScore = completed.length
+      ? Math.round(completed.reduce((acc, c) => acc + (c.score_percentage || 0), 0) / completed.length)
+      : null;
+
+    return `${heading("Your technical assessments", "My Assessments", "View your technical evaluations, take active assessments, and review performance breakdowns.")}
+      <section class="grid stats-grid" style="margin-bottom:16px">
+        ${stat("Total assessments", rows.length, "Assigned to your applications", "✓")}
+        ${stat("Pending tests", active.length, active.length ? "Ready to take" : "All caught up", active.length ? "⚡" : "★")}
+        ${stat("Completed", completed.length, `${passed} passed of ${completed.length}`, "◉")}
+        ${stat("Average score", avgScore != null ? `${avgScore}%` : "—", "Across completed tests", "★")}
+      </section>
+
+      ${active.length ? `
+        <div class="pending-assessment-banner">
+          <div>
+            <strong>⚡ Active assessment ready: ${esc(active[0].title)} · ${esc(active[0].company)}</strong>
+            <p>${esc(active[0].technology || "Technical Evaluation")} · ${esc(active[0].total_questions)} questions · ${esc(active[0].duration_minutes)} minutes · Required pass: ${esc(active[0].pass_percentage)}%</p>
+          </div>
+          <button class="btn btn-primary" data-action="take-assessment" data-url="${esc(active[0].action_url || "")}">${active[0].assessment_status === "Started" ? "Resume assessment →" : "Take assessment now →"}</button>
+        </div>
+      ` : ""}
+
+      <section class="card">
+        <div class="card-heading">
+          <div>
+            <h2>Assigned technical assessments</h2>
+            <p>${rows.length} assessment${rows.length === 1 ? "" : "s"} across your job applications</p>
+          </div>
+        </div>
+        ${rows.length ? `<div class="table-wrap"><table>
+          <thead>
+            <tr>
+              <th>Role & Company</th>
+              <th>Assessment & Topic</th>
+              <th>Format</th>
+              <th>Score</th>
+              <th>Status & Result</th>
+              <th>Date</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rows.map(item => `
+              <tr>
+                <td><strong>${esc(item.title)}</strong><small>${esc(item.company)}</small></td>
+                <td><strong>${esc(item.assessment_name || "Round 1: Technical MCQ Test")}</strong><small>${esc(item.technology || "Topic not selected")}</small></td>
+                <td>${esc(item.total_questions)} questions<small>${esc(item.duration_minutes)} min · Pass ${esc(item.pass_percentage)}%</small></td>
+                <td>${item.score_percentage == null ? "—" : `<strong>${esc(item.score_percentage)}%</strong><small>${esc(item.correct_answer_count ?? item.score)} / ${esc(item.total_questions)}</small>`}</td>
+                <td>${item.result ? `<span class="badge ${item.result === "Passed" ? "badge-green" : "badge-red"}">${esc(item.result)}</span>${item.result === "Passed" ? "<small style='display:block;color:#15803d;margin-top:2px'>Passed Round 1</small>" : "<small style='display:block;color:#b91c1c;margin-top:2px'>Did not meet passing score</small>"}` : `<span class="badge badge-amber">${esc(item.assessment_status)}</span>`}</td>
+                <td>${dateTimeLabel(item.submitted_at || item.email_sent_at || item.starts_at)}</td>
+                <td>
+                  ${item.assessment_status === "Completed"
+                    ? `<button class="btn btn-quiet btn-small" data-action="review-assessment" data-id="${esc(item.id)}">Performance review →</button>`
+                    : ["Sent", "Started"].includes(item.assessment_status)
+                    ? `<button class="btn btn-primary btn-small" data-action="take-assessment" data-url="${esc(item.action_url || "")}">${item.assessment_status === "Started" ? "Resume test →" : "Take test →"}</button>`
+                    : item.assessment_status === "Expired"
+                    ? `<span class="badge badge-red">Link expired</span>`
+                    : `<span class="stat-note">${esc(item.assessment_status || "Pending")}</span>`}
+                </td>
+              </tr>
+            `).join("")}
+          </tbody>
+        </table></div>` : empty("No assessments found", "When you apply for a role with a 70% or higher match, your technical assessment will appear here.", "✓")}
+      </section>`;
+  }
+
+  const filters = `<form id="assessment-filter-form" class="filters assessment-filters">
       <select class="select" name="result" aria-label="Filter by result"><option value="">Passed and failed</option><option value="Passed" ${state.assessmentFilters.result === "Passed" ? "selected" : ""}>Passed</option><option value="Failed" ${state.assessmentFilters.result === "Failed" ? "selected" : ""}>Failed</option></select>
       <input class="input" type="number" min="0" max="100" step="0.1" name="min_score" value="${esc(state.assessmentFilters.min_score)}" placeholder="Min score %" aria-label="Minimum score percentage" />
       <input class="input" type="number" min="0" max="100" step="0.1" name="max_score" value="${esc(state.assessmentFilters.max_score)}" placeholder="Max score %" aria-label="Maximum score percentage" />
@@ -760,15 +895,15 @@ function assessmentsPage() {
   return `${heading("Round 1 assessment pipeline", "Assessments", "Review Round 1 results and decide which passed candidates move forward.")}
     <section class="card"><div class="card-heading"><div><h2>Round 1: Technical MCQ Test</h2><p>${rows.length} assessment${rows.length === 1 ? "" : "s"}</p></div></div>
     ${filters}
-    ${rows.length ? `<div class="table-wrap"><table><thead><tr><th>Candidate</th><th>Role</th><th>Assessment</th><th>Score</th><th>Result</th><th>Completed</th>${state.user.role === "candidate" ? "" : "<th>Pipeline stage</th><th>Next step</th><th>Review</th>"}</tr></thead><tbody>${rows.map(item => `<tr>
-      <td><strong>${esc(state.user.role === "candidate" ? "You" : item.candidate_name)}</strong>${state.user.role !== "candidate" ? `<small>${esc(item.candidate_email)}</small>` : ""}</td>
+    ${rows.length ? `<div class="table-wrap"><table><thead><tr><th>Candidate</th><th>Role</th><th>Assessment</th><th>Score</th><th>Result</th><th>Completed</th><th>Pipeline stage</th><th>Next step</th><th>Review</th></tr></thead><tbody>${rows.map(item => `<tr>
+      <td><strong>${esc(item.candidate_name)}</strong><small>${esc(item.candidate_email)}</small></td>
       <td>${esc(item.title)}<small>${esc(item.company)}</small></td>
       <td>${esc(item.assessment_name || "Round 1: Technical MCQ Test")}<small>${esc(item.technology || "Topic not selected")}</small><small>${esc(item.total_questions)} questions · ${esc(item.duration_minutes)} min · Pass ${esc(item.pass_percentage)}%</small></td>
       <td>${item.score_percentage == null ? "—" : `<strong>${esc(item.score_percentage)}%</strong><small>${esc(item.correct_answer_count ?? item.score)} correct / ${esc(item.total_questions)}</small>`}</td>
-      <td>${item.result ? `<span class="badge ${item.result === "Passed" ? "badge-green" : "badge-red"}">${esc(item.result)}</span>${state.user.role === "candidate" ? `<small>${item.result === "Passed" ? "Congratulations, you have cleared Round 1." : "Thank you for completing Round 1. You did not reach the required passing score."}</small>` : ""}` : `<span class="badge badge-amber">${esc(item.assessment_status)}</span>`}</td>
+      <td>${item.result ? `<span class="badge ${item.result === "Passed" ? "badge-green" : "badge-red"}">${esc(item.result)}</span>` : `<span class="badge badge-amber">${esc(item.assessment_status)}</span>`}</td>
       <td>${dateTimeLabel(item.submitted_at)}</td>
-      ${state.user.role === "candidate" ? "" : `<td>${esc(item.application_status)}</td><td>${item.result === "Passed" ? `<select class="status-select" data-assessment-pipeline="${esc(item.application_id)}" aria-label="Move ${esc(item.candidate_name)} to next stage"><option value="">Choose next stage</option>${statusOptions(item.application_status).filter(value => ["Interview", "Accepted", "Rejected"].includes(value)).map(value => `<option>${value}</option>`).join("")}</select>` : "—"}</td><td>${item.assessment_status === "Completed" ? `<button class="text-button" data-action="review-assessment" data-id="${esc(item.id)}">Review answers</button>` : "—"}</td>`}
-    </tr>`).join("")}</tbody></table></div>` : empty("No assessments found", state.user.role === "candidate" ? "Assessment details and results will appear here when available." : "Assessments matching your filters will appear here.", "✓")}
+      <td>${esc(item.application_status)}</td><td>${item.result === "Passed" ? `<select class="status-select" data-assessment-pipeline="${esc(item.application_id)}" aria-label="Move ${esc(item.candidate_name)} to next stage"><option value="">Choose next stage</option>${statusOptions(item.application_status).filter(value => ["Interview", "Accepted", "Rejected"].includes(value)).map(value => `<option>${value}</option>`).join("")}</select>` : "—"}</td><td>${item.assessment_status === "Completed" ? `<button class="text-button" data-action="review-assessment" data-id="${esc(item.id)}">Review answers</button>` : "—"}</td>
+    </tr>`).join("")}</tbody></table></div>` : empty("No assessments found", "Assessments matching your filters will appear here.", "✓")}
     </section>`;
 }
 
@@ -877,10 +1012,82 @@ function companyProfilePage() {
 function recruiterDashboard() {
   const ownJobs = state.jobs;
   const applicants = state.applications;
+  const analytics = state.recruiterAnalytics || {};
+  const summary = analytics.summary || {};
+  const funnel = analytics.conversion_funnel || [];
+  const readiness = analytics.question_bank_readiness || {};
+  const topSkills = analytics.top_skills || [];
+
   return `${heading("Your hiring workspace", `Welcome, ${esc(state.user.name.split(" ")[0])}`, "Build your team with people who are ready to make a difference.", `<button class="btn btn-primary" data-action="new-job">＋ Post a role</button>`)}
-    <section class="grid stats-grid">${stat("Open roles", ownJobs.length, "Roles published by your team", "▣")}${stat("Applicants", applicants.length, "People interested in your roles", "♙")}${stat("In review", applicants.filter(row => row.status === "Under Review").length, "Applications to look at", "◷")}${stat("Shortlisted", applicants.filter(row => row.status === "Shortlisted").length, "Strong profiles to revisit", "✳")}</section>
-    <section class="columns"><article class="card"><div class="card-heading"><div><h2>Your open roles</h2><p>Manage the opportunities you’ve shared</p></div><button class="text-button" data-page="My jobs">Manage →</button></div><div class="job-list">${ownJobs.slice(0, 4).map(job => jobRow(job, "Applicants")).join("") || empty("No roles posted", "Create your first role to meet great candidates.")}</div></article>
-      <article class="card"><div class="card-heading"><div><h2>Hiring snapshot</h2><p>A pulse check on your team’s pipeline</p></div></div><div class="application-list">${applicants.slice(0, 4).map(item => `<div class="application-row"><div><strong>${esc(item.candidate_name)}</strong><small>${esc(item.title)}</small></div><span class="badge badge-red">${esc(item.status)}</span></div>`).join("") || empty("Your applicant list is quiet", "New applicants will show up here.", "♙")}</div></article>
+    <section class="grid stats-grid">
+      ${stat("Open roles", summary.total_jobs ?? ownJobs.length, "Roles published by your team", "▣")}
+      ${stat("Applicants", summary.total_applications ?? applicants.length, "People interested in your roles", "♙")}
+      ${stat("Assessments passed", summary.assessments_completed ?? 0, "Technical tests completed", "✓")}
+      ${stat("Interviews scheduled", summary.interviews_scheduled ?? 0, "Conversations arranged", "◷")}
+    </section>
+
+    <section class="card" style="margin-bottom:16px">
+      <div class="card-heading">
+        <div>
+          <h2>Hiring Pipeline & Funnel</h2>
+          <p>Track candidate progression from initial application to offer</p>
+        </div>
+        <div class="report-range">
+          <label class="sr-only" for="recruiter-analytics-range">Period</label>
+          <select class="select" id="recruiter-analytics-range">
+            <option value="this_week" ${state.recruiterAnalyticsRange === "this_week" ? "selected" : ""}>This week</option>
+            <option value="last_week" ${state.recruiterAnalyticsRange === "last_week" ? "selected" : ""}>Last week</option>
+            <option value="this_month" ${state.recruiterAnalyticsRange === "this_month" ? "selected" : ""}>This month</option>
+            <option value="last_month" ${state.recruiterAnalyticsRange === "last_month" ? "selected" : ""}>Last month</option>
+            <option value="all" ${state.recruiterAnalyticsRange === "all" ? "selected" : ""}>All time</option>
+          </select>
+        </div>
+      </div>
+
+      ${readiness.incomplete_jobs > 0 ? `
+        <div class="recommendation-list" style="margin-bottom:14px">
+          <strong style="color:#b45309">⚠️ Question Bank Attention Needed:</strong>
+          <span>${readiness.incomplete_jobs} role(s) need additional active questions before assessments can be dispatched automatically.</span>
+          <button class="text-button" style="display:inline-block;margin-left:8px" data-page="Question bank">Manage Question Banks →</button>
+        </div>
+      ` : ""}
+
+      <div class="funnel-container">
+        ${funnel.map(step => `
+          <div class="funnel-step">
+            <div class="funnel-step-left">
+              <span>${esc(step.stage)}</span>
+            </div>
+            <div class="funnel-step-right">
+              <strong>${step.count} candidates</strong>
+              <span>(${step.conversion_rate}%)</span>
+            </div>
+          </div>
+        `).join("")}
+      </div>
+
+      ${topSkills.length ? `
+        <div style="margin-top:12px">
+          <strong style="font-size:11px;color:var(--muted);display:block;margin-bottom:6px">Most Common Candidate Skills:</strong>
+          <div class="skills">
+            ${topSkills.map(sk => `<span class="skill">${esc(sk.skill)} (${sk.count})</span>`).join("")}
+          </div>
+        </div>
+      ` : ""}
+    </section>
+
+    <section class="columns">
+      <article class="card">
+        <div class="card-heading">
+          <div><h2>Your open roles</h2><p>Manage the opportunities you’ve shared</p></div>
+          <button class="text-button" data-page="My jobs">Manage →</button>
+        </div>
+        <div class="job-list">${ownJobs.slice(0, 4).map(job => jobRow(job, "Applicants")).join("") || empty("No roles posted", "Create your first role to meet great candidates.")}</div>
+      </article>
+      <article class="card">
+        <div class="card-heading"><div><h2>Recent applicants</h2><p>A pulse check on your team’s pipeline</p></div></div>
+        <div class="application-list">${applicants.slice(0, 4).map(item => `<div class="application-row"><div><strong>${esc(item.candidate_name)}</strong><small>${esc(item.title)}</small></div><span class="badge badge-red">${esc(item.status)}</span></div>`).join("") || empty("Your applicant list is quiet", "New applicants will show up here.", "♙")}</div>
+      </article>
     </section>`;
 }
 
@@ -980,12 +1187,29 @@ function adminDashboard() {
   return `${heading("Platform overview", "The whole picture", "A live snapshot of the SkillSphere community.")}
     <section class="grid stats-grid">${stat("People", data.users ?? "—", "Registered members", "♙")}${stat("Recruiters", data.recruiters ?? "—", "Teams hiring on SkillSphere", "◉")}${stat("Open roles", data.open_jobs ?? "—", "Published opportunities", "▣")}${stat("Applications", data.applications ?? "—", "Connections in motion", "↗")}</section>
     <section class="card weekly-report"><div class="card-heading"><div><h2>Weekly hiring report</h2><p>${esc(weekly.start_date || "")} – ${esc(weekly.end_date || "")}</p></div><div class="report-range">
-      <label class="sr-only" for="analytics-range">Report period</label><select class="select" id="analytics-range"><option value="this_week" ${state.analyticsRange === "this_week" ? "selected" : ""}>This week</option><option value="last_week" ${state.analyticsRange === "last_week" ? "selected" : ""}>Last week</option><option value="custom" ${state.analyticsRange === "custom" ? "selected" : ""}>Custom</option></select>
+      <label class="sr-only" for="analytics-range">Report period</label><select class="select" id="analytics-range"><option value="this_week" ${state.analyticsRange === "this_week" ? "selected" : ""}>This week</option><option value="last_week" ${state.analyticsRange === "last_week" ? "selected" : ""}>Last week</option><option value="this_month" ${state.analyticsRange === "this_month" ? "selected" : ""}>This month</option><option value="last_month" ${state.analyticsRange === "last_month" ? "selected" : ""}>Last month</option><option value="custom" ${state.analyticsRange === "custom" ? "selected" : ""}>Custom</option></select>
       ${state.analyticsRange === "custom" ? `<input class="input report-date" id="analytics-start" type="date" value="${esc(state.analyticsStart)}" aria-label="Report start date" /><input class="input report-date" id="analytics-end" type="date" value="${esc(state.analyticsEnd)}" aria-label="Report end date" /><button class="btn btn-quiet btn-small" data-action="apply-custom-report">Apply</button>` : ""}
     </div></div>
       <div class="grid stats-grid report-stats">${stat("Applications", weekly.applications ?? 0, "In selected period", "↗")}${stat("Assessments sent", weekly.assessments_sent ?? 0, "Email delivery count", "✉")}${stat("Completion rate", `${weekly.completion_rate ?? 0}%`, "Of assessments sent in period", "✓")}${stat("Average score", weekly.average_score_percentage == null ? "—" : `${weekly.average_score_percentage}%`, "Completed assessments", "◉")}</div>
       <h3 class="report-subhead">Round 1 results</h3>
       <div class="grid stats-grid report-stats">${stat("Completed", weekly.round1_assessments_completed ?? 0, "Round 1 this period", "✓")}${stat("Passed", weekly.round1_passed ?? 0, "Candidates cleared Round 1", "↑")}${stat("Failed", weekly.round1_failed ?? 0, "Candidates below threshold", "↓")}${stat("Pass rate", `${weekly.round1_pass_rate ?? 0}%`, "Of completed Round 1 tests", "◉")}${stat("Average Round 1 score", weekly.round1_average_score_percentage == null ? "—" : `${weekly.round1_average_score_percentage}%`, "Score percentage", "★")}</div>
+      ${(weekly.conversion_funnel || []).length ? `
+        <h3 class="report-subhead">Platform Hiring Funnel</h3>
+        <div class="funnel-container">
+          ${weekly.conversion_funnel.map(step => `
+            <div class="funnel-step">
+              <div class="funnel-step-left"><span>${esc(step.stage)}</span></div>
+              <div class="funnel-step-right"><strong>${step.count} candidates</strong><span>(${step.conversion_rate}%)</span></div>
+            </div>
+          `).join("")}
+        </div>
+      ` : ""}
+      ${(weekly.weak_technologies || []).length ? `
+        <h3 class="report-subhead">Most Challenging Technologies (Highest Candidate Fails)</h3>
+        <div class="chips-row">
+          ${weekly.weak_technologies.map(t => `<span class="chip-amber">▲ ${esc(t.technology)}: ${t.failed_count} failure(s)</span>`).join("")}
+        </div>
+      ` : ""}
       <div class="columns report-columns"><div><h3 class="report-subhead">Applications by day</h3><div class="trend-chart">${(weekly.daily_trend || []).map(day => `<div class="trend-day"><span class="trend-value">${day.applications}</span><div class="trend-bar" style="height:${Math.max(4, day.applications / peak * 100)}%"></div><small>${new Date(`${day.date}T00:00:00`).toLocaleDateString(undefined, { weekday: "short" })}</small></div>`).join("") || empty("No data", "Applications appear here over time.")}</div></div>
       <div class="report-breakdown"><h3 class="report-subhead">Pipeline statuses</h3>${Object.entries(weekly.status_counts || {}).map(([status, count]) => `<div class="breakdown-row"><span>${esc(status)}</span><strong>${esc(count)}</strong></div>`).join("") || `<p class="stat-note">No applications in this period.</p>`}<h3 class="report-subhead">Assessment activity</h3>${Object.entries(weekly.assessments || {}).map(([status, count]) => `<div class="breakdown-row"><span>${esc(status)}</span><strong>${esc(count)}</strong></div>`).join("") || `<p class="stat-note">No assessments created in this period.</p>`}</div></div>
       <div class="columns report-columns report-top-lists"><div><h3 class="report-subhead">Top jobs</h3>${(weekly.top_jobs || []).map(job => `<div class="breakdown-row"><span>${esc(job.title)} · ${esc(job.company)}</span><strong>${esc(job.applications)}</strong></div>`).join("") || `<p class="stat-note">No applications in this period.</p>`}</div><div><h3 class="report-subhead">Top technologies</h3>${(weekly.top_technologies || []).map(topic => `<div class="breakdown-row"><span>${esc(topic.technology)}</span><strong>${esc(topic.assessments)}</strong></div>`).join("") || `<p class="stat-note">No assessments in this period.</p>`}</div></div>
@@ -1050,6 +1274,8 @@ function renderModal() {
     <div class="field"><label>Experience</label><input class="input" name="experience" placeholder="e.g. 2–4 years" required /></div><div class="field"><label>Job type</label><select class="select" name="job_type"><option>Full-time</option><option>Part-time</option><option>Contract</option><option>Remote</option></select></div>
     <div class="field span-2"><label>Salary range</label><input class="input" name="salary" placeholder="e.g. $90k – $120k" /></div>
     <div class="field span-2"><label>Required skills, comma-separated</label><input class="input" name="skills" placeholder="e.g. Figma, UX research, prototyping" required /></div>
+    <div class="field"><label>Assessment questions (5–50)</label><input class="input" type="number" name="assessment_question_count" min="5" max="50" value="20" required /></div>
+    <div class="field"><label>Candidate results</label><label class="checkbox-field" style="display:flex;align-items:center;gap:8px;font-size:11px;margin-top:6px;cursor:pointer;"><input type="checkbox" name="allow_detailed_results" checked /> Allow detailed question explanations after test</label></div>
     <div class="field span-2"><label>Role description</label><textarea class="textarea" name="description" required placeholder="What will this person do? What makes your team a great place to grow?"></textarea></div>
     <div class="span-2"><button class="btn btn-primary" type="submit">Publish role →</button></div></form>
     </section></div>`;
@@ -1127,11 +1353,134 @@ function renderModal() {
   }
   if (state.modal?.startsWith("review:")) {
     const review = state.assessmentReview;
+    if (!review) {
+      return `<div class="modal-backdrop" data-action="close-modal"><section class="modal review-modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+        <div class="modal-head"><div><span class="eyebrow">Assessment review</span><h2 id="modal-title">Loading assessment…</h2></div><button class="icon-button" aria-label="Close dialog" data-action="close-modal">×</button></div>
+        <div class="loading"><span class="spinner"></span></div>
+      </section></div>`;
+    }
+    const topicBreakdown = review.topic_breakdown || [];
+    const diffBreakdown = review.difficulty_breakdown || {};
+    const strengths = review.strengths || [];
+    const weakAreas = review.areas_to_improve || [];
+    const recommendations = review.recommendations || [];
+    const questions = review.questions || [];
+    const isCandidate = state.user?.role === "candidate";
+
     return `<div class="modal-backdrop" data-action="close-modal"><section class="modal review-modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
-      <div class="modal-head"><div><span class="eyebrow">Assessment review</span><h2 id="modal-title">${review ? `${esc(review.candidate_name)} · ${esc(review.title)}` : "Loading assessment…"}</h2><p>${review ? `${esc(review.assessment_name)} · ${esc(review.technology)}` : ""}</p></div><button class="icon-button" aria-label="Close dialog" data-action="close-modal">×</button></div>
-      ${review ? `<div class="assessment-review-summary"><strong>${esc(review.score_percentage)}% · ${esc(review.result)}</strong><span>${esc(review.correct_answer_count)} correct / ${esc(review.total_questions)} · pass mark ${esc(review.pass_percentage)}%</span><span>Completed ${dateTimeLabel(review.submitted_at)} · ${esc(review.time_taken_seconds)} seconds</span><span>Current pipeline stage: ${esc(review.application_status)}</span></div>` : ""}
-      ${state.assessmentProctoringReview ? `<section class="proctoring-review"><h3>Proctoring review${state.assessmentProctoringReview.flagged ? ` · <span class="badge badge-amber">Flagged for review</span>` : ""}</h3><p>${esc(state.assessmentProctoringReview.proctoring_warning_count)} warning(s) recorded. Events are review signals, not proof of misconduct.</p>${proctoringEventTimeline(state.assessmentProctoringReview.events)}</section>` : ""}
-      ${review ? `<div class="review-questions">${review.questions.map(question => `<article class="review-question"><strong>${question.order}. ${esc(question.question)}</strong><p class="${question.is_correct ? "answer-correct" : "answer-wrong"}">${question.selected_answer == null ? "No answer" : `Candidate answer: ${esc(question.options[question.selected_answer])}`}</p><small>Correct answer: ${esc(question.options[question.correct_answer])}</small></article>`).join("")}</div>` : `<div class="loading"><span class="spinner"></span></div>`}
+      <div class="modal-head">
+        <div>
+          <span class="eyebrow">${esc(review.company)} · ${esc(review.title)}</span>
+          <h2 id="modal-title">${isCandidate ? "Your Performance Review" : `${esc(review.candidate_name)} · Review`}</h2>
+          <p>${esc(review.assessment_name || "Round 1: Technical MCQ Test")}${review.technology ? ` · ${esc(review.technology)}` : ""}</p>
+        </div>
+        <button class="icon-button" aria-label="Close dialog" data-action="close-modal">×</button>
+      </div>
+
+      <div class="assessment-review-summary">
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+          <div>
+            <strong>${esc(review.score_percentage ?? 0)}%</strong>
+            <span class="badge ${review.result === "Passed" ? "badge-green" : "badge-red"}" style="margin-left:6px">${esc(review.result || "Completed")}</span>
+          </div>
+          <span style="font-size:11px">${esc(review.correct_answer_count ?? review.score)} correct / ${esc(review.total_questions)} total · Pass requirement: ${esc(review.pass_percentage)}%</span>
+        </div>
+        <div class="review-stat-grid">
+          <div class="review-stat-card"><span>Completion date</span><strong>${dateLabel(review.submitted_at)}</strong></div>
+          <div class="review-stat-card"><span>Time taken</span><strong>${review.time_taken_seconds != null ? `${review.time_taken_seconds}s` : "—"}</strong></div>
+          <div class="review-stat-card"><span>Correct answers</span><strong style="color:#2f855a">${esc(review.correct_answer_count ?? review.score)}</strong></div>
+          <div class="review-stat-card"><span>Incorrect answers</span><strong style="color:#c53030">${esc(review.incorrect_answer_count ?? (review.total_questions - (review.score || 0)))}</strong></div>
+        </div>
+      </div>
+
+      <section class="skill-analysis-card">
+        <h3>Strengths & Areas to Improve</h3>
+        <p>A skill-gap diagnostic based on candidate answers across tested technologies.</p>
+        
+        <strong style="font-size:11px;display:block;margin-top:6px">Demonstrated Strengths (Score ≥ 70%)</strong>
+        <div class="chips-row">
+          ${strengths.length ? strengths.map(s => `<span class="chip-green">★ Strong in ${esc(s)}</span>`).join("") : `<span class="stat-note">Keep practicing to build your core strengths.</span>`}
+        </div>
+
+        <strong style="font-size:11px;display:block;margin-top:8px">Areas for Growth (Score &lt; 70%)</strong>
+        <div class="chips-row">
+          ${weakAreas.length ? weakAreas.map(w => `<span class="chip-amber">▲ Needs improvement: ${esc(w)}</span>`).join("") : `<span class="chip-green">✓ Great foundation across all topics!</span>`}
+        </div>
+
+        ${topicBreakdown.length ? `
+          <strong style="font-size:11px;display:block;margin-top:10px">Topic-Level Breakdown</strong>
+          <div class="topic-bars-list">
+            ${topicBreakdown.map(t => `
+              <div class="topic-bar-row">
+                <span class="topic-bar-name">${esc(t.technology)}</span>
+                <div class="topic-bar-track">
+                  <div class="topic-bar-fill ${t.percentage >= 70 ? "topic-bar-fill-high" : t.percentage >= 50 ? "topic-bar-fill-mid" : "topic-bar-fill-low"}" style="width:${Math.max(4, t.percentage)}%"></div>
+                </div>
+                <span class="topic-bar-score">${t.correct}/${t.total} (${t.percentage}%)</span>
+              </div>
+            `).join("")}
+          </div>
+        ` : ""}
+
+        <strong style="font-size:11px;display:block;margin-top:10px">Difficulty Breakdown</strong>
+        <div style="display:flex;gap:12px;margin-top:4px;flex-wrap:wrap">
+          ${["Easy", "Medium", "Hard"].map(level => {
+            const d = diffBreakdown[level];
+            if (!d || !d.total) return "";
+            return `<span style="font-size:11px;color:var(--muted)"><strong>${level}:</strong> ${d.correct}/${d.total} (${d.percentage}%)</span>`;
+          }).join("")}
+        </div>
+
+        ${recommendations.length ? `
+          <div class="recommendation-list">
+            <strong style="font-size:11px;color:#78350f;display:block;margin-bottom:4px">Practical Recommendations:</strong>
+            <ul>
+              ${recommendations.map(r => `<li>${esc(r)}</li>`).join("")}
+            </ul>
+          </div>
+        ` : ""}
+      </section>
+
+      ${state.assessmentProctoringReview ? `
+        <section class="proctoring-review">
+          <h3>Proctoring review${state.assessmentProctoringReview.flagged ? ` · <span class="badge badge-amber">Flagged for review</span>` : ""}</h3>
+          <p>${esc(state.assessmentProctoringReview.proctoring_warning_count)} warning(s) recorded. Events are review signals, not proof of misconduct.</p>
+          ${proctoringEventTimeline(state.assessmentProctoringReview.events)}
+        </section>
+      ` : ""}
+
+      <section style="margin-top:14px">
+        <div class="card-heading">
+          <div>
+            <h3 style="font-size:12px;margin:0">Question-by-Question Review</h3>
+            <p style="font-size:11px;color:var(--muted)">Review candidate selections${review.can_view_detailed_answers ? " and correct answers" : ""}.</p>
+          </div>
+        </div>
+        <div class="review-questions">
+          ${questions.map(q => {
+            const isCorrect = q.is_correct === true;
+            return `<article class="review-question">
+              <div class="review-question-header">
+                <div>
+                  <span class="eyebrow">${esc(q.technology || "Topic")} · ${esc(q.difficulty || "Medium")}${q.subtopic ? ` · ${esc(q.subtopic)}` : ""}</span>
+                  <strong>${q.order}. ${esc(q.question)}</strong>
+                </div>
+                <span class="badge ${isCorrect ? "badge-green" : "badge-red"}">${isCorrect ? "Correct" : "Incorrect"}</span>
+              </div>
+              <p class="${isCorrect ? "answer-correct" : "answer-wrong"}">
+                ${q.selected_answer == null ? "Candidate did not answer" : `Selected: ${esc(q.options[q.selected_answer])}`}
+              </p>
+              ${q.correct_answer != null ? `
+                <small style="color:#2f855a;font-weight:600">Correct answer: ${esc(q.options[q.correct_answer])}</small>
+                ${q.explanation ? `<div class="review-explanation"><strong>Explanation:</strong> ${esc(q.explanation)}</div>` : ""}
+                ${q.learning_resource_url ? `<a class="learning-link" href="${esc(q.learning_resource_url)}" target="_blank" rel="noopener noreferrer">Study Resource ↗</a>` : ""}
+              ` : `
+                ${!isCorrect ? `<div class="review-hidden-notice">Detailed answer explanations for this test are hidden by the recruiter. Review the recommendations above for guidance.</div>` : ""}
+              `}
+            </article>`;
+          }).join("")}
+        </div>
+      </section>
     </section></div>`;
   }
   return "";
@@ -1189,7 +1538,19 @@ async function loadWorkspace() {
     state.assessments = assessmentData.items || [];
     state.notifications = notificationData.items || [];
     state.unreadNotifications = notificationData.unread_count || 0;
-    if (state.user.role === "candidate") state.resume = await api("/resume");
+    if (state.user.role === "candidate") {
+      const [resume, candidateAnalytics] = await Promise.all([
+        api("/resume"),
+        api("/candidate/analytics").catch(() => null)
+      ]);
+      state.resume = resume;
+      state.candidateAnalytics = candidateAnalytics;
+    }
+    if (state.user.role === "recruiter") {
+      try {
+        state.recruiterAnalytics = await api(`/recruiter/analytics?report_range=${encodeURIComponent(state.recruiterAnalyticsRange || "this_week")}`);
+      } catch (e) { state.recruiterAnalytics = null; }
+    }
     if (state.user.role === "admin") {
       const [analytics, adminJobs] = await Promise.all([
         api(`/admin/analytics?report_range=${encodeURIComponent(state.analyticsRange)}`),
@@ -1479,8 +1840,11 @@ app.addEventListener("submit", async event => {
     await authenticate(values.get("email"), values.get("password"), app.dataset.register === "true", values.get("name"), values.get("role"));
   }
   if (form.id === "job-form") {
-    const values = Object.fromEntries(new FormData(form));
-    values.skills = values.skills.split(",").map(skill => skill.trim()).filter(Boolean);
+    const formData = new FormData(form);
+    const values = Object.fromEntries(formData);
+    values.skills = (values.skills || "").split(",").map(skill => skill.trim()).filter(Boolean);
+    values.assessment_question_count = Number(values.assessment_question_count || 20);
+    values.allow_detailed_results = formData.get("allow_detailed_results") !== null;
     try {
       await api("/jobs", { method: "POST", body: JSON.stringify(values) });
       state.modal = "";
@@ -1496,7 +1860,10 @@ app.addEventListener("submit", async event => {
       options: [0, 1, 2, 3].map(index => values[`option_${index}`].trim()),
       correct_index: Number(values.correct_index),
       difficulty: values.difficulty,
-      active: form.id === "question-form" || values.active === "on"
+      active: form.id === "question-form" || values.active === "on",
+      explanation: (values.explanation || "").trim(),
+      learning_resource_url: (values.learning_resource_url || "").trim(),
+      subtopic: (values.subtopic || "").trim(),
     };
     const editing = form.id === "question-edit-form";
     const path = `/jobs/${state.questionBankJob.id}/questions${editing ? `/${encodeURIComponent(values.question_id)}` : ""}`;
@@ -1624,6 +1991,13 @@ app.addEventListener("change", async event => {
       state.analyticsRange = "custom";
       renderWorkspace();
     } else await loadAnalytics(event.target.value);
+  }
+  if (event.target.id === "recruiter-analytics-range") {
+    state.recruiterAnalyticsRange = event.target.value;
+    try {
+      state.recruiterAnalytics = await api(`/recruiter/analytics?report_range=${encodeURIComponent(state.recruiterAnalyticsRange)}`);
+      renderWorkspace();
+    } catch (e) { showToast(e.message, true); }
   }
   if (event.target.matches("[data-job-status]")) {
     try {
@@ -1759,6 +2133,18 @@ async function refreshInterviewWorkspace() {
 }
 
 app.addEventListener("click", async event => {
+  const toggleBtn = event.target.closest("[data-toggle-password]");
+  if (toggleBtn) {
+    const targetInput = document.getElementById(toggleBtn.dataset.togglePassword);
+    if (targetInput) {
+      const isPassword = targetInput.type === "password";
+      targetInput.type = isPassword ? "text" : "password";
+      toggleBtn.textContent = isPassword ? "🙈" : "👁";
+      toggleBtn.setAttribute("aria-label", isPassword ? "Hide password" : "Show password");
+      toggleBtn.setAttribute("title", isPassword ? "Hide password" : "Show password");
+    }
+    return;
+  }
   if (state.assessmentMode) {
     const assessmentAction = event.target.closest("[data-assessment-action]")?.dataset.assessmentAction;
     if (assessmentAction) await handleAssessmentAction(assessmentAction);
@@ -1920,16 +2306,34 @@ app.addEventListener("click", async event => {
     renderWorkspace();
     return;
   }
+  if (target.dataset.action === "take-assessment") {
+    const url = target.dataset.url;
+    if (url) {
+      const match = url.match(/[?&]assessment=([^&]+)/);
+      if (match) {
+        await loadPublicAssessment(decodeURIComponent(match[1]));
+        return;
+      }
+      window.location.href = url;
+      return;
+    }
+    state.page = "Assessments";
+    renderWorkspace();
+    return;
+  }
   if (target.dataset.action === "review-assessment") {
     state.modal = `review:${target.dataset.id}`;
     state.assessmentReview = null;
     state.assessmentProctoringReview = null;
     renderWorkspace();
     try {
-      [state.assessmentReview, state.assessmentProctoringReview] = await Promise.all([
-        api(`/assessment-reviews/${encodeURIComponent(target.dataset.id)}`),
-        api(`/assessment-reviews/${encodeURIComponent(target.dataset.id)}/proctoring`)
-      ]);
+      const calls = [api(`/assessment-reviews/${encodeURIComponent(target.dataset.id)}`)];
+      if (state.user?.role !== "candidate") {
+        calls.push(api(`/assessment-reviews/${encodeURIComponent(target.dataset.id)}/proctoring`));
+      }
+      const [review, proctoring] = await Promise.all(calls);
+      state.assessmentReview = review;
+      state.assessmentProctoringReview = proctoring || null;
       renderWorkspace();
     } catch (error) { state.modal = ""; showToast(error.message, true); renderWorkspace(); }
     return;

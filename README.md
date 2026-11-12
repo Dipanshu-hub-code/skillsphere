@@ -100,6 +100,42 @@ Port 587 uses STARTTLS; port 465 uses implicit TLS. In development only, when SM
 
 Manual verification flow: sign in as a recruiter, open **Question bank** for a job, upload a PDF using the format above, edit/approve questions in the preview, and confirm → verify the questions appear in the bank and the import is in history → apply as a candidate whose resume/profile matches the job requirements → confirm a Round 1 link is emailed (or open the development link from recruiter notifications) → answer 15 of 20 correctly and verify the candidate sees 75% / Passed and the pipeline becomes **Round 1 Passed** → verify the recruiter can review the answer details and explicitly move the candidate to Interview → repeat with 14 correct answers and verify 70% / Failed and **Round 1 Failed**. Also verify the Admin Dashboard's Round 1 weekly totals and per-job breakdowns. Upload a PDF with a missing answer, repair that question in the preview, and confirm it is saved only after confirmation.
 
+### Candidate assessment-result review and skill-gap analysis
+
+After submitting an assessment, candidates can review their performance in detail from **Assessments** or **My Applications** via **Performance review →**:
+- **Summary Metrics**: Job title, company, assessment round, score percentage, pass/fail result, required passing score, time taken in seconds, and completion timestamp.
+- **Strengths and Areas to Improve**: Automated diagnostic categorizing tested technologies into Strengths (score ≥ 70%) and Areas for Growth (score < 70%).
+- **Topic-Level Breakdown**: Visual progress bars and exact scores for every evaluated skill/technology (e.g. SQL 8/10 80%, Python 4/7 57%).
+- **Difficulty Breakdown**: Score percentages across Easy, Medium, and Hard questions.
+- **Actionable Recommendations**: Topic-tailored study recommendations highlighting key concepts to practice (e.g. SQL joins and window functions, pandas data cleaning, async JavaScript).
+- **Question-by-Question Review**: Questions answered incorrectly, candidate's selected choice, and (if permitted) the correct answer, explanation, and learning resource links.
+- **Candidate Privacy & Recruiter Control**: A recruiter setting (`Allow detailed candidate results`, default ON) controls whether candidates can see exact answer keys and explanations after testing. When disabled, candidates see scores, topic breakdowns, and study recommendations, but exact correct answers remain concealed. Recruiters and administrators can always view full answer keys and question reviews for authorized jobs.
+
+### Job seeker assessments section
+
+Job seekers (candidates) have dedicated visibility of their technical assessments across the platform:
+- **Candidate Dashboard**: Surfaces assigned assessments directly with a pending assessment action banner (`Take assessment now →`), current evaluation status, and quick links to completed test reviews.
+- **My Assessments Page** (`Assessments` navigation tab): A candidate-specific view displaying evaluation overview stats (Total evaluations, Pending tests, Completed, Average score), active test callouts, and an evaluation table with role, company, topic, question format, score, outcome, and direct actions (`Take test →`, `Resume test →`, or `Performance review →`).
+- **My Applications**: The application pipeline table displays live assessment status, scores, direct test launch links for active evaluations, and performance review shortcuts for completed tests.
+
+### Recruiter-configurable assessment question counts
+
+When creating or editing a job, recruiters can specify the number of questions for technical assessments:
+- **Configurable Range**: Between 5 and 50 questions (default remains 20).
+- **Dynamic Sampling**: The assessment generation engine samples exactly the configured number of questions, maintaining topic balance across candidate matched skills.
+- **Question Bank Readiness Checks**: If a job bank does not yet have enough active questions to satisfy the configured count (e.g., set to 30 but only 25 questions exist), assessments cannot be sent. The system alerts the recruiter with the exact count of additional questions needed and creates in-app/email readiness notifications.
+- **Settings API**: Recruiters and admins can update assessment configurations anytime via `PATCH /api/jobs/{job_id}/assessment-settings` (`assessment_question_count` and `allow_detailed_results`).
+
+### Accessible password visibility toggle
+
+An accessible password toggle (👁 / 🙈) is integrated into all password inputs across the application (Sign in, Job seeker registration, Recruiter registration). Candidates and recruiters can toggle password visibility on demand without clearing input fields or submitting forms prematurely.
+
+### Comprehensive role-based analytics dashboards
+
+- **Candidate Analytics** (`GET /api/candidate/analytics`): Personal overview featuring active applications, scheduled interviews, completed tests, average test scores, and demonstrated skill strengths vs. areas for improvement.
+- **Recruiter Hiring Analytics** (`GET /api/recruiter/analytics`): Filterable by range (`this_week`, `last_week`, `this_month`, `last_month`, `all`, `custom`) featuring platform conversion funnels (Applied → Under Review → Shortlisted → Assessment Completed → Round 1 Passed → Interview → Accepted), applicant counts, top skills in the applicant pool, and question bank readiness status.
+- **Admin Platform Analytics** (`GET /api/admin/analytics`): Updated with month filters (`this_month`, `last_month`), cross-platform candidate conversion funnels, and identification of the most challenging technical topics based on test results.
+
 ### Demo accounts
 
 | Workspace | Email | Password |

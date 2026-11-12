@@ -406,6 +406,13 @@ class JobBody(BaseModel):
     job_type: str = Field(default="Full-time", max_length=30)
     salary: str = Field(default="", max_length=80)
     skills: list[str] = Field(min_length=1, max_length=30)
+    assessment_question_count: int = Field(default=20, ge=5, le=50)
+    allow_detailed_results: bool = True
+
+
+class JobAssessmentSettingsBody(BaseModel):
+    assessment_question_count: int = Field(default=20, ge=5, le=50)
+    allow_detailed_results: bool = True
 
 
 class StatusBody(BaseModel):
@@ -434,7 +441,7 @@ class AssessmentTopicBody(BaseModel):
 
 
 class AssessmentSubmitBody(BaseModel):
-    answers: dict[int, int] = Field(max_length=20)
+    answers: dict[int, int] = Field(max_length=100)
 
 
 class AssessmentProctoringStartBody(BaseModel):
@@ -454,6 +461,9 @@ class QuestionBody(BaseModel):
     correct_index: int = Field(ge=0, le=3)
     difficulty: str = Field(pattern="^(Easy|Medium|Hard)$")
     active: bool = True
+    explanation: str = Field(default="", max_length=2000)
+    learning_resource_url: str = Field(default="", max_length=1000)
+    subtopic: str = Field(default="", max_length=100)
 
 
 class QuestionUpdateBody(QuestionBody):
@@ -467,6 +477,9 @@ class QuestionImportItem(BaseModel):
     question: str = Field(min_length=10, max_length=1000)
     options: list[str] = Field(min_length=4, max_length=4)
     correct_index: int = Field(ge=0, le=3)
+    explanation: str = Field(default="", max_length=2000)
+    learning_resource_url: str = Field(default="", max_length=1000)
+    subtopic: str = Field(default="", max_length=100)
     include: bool = True
 
 
@@ -691,6 +704,8 @@ def initialize_database() -> None:
                 salary TEXT NOT NULL DEFAULT '',
                 skills_json TEXT NOT NULL,
                 status TEXT NOT NULL DEFAULT 'Open' CHECK(status IN ('Open', 'Closed')),
+                assessment_question_count INTEGER NOT NULL DEFAULT 20,
+                allow_detailed_results INTEGER NOT NULL DEFAULT 1,
                 created_at TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS resumes (
@@ -768,6 +783,9 @@ def initialize_database() -> None:
                 active INTEGER NOT NULL DEFAULT 1,
                 source_type TEXT NOT NULL DEFAULT 'manual' CHECK(source_type IN ('manual', 'pdf_import')),
                 source_import_id INTEGER REFERENCES question_bank_imports(id) ON DELETE SET NULL,
+                explanation TEXT NOT NULL DEFAULT '',
+                learning_resource_url TEXT NOT NULL DEFAULT '',
+                subtopic TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 UNIQUE(job_id, question)
@@ -817,6 +835,7 @@ def initialize_database() -> None:
                 proctoring_started_at TEXT,
                 proctoring_warning_count INTEGER NOT NULL DEFAULT 0,
                 proctoring_flagged_at TEXT,
+                detailed_results_visible INTEGER NOT NULL DEFAULT 1,
                 created_at TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS assessment_questions (
@@ -830,6 +849,11 @@ def initialize_database() -> None:
                 selected_answer INTEGER,
                 is_correct INTEGER,
                 answered_at TEXT,
+                technology TEXT,
+                difficulty TEXT,
+                explanation TEXT NOT NULL DEFAULT '',
+                learning_resource_url TEXT NOT NULL DEFAULT '',
+                subtopic TEXT NOT NULL DEFAULT '',
                 UNIQUE(assessment_id, question_order),
                 UNIQUE(assessment_id, question_id)
             );
@@ -871,6 +895,13 @@ def initialize_database() -> None:
         user_columns = {row["name"] for row in db.execute("PRAGMA table_info(users)")}
         if "active" not in user_columns:
             db.execute("ALTER TABLE users ADD COLUMN active INTEGER NOT NULL DEFAULT 1")
+        job_columns = {row["name"] for row in db.execute("PRAGMA table_info(jobs)")}
+        for column, definition in (
+            ("assessment_question_count", "INTEGER NOT NULL DEFAULT 20"),
+            ("allow_detailed_results", "INTEGER NOT NULL DEFAULT 1"),
+        ):
+            if column not in job_columns:
+                db.execute(f"ALTER TABLE jobs ADD COLUMN {column} {definition}")
         application_columns = {row["name"] for row in db.execute("PRAGMA table_info(applications)")}
         if "match_percentage" not in application_columns:
             db.execute("ALTER TABLE applications ADD COLUMN match_percentage INTEGER")
@@ -886,6 +917,9 @@ def initialize_database() -> None:
             ("recruiter_id", "INTEGER REFERENCES users(id) ON DELETE CASCADE"),
             ("source_type", "TEXT NOT NULL DEFAULT 'manual'"),
             ("source_import_id", "INTEGER REFERENCES question_bank_imports(id) ON DELETE SET NULL"),
+            ("explanation", "TEXT NOT NULL DEFAULT ''"),
+            ("learning_resource_url", "TEXT NOT NULL DEFAULT ''"),
+            ("subtopic", "TEXT NOT NULL DEFAULT ''"),
         ):
             if column not in job_question_columns:
                 db.execute(f"ALTER TABLE job_questions ADD COLUMN {column} {definition}")
@@ -913,6 +947,7 @@ def initialize_database() -> None:
             ("proctoring_started_at", "TEXT"),
             ("proctoring_warning_count", "INTEGER NOT NULL DEFAULT 0"),
             ("proctoring_flagged_at", "TEXT"),
+            ("detailed_results_visible", "INTEGER NOT NULL DEFAULT 1"),
         ):
             if column not in assessment_columns:
                 db.execute(f"ALTER TABLE assessments ADD COLUMN {column} {definition}")
@@ -921,6 +956,16 @@ def initialize_database() -> None:
             WHERE status = 'Started' AND starts_at IS NOT NULL
             AND proctoring_consent_at IS NULL AND proctoring_started_at IS NULL"""
         )
+        assessment_question_columns = {row["name"] for row in db.execute("PRAGMA table_info(assessment_questions)")}
+        for column, definition in (
+            ("technology", "TEXT"),
+            ("difficulty", "TEXT"),
+            ("explanation", "TEXT NOT NULL DEFAULT ''"),
+            ("learning_resource_url", "TEXT NOT NULL DEFAULT ''"),
+            ("subtopic", "TEXT NOT NULL DEFAULT ''"),
+        ):
+            if column not in assessment_question_columns:
+                db.execute(f"ALTER TABLE assessment_questions ADD COLUMN {column} {definition}")
         interview_columns = {row["name"] for row in db.execute("PRAGMA table_info(interviews)")}
         for column, definition in (
             ("meeting_platform", "TEXT NOT NULL DEFAULT 'Microsoft Teams'"),
@@ -1336,11 +1381,16 @@ def assessment_for_match(
         question for question in questions
         if question["technology"].casefold() in {topic.casefold() for topic in topic_weights}
     ]
+    target_count = (
+        job["assessment_question_count"]
+        if ("assessment_question_count" in job.keys() and job["assessment_question_count"])
+        else 20
+    )
     manual_topics: list[str] = []
     if not topic_weights:
-        manual_topics = [topic for topic, count in available_topics.items() if count >= 20]
-    if len(relevant_questions) < 20 and not manual_topics:
-        additional_needed = 20 - len(relevant_questions)
+        manual_topics = [topic for topic, count in available_topics.items() if count >= target_count]
+    if len(relevant_questions) < target_count and not manual_topics:
+        additional_needed = target_count - len(relevant_questions)
         owner = db.execute("SELECT recruiter_id FROM jobs WHERE id = ?", (job["id"],)).fetchone()
         if owner:
             already_notified = db.execute(
@@ -1596,10 +1646,11 @@ def create_job(body: JobBody, user: dict[str, Any] = Depends(require_role("recru
         raise HTTPException(status_code=422, detail="Add at least one required skill")
     with connect() as db:
         cursor = db.execute(
-            """INSERT INTO jobs (recruiter_id, title, company, description, location, experience, job_type, salary, skills_json, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            """INSERT INTO jobs (recruiter_id, title, company, description, location, experience, job_type, salary, skills_json, assessment_question_count, allow_detailed_results, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (user["id"], body.title.strip(), body.company.strip(), body.description.strip(), body.location.strip(),
-             body.experience.strip(), body.job_type.strip(), body.salary.strip(), json.dumps(skills), now()),
+             body.experience.strip(), body.job_type.strip(), body.salary.strip(), json.dumps(skills),
+             body.assessment_question_count, 1 if body.allow_detailed_results else 0, now()),
         )
         row = db.execute("SELECT * FROM jobs WHERE id = ?", (cursor.lastrowid,)).fetchone()
         admins = db.execute("SELECT id FROM users WHERE role = 'admin' AND active = 1").fetchall()
@@ -1608,6 +1659,23 @@ def create_job(body: JobBody, user: dict[str, Any] = Depends(require_role("recru
                 db, admin["id"], "job_posted", "New job posted",
                 f"{body.title} was posted by {body.company}.",
             )
+    return public_job(row)
+
+
+@app.patch("/api/jobs/{job_id}/assessment-settings")
+def update_job_assessment_settings(
+    job_id: int,
+    body: JobAssessmentSettingsBody,
+    user: dict[str, Any] = Depends(require_role("recruiter", "admin")),
+) -> dict[str, Any]:
+    with connect() as db:
+        owned_job(db, job_id, user)
+        db.execute(
+            """UPDATE jobs SET assessment_question_count = ?, allow_detailed_results = ?
+            WHERE id = ?""",
+            (body.assessment_question_count, 1 if body.allow_detailed_results else 0, job_id),
+        )
+        row = db.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
     return public_job(row)
 
 
@@ -1621,7 +1689,7 @@ def owned_job(db: sqlite3.Connection, job_id: int, user: dict[str, Any]) -> sqli
     return job
 
 
-def validated_question(body: QuestionBody) -> tuple[str, str, list[str], int, str, int]:
+def validated_question(body: QuestionBody) -> tuple[str, str, list[str], int, str, int, str, str, str]:
     technology = body.technology.strip()
     question = body.question.strip()
     if not technology or not question:
@@ -1632,10 +1700,13 @@ def validated_question(body: QuestionBody) -> tuple[str, str, list[str], int, st
     return (
         technology, question, options,
         body.correct_index, body.difficulty, int(body.active),
+        body.explanation.strip(), body.learning_resource_url.strip(), body.subtopic.strip(),
     )
 
 
 def job_question_summary(db: sqlite3.Connection, job_id: int) -> dict[str, Any]:
+    job = db.execute("SELECT assessment_question_count FROM jobs WHERE id = ?", (job_id,)).fetchone()
+    target_count = (job["assessment_question_count"] if job and job["assessment_question_count"] else 20)
     difficulty_rows = db.execute(
         """SELECT technology, difficulty, COUNT(*) AS active_count
         FROM job_questions WHERE job_id = ? AND active = 1
@@ -1653,11 +1724,11 @@ def job_question_summary(db: sqlite3.Connection, job_id: int) -> dict[str, Any]:
     topics = [
         {"technology": row["technology"], "active_count": row["active_count"],
          "difficulty_counts": by_technology.get(row["technology"], {}),
-         "ready": row["active_count"] >= 20, "additional_needed": max(0, 20 - row["active_count"])}
+         "ready": row["active_count"] >= target_count, "additional_needed": max(0, target_count - row["active_count"])}
         for row in technology_rows
     ]
     active_total = sum(topic["active_count"] for topic in topics)
-    needed = max(0, 20 - active_total)
+    needed = max(0, target_count - active_total)
     total_by_difficulty = {
         row["difficulty"]: row["active_count"]
         for row in db.execute(
@@ -1668,9 +1739,10 @@ def job_question_summary(db: sqlite3.Connection, job_id: int) -> dict[str, Any]:
     }
     return {
         "job_id": job_id,
+        "configured_question_count": target_count,
         "active_count": active_total,
         "difficulty_counts": total_by_difficulty,
-        "ready": active_total >= 20,
+        "ready": active_total >= target_count,
         "additional_needed": needed,
         "topics": topics,
     }
@@ -1898,18 +1970,18 @@ def create_job_question(
     body: QuestionBody,
     user: dict[str, Any] = Depends(require_role("recruiter", "admin")),
 ) -> dict[str, Any]:
-    technology, question, options, correct_index, difficulty, active = validated_question(body)
+    technology, question, options, correct_index, difficulty, active, explanation, learning_resource_url, subtopic = validated_question(body)
     with connect() as db:
         job = owned_job(db, job_id, user)
         try:
             cursor = db.execute(
                 """INSERT INTO job_questions
                 (job_id, owner_id, recruiter_id, technology, question, options_json, correct_index,
-                 difficulty, active, source_type, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual', ?, ?)""",
+                 difficulty, active, source_type, explanation, learning_resource_url, subtopic, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual', ?, ?, ?, ?, ?)""",
                 (
                     job_id, job["recruiter_id"], job["recruiter_id"], technology, question, json.dumps(options),
-                    correct_index, difficulty, active, now(), now(),
+                    correct_index, difficulty, active, explanation, learning_resource_url, subtopic, now(), now(),
                 ),
             )
         except sqlite3.IntegrityError as error:
@@ -1928,15 +2000,17 @@ def update_job_question(
     body: QuestionUpdateBody,
     user: dict[str, Any] = Depends(require_role("recruiter", "admin")),
 ) -> dict[str, Any]:
-    technology, question, options, correct_index, difficulty, active = validated_question(body)
+    technology, question, options, correct_index, difficulty, active, explanation, learning_resource_url, subtopic = validated_question(body)
     with connect() as db:
         owned_job(db, job_id, user)
         try:
             result = db.execute(
                 """UPDATE job_questions SET technology = ?, question = ?, options_json = ?,
-                correct_index = ?, difficulty = ?, active = ?, updated_at = ?
+                correct_index = ?, difficulty = ?, active = ?, explanation = ?,
+                learning_resource_url = ?, subtopic = ?, updated_at = ?
                 WHERE id = ? AND job_id = ?""",
-                (technology, question, json.dumps(options), correct_index, difficulty, active, now(), question_id, job_id),
+                (technology, question, json.dumps(options), correct_index, difficulty, active,
+                 explanation, learning_resource_url, subtopic, now(), question_id, job_id),
             )
         except sqlite3.IntegrityError as error:
             raise HTTPException(status_code=409, detail="That question already exists for this job") from error
@@ -2361,14 +2435,22 @@ def list_applications(user: dict[str, Any] = Depends(current_user)) -> dict[str,
             rows = db.execute(
                 """SELECT a.id, a.candidate_id, a.job_id, a.status, a.match_percentage,
                 a.matched_skills_json, a.missing_skills_json, a.applied_at, j.title, j.company,
+                x.id AS assessment_id,
                 CASE WHEN x.id IS NULL AND a.status = 'Shortlisted' AND a.match_percentage >= 70
                 THEN 'Pending Question Bank' ELSE x.status END AS assessment_status,
                 x.technology AS assessment_topic, x.assessment_name, x.assessment_round,
+                x.total_questions AS assessment_total_questions,
+                x.duration_minutes AS assessment_duration_minutes,
+                x.pass_percentage AS assessment_pass_percentage,
                 x.email_sent_at AS assessment_email_sent_at, x.starts_at AS assessment_started_at,
                 x.submitted_at AS assessment_submitted_at, x.score AS assessment_score,
                 x.score_percentage AS assessment_score_percentage, x.result AS assessment_result,
                 x.correct_answer_count AS assessment_correct_count,
-                x.incorrect_answer_count AS assessment_incorrect_count
+                x.incorrect_answer_count AS assessment_incorrect_count,
+                (SELECT n.action_url FROM notifications n
+                 WHERE n.related_assessment_id = x.id AND n.user_id = a.candidate_id
+                 AND n.action_url IS NOT NULL AND n.action_url != ''
+                 ORDER BY n.id DESC LIMIT 1) AS assessment_action_url
                 FROM applications a JOIN jobs j ON j.id = a.job_id
                 LEFT JOIN assessments x ON x.application_id = a.id
                 WHERE a.candidate_id = ? ORDER BY a.applied_at DESC""",
@@ -2623,7 +2705,7 @@ def managed_assessment(
     row = db.execute(
         """SELECT a.id AS application_id, a.candidate_id, a.job_id, a.status AS application_status,
         a.match_percentage, u.email AS candidate_email, j.title, j.company,
-        j.recruiter_id AS owner_id,
+        j.recruiter_id AS owner_id, j.assessment_question_count, j.allow_detailed_results,
         x.id AS assessment_id, x.technology, x.question_topics_json,
         x.question_topic_weights_json,
         x.status AS assessment_status,
@@ -2723,6 +2805,16 @@ def issue_assessment_link(
             raise HTTPException(status_code=409, detail="Only sent or expired assessments can be reissued")
         raise HTTPException(status_code=409, detail="Use reissue for an assessment that has already been sent")
 
+    target_count = (
+        managed["assessment_question_count"]
+        if ("assessment_question_count" in managed.keys() and managed["assessment_question_count"])
+        else 20
+    )
+    allow_detailed = (
+        managed["allow_detailed_results"]
+        if ("allow_detailed_results" in managed.keys() and managed["allow_detailed_results"] is not None)
+        else 1
+    )
     topics = json.loads(managed["question_topics_json"] or "[]")
     if not topics:
         topics = [managed["technology"]]
@@ -2734,15 +2826,16 @@ def issue_assessment_link(
     }
     placeholders = ",".join("?" for _ in topics)
     questions = db.execute(
-        f"""SELECT id, technology, question, options_json, correct_index, difficulty FROM job_questions
+        f"""SELECT id, technology, question, options_json, correct_index, difficulty,
+        explanation, learning_resource_url, subtopic FROM job_questions
         WHERE job_id = ? AND lower(technology) IN ({placeholders}) AND active = 1""",
         (managed["job_id"], *(topic.casefold() for topic in topics)),
     ).fetchall()
-    selected = relevant_balanced_question_sample(questions, topic_weights, 20)
-    if len(selected) != 20:
+    selected = relevant_balanced_question_sample(questions, topic_weights, target_count)
+    if len(selected) != target_count:
         raise HTTPException(
             status_code=409,
-            detail="The selected question topics need at least 20 active questions in total.",
+            detail=f"The selected question topics need at least {target_count} active questions in total.",
         )
     token = secrets.token_urlsafe(32)
     token_hash = hashlib.sha256(token.encode()).hexdigest()
@@ -2790,29 +2883,34 @@ def issue_assessment_link(
         ).fetchone()
         db.execute(
             """INSERT INTO assessment_questions
-            (assessment_id, question_id, question_order, question_snapshot, options_snapshot, correct_index)
-            VALUES (?, ?, ?, ?, ?, ?)""",
+            (assessment_id, question_id, question_order, question_snapshot, options_snapshot, correct_index, technology, difficulty, explanation, learning_resource_url, subtopic)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 managed["assessment_id"], legacy_question["id"], order, question["question"],
                 json.dumps(options), options.index(correct_option),
+                question["technology"], question["difficulty"],
+                question["explanation"] if "explanation" in question.keys() else "",
+                question["learning_resource_url"] if "learning_resource_url" in question.keys() else "",
+                question["subtopic"] if "subtopic" in question.keys() else "",
             ),
         )
     db.execute(
         """UPDATE assessments SET token_hash = ?, status = 'Sent', starts_at = NULL,
-        expires_at = ?, submitted_at = NULL, score = NULL, total_questions = 20,
+        expires_at = ?, submitted_at = NULL, score = NULL, total_questions = ?,
         assessment_name = ?, assessment_round = 'Round 1', pass_percentage = ?,
         score_percentage = NULL, correct_answer_count = NULL, incorrect_answer_count = NULL,
         result = NULL, result_processed_at = NULL, time_taken_seconds = NULL,
         duration_minutes = ?, email_sent_at = ?, proctoring_required = ?,
         proctoring_consent_at = NULL, camera_permission_granted_at = NULL,
         proctoring_started_at = NULL, proctoring_warning_count = 0,
-        proctoring_flagged_at = NULL
+        proctoring_flagged_at = NULL, detailed_results_visible = ?
         WHERE id = ?""",
         (
-            token_hash, expiry, ROUND1_ASSESSMENT_NAME, ROUND1_PASS_PERCENTAGE,
+            token_hash, expiry, target_count, ROUND1_ASSESSMENT_NAME, ROUND1_PASS_PERCENTAGE,
             ASSESSMENT_DURATION_MINUTES,
             now() if delivery == "email" else None,
             int(PROCTORING_REQUIRED),
+            int(bool(allow_detailed)),
             managed["assessment_id"],
         ),
     )
@@ -2824,7 +2922,7 @@ def issue_assessment_link(
         f"Your {managed['technology']} assessment for {managed['title']} is available. The secure link was sent to your registered email.",
         application_id=managed["application_id"],
         assessment_id=managed["assessment_id"],
-        action_url=assessment_url if delivery == "development" else "",
+        action_url=assessment_url,
         email_delivery_status="Sent" if delivery == "email" else "Development",
     )
     add_notification(
@@ -2900,10 +2998,11 @@ def send_assessment(
         if not managed["assessment_id"]:
             summary = job_question_summary(db, managed["job_id"])
             if not summary["ready"]:
+                target_q = summary.get("configured_question_count", 20)
                 raise HTTPException(
                     status_code=409,
                     detail=(
-                        "A job-specific question bank needs at least 20 active questions in one topic. "
+                        f"A job-specific question bank needs at least {target_q} active questions. "
                         f"Add {summary['additional_needed']} more active questions."
                     ),
                 )
@@ -2993,7 +3092,11 @@ def assessment_dashboard(
             x.email_sent_at, j.title, j.company, a.status AS application_status,
             u.name AS candidate_name, u.email AS candidate_email,
             (SELECT COUNT(*) FROM assessment_questions q
-             WHERE q.assessment_id = x.id AND q.selected_answer IS NOT NULL) AS answered_count
+             WHERE q.assessment_id = x.id AND q.selected_answer IS NOT NULL) AS answered_count,
+            (SELECT n.action_url FROM notifications n
+             WHERE n.related_assessment_id = x.id AND n.user_id = x.candidate_id
+             AND n.action_url IS NOT NULL AND n.action_url != ''
+             ORDER BY n.id DESC LIMIT 1) AS action_url
             FROM assessments x JOIN jobs j ON j.id = x.job_id
             JOIN applications a ON a.id = x.application_id
             JOIN users u ON u.id = x.candidate_id {where}
@@ -3006,6 +3109,8 @@ def assessment_dashboard(
         if user["role"] == "candidate":
             item.pop("question_topics_json", None)
             item.pop("selection_reasoning", None)
+        else:
+            item.pop("action_url", None)
         item["score_percentage"] = (
             item["score_percentage"]
             if item["score_percentage"] is not None
@@ -3032,44 +3137,362 @@ def assessment_dashboard(
 @app.get("/api/assessment-reviews/{assessment_id}")
 def assessment_review(
     assessment_id: int,
-    user: dict[str, Any] = Depends(require_role("recruiter", "admin")),
+    user: dict[str, Any] = Depends(current_user),
 ) -> dict[str, Any]:
     with connect() as db:
-        conditions = "x.id = ? AND (? = 'admin' OR j.recruiter_id = ?)"
+        if user["role"] == "candidate":
+            conditions = "x.id = ? AND x.candidate_id = ?"
+            params: tuple[Any, ...] = (assessment_id, user["id"])
+        elif user["role"] == "recruiter":
+            conditions = "x.id = ? AND j.recruiter_id = ?"
+            params = (assessment_id, user["id"])
+        else:
+            conditions = "x.id = ?"
+            params = (assessment_id,)
         row = db.execute(
-            f"""SELECT x.id, x.application_id, x.technology, x.status, x.match_percentage,
+            f"""SELECT x.id, x.application_id, x.candidate_id, x.technology, x.status, x.match_percentage,
             x.assessment_name, x.assessment_round, x.pass_percentage,
             x.starts_at, x.expires_at, x.submitted_at, x.score, x.score_percentage,
             x.total_questions, x.correct_answer_count, x.incorrect_answer_count, x.result,
             x.result_processed_at, x.time_taken_seconds, a.status AS application_status,
-            x.duration_minutes, j.title, j.company, u.name AS candidate_name, u.email AS candidate_email
+            x.duration_minutes, x.detailed_results_visible,
+            j.title, j.company, j.allow_detailed_results,
+            u.name AS candidate_name, u.email AS candidate_email
             FROM assessments x JOIN jobs j ON j.id = x.job_id
             JOIN users u ON u.id = x.candidate_id
             JOIN applications a ON a.id = x.application_id WHERE {conditions}""",
-            (assessment_id, user["role"], user["id"]),
+            params,
         ).fetchone()
         if not row:
-            raise HTTPException(status_code=404, detail="Assessment not found for your job listings")
+            raise HTTPException(status_code=404, detail="Assessment not found or access denied")
         if row["status"] != "Completed" or row["result"] not in {"Passed", "Failed"}:
+            if user["role"] == "candidate":
+                raise HTTPException(status_code=403, detail="Assessment review is only available after completing the assessment")
             raise HTTPException(status_code=409, detail="Question-by-question review is available after submission")
         questions = db.execute(
             """SELECT q.question_order, q.question_snapshot, q.options_snapshot,
-            q.selected_answer, q.correct_index, q.is_correct
+            q.selected_answer, q.correct_index, q.is_correct,
+            q.technology, q.difficulty, q.explanation, q.learning_resource_url, q.subtopic
             FROM assessment_questions q WHERE q.assessment_id = ? ORDER BY q.question_order""",
             (assessment_id,),
         ).fetchall()
+
+    can_view_detailed = (
+        user["role"] in {"recruiter", "admin"}
+        or bool(
+            row["detailed_results_visible"]
+            if row["detailed_results_visible"] is not None
+            else row["allow_detailed_results"]
+        )
+    )
+
+    topic_stats: dict[str, dict[str, int]] = {}
+    diff_stats: dict[str, dict[str, int]] = {
+        "Easy": {"total": 0, "correct": 0},
+        "Medium": {"total": 0, "correct": 0},
+        "Hard": {"total": 0, "correct": 0},
+    }
+    for q in questions:
+        tech = q["technology"] or row["technology"] or "General"
+        diff = q["difficulty"] or "Medium"
+        if diff not in diff_stats:
+            diff_stats[diff] = {"total": 0, "correct": 0}
+        corr = int(bool(q["is_correct"]))
+        topic_stats.setdefault(tech, {"total": 0, "correct": 0})
+        topic_stats[tech]["total"] += 1
+        topic_stats[tech]["correct"] += corr
+        diff_stats[diff]["total"] += 1
+        diff_stats[diff]["correct"] += corr
+
+    topic_breakdown = [
+        {
+            "technology": tech,
+            "total": stats["total"],
+            "correct": stats["correct"],
+            "percentage": round(stats["correct"] * 100.0 / stats["total"], 1) if stats["total"] else 0.0,
+        }
+        for tech, stats in topic_stats.items()
+    ]
+    difficulty_breakdown = {
+        diff: {
+            "total": stats["total"],
+            "correct": stats["correct"],
+            "percentage": round(stats["correct"] * 100.0 / stats["total"], 1) if stats["total"] else 0.0,
+        }
+        for diff, stats in diff_stats.items()
+    }
+
+    strengths = [item["technology"] for item in topic_breakdown if item["percentage"] >= 70.0]
+    areas_to_improve = [item["technology"] for item in topic_breakdown if item["percentage"] < 70.0]
+
+    recommendations: list[str] = []
+    for weak in areas_to_improve:
+        w_low = weak.lower()
+        if "sql" in w_low:
+            recommendations.append("Practice SQL queries, joins, aggregations, window functions, and GROUP BY / HAVING clauses.")
+        elif "python" in w_low:
+            recommendations.append("Review Python data cleaning, pandas manipulation, list/dict comprehensions, and OOP principles.")
+        elif "react" in w_low or "javascript" in w_low:
+            recommendations.append("Strengthen JavaScript ES6+ features, asynchronous async/await patterns, and React state/lifecycle management.")
+        elif "java" in w_low:
+            recommendations.append("Review Java OOP concepts, collections framework, exception handling, and multithreading basics.")
+        elif "tableau" in w_low or "bi" in w_low:
+            recommendations.append("Practice data visualization principles, calculated fields, dashboard actions, and level-of-detail (LOD) expressions.")
+        else:
+            recommendations.append(f"Focus on core concepts, problem-solving, and hands-on exercises in {weak}.")
+
+    if not recommendations:
+        recommendations.append("Outstanding performance across all evaluated topics! Continue building advanced projects to maintain your edge.")
+
     details = []
     for question in questions:
         options = json.loads(question["options_snapshot"])
+        is_corr = bool(question["is_correct"]) if question["is_correct"] is not None else None
+        hide_details = (user["role"] == "candidate" and not can_view_detailed)
         details.append({
             "order": question["question_order"],
             "question": question["question_snapshot"],
             "options": options,
             "selected_answer": question["selected_answer"],
-            "correct_answer": question["correct_index"],
-            "is_correct": bool(question["is_correct"]) if question["is_correct"] is not None else None,
+            "correct_answer": None if hide_details else question["correct_index"],
+            "is_correct": is_corr,
+            "technology": question["technology"] or row["technology"] or "General",
+            "difficulty": question["difficulty"] or "Medium",
+            "explanation": "" if hide_details else (question["explanation"] or ""),
+            "learning_resource_url": "" if hide_details else (question["learning_resource_url"] or ""),
+            "subtopic": question["subtopic"] or "",
         })
-    return {**dict(row), "questions": details}
+
+    return {
+        **dict(row),
+        "can_view_detailed_answers": can_view_detailed,
+        "strengths": strengths,
+        "areas_to_improve": areas_to_improve,
+        "topic_breakdown": topic_breakdown,
+        "difficulty_breakdown": difficulty_breakdown,
+        "recommendations": recommendations,
+        "questions": details,
+    }
+
+
+@app.get("/api/candidate/analytics")
+def candidate_analytics(user: dict[str, Any] = Depends(require_role("candidate"))) -> dict[str, Any]:
+    with connect() as db:
+        applications = db.execute(
+            """SELECT a.id, a.status, a.match_percentage, a.applied_at, j.title, j.company
+            FROM applications a JOIN jobs j ON j.id = a.job_id
+            WHERE a.candidate_id = ? ORDER BY a.applied_at DESC""",
+            (user["id"],),
+        ).fetchall()
+
+        status_counts: dict[str, int] = {}
+        for app_row in applications:
+            status_counts[app_row["status"]] = status_counts.get(app_row["status"], 0) + 1
+
+        interviews_count = db.execute(
+            """SELECT COUNT(*) FROM interviews i
+            JOIN applications a ON a.id = i.application_id
+            WHERE a.candidate_id = ?""",
+            (user["id"],),
+        ).fetchone()[0]
+
+        completed_assessments = db.execute(
+            """SELECT x.id, x.score, x.total_questions, x.score_percentage, x.result,
+            x.technology, x.submitted_at, j.title
+            FROM assessments x JOIN jobs j ON j.id = x.job_id
+            WHERE x.candidate_id = ? AND x.status = 'Completed'
+            ORDER BY x.submitted_at DESC""",
+            (user["id"],),
+        ).fetchall()
+
+        avg_score = db.execute(
+            """SELECT AVG(score_percentage) FROM assessments
+            WHERE candidate_id = ? AND status = 'Completed'""",
+            (user["id"],),
+        ).fetchone()[0]
+
+        tech_stats: dict[str, list[float]] = {}
+        for ass in completed_assessments:
+            t = ass["technology"] or "General"
+            tech_stats.setdefault(t, []).append(ass["score_percentage"] or 0.0)
+
+        strengths = [t for t, scores in tech_stats.items() if (sum(scores) / len(scores)) >= 70.0]
+        areas_to_improve = [t for t, scores in tech_stats.items() if (sum(scores) / len(scores)) < 70.0]
+
+        return {
+            "total_applications": len(applications),
+            "active_applications": sum(1 for a in applications if a["status"] not in ("Rejected", "Withdrawn", "Accepted", "Selected")),
+            "interviews_scheduled": interviews_count,
+            "assessments_completed": len(completed_assessments),
+            "average_score_percentage": round(avg_score, 1) if avg_score is not None else None,
+            "applications_by_status": status_counts,
+            "strengths": strengths,
+            "areas_to_improve": areas_to_improve,
+            "recent_assessments": [dict(a) for a in completed_assessments[:5]],
+        }
+
+
+@app.get("/api/recruiter/analytics")
+def recruiter_analytics(
+    report_range: str = "this_week",
+    start_date: str | None = None,
+    end_date: str | None = None,
+    user: dict[str, Any] = Depends(require_role("recruiter", "admin")),
+) -> dict[str, Any]:
+    today = datetime.now(timezone.utc).date()
+    monday = today - timedelta(days=today.weekday())
+    if report_range == "this_week":
+        start, end = monday, monday + timedelta(days=7)
+    elif report_range == "last_week":
+        start, end = monday - timedelta(days=7), monday
+    elif report_range == "this_month":
+        start = today.replace(day=1)
+        next_month = (start + timedelta(days=32)).replace(day=1)
+        end = next_month
+    elif report_range == "last_month":
+        this_month_start = today.replace(day=1)
+        end = this_month_start
+        start = (this_month_start - timedelta(days=1)).replace(day=1)
+    elif report_range == "all":
+        start = date(2020, 1, 1)
+        end = today + timedelta(days=1)
+    elif report_range == "custom":
+        try:
+            start = date.fromisoformat(start_date or "")
+            end = date.fromisoformat(end_date or "") + timedelta(days=1)
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail="Custom reports need valid start_date and end_date values") from error
+        if end <= start:
+            raise HTTPException(status_code=422, detail="end_date must be on or after start_date")
+    else:
+        raise HTTPException(status_code=422, detail="Choose this_week, last_week, this_month, last_month, all, or custom")
+
+    range_start = datetime.combine(start, datetime.min.time(), timezone.utc).isoformat()
+    range_end = datetime.combine(end, datetime.min.time(), timezone.utc).isoformat()
+
+    with connect() as db:
+        job_condition = "1=1" if user["role"] == "admin" else "j.recruiter_id = ?"
+        job_params = () if user["role"] == "admin" else (user["id"],)
+
+        jobs = db.execute(
+            f"SELECT id, title, company, status, assessment_question_count, allow_detailed_results, skills_json FROM jobs j WHERE {job_condition}",
+            job_params,
+        ).fetchall()
+        job_ids = [j["id"] for j in jobs]
+
+        if not job_ids:
+            return {
+                "range": report_range,
+                "start_date": start.isoformat(),
+                "end_date": (end - timedelta(days=1)).isoformat(),
+                "summary": {"total_jobs": 0, "total_applications": 0, "assessments_completed": 0, "interviews_scheduled": 0, "accepted": 0},
+                "conversion_funnel": [],
+                "jobs_breakdown": [],
+                "top_skills": [],
+                "question_bank_readiness": {"ready_jobs": 0, "incomplete_jobs": 0},
+            }
+
+        placeholders = ",".join("?" for _ in job_ids)
+
+        apps = db.execute(
+            f"""SELECT a.id, a.job_id, a.status, a.match_percentage, a.applied_at
+            FROM applications a WHERE a.job_id IN ({placeholders})
+            AND a.applied_at >= ? AND a.applied_at < ?""",
+            (*job_ids, range_start, range_end),
+        ).fetchall()
+
+        all_apps = db.execute(
+            f"""SELECT a.id, a.job_id, a.status, a.match_percentage
+            FROM applications a WHERE a.job_id IN ({placeholders})""",
+            tuple(job_ids),
+        ).fetchall()
+
+        funnel_stages = [
+            ("Applied", lambda s: True),
+            ("Under Review", lambda s: s not in ("Applied",)),
+            ("Shortlisted", lambda s: s in ("Shortlisted", "Assessment Sent", "Assessment Started", "Assessment Completed", "Round 1 Passed", "Round 1 Failed", "Interview", "Accepted", "Selected")),
+            ("Assessment Completed", lambda s: s in ("Assessment Completed", "Round 1 Passed", "Round 1 Failed", "Interview", "Accepted", "Selected")),
+            ("Round 1 Passed", lambda s: s in ("Round 1 Passed", "Interview", "Accepted", "Selected")),
+            ("Interview", lambda s: s in ("Interview", "Accepted", "Selected")),
+            ("Accepted", lambda s: s in ("Accepted", "Selected")),
+        ]
+        total_applied = len(all_apps)
+        funnel = []
+        for stage_name, matcher in funnel_stages:
+            count = sum(1 for a in all_apps if matcher(a["status"]))
+            pct = round((count / total_applied * 100), 1) if total_applied > 0 else 0.0
+            funnel.append({"stage": stage_name, "count": count, "conversion_rate": pct})
+
+        assessments = db.execute(
+            f"""SELECT x.id, x.job_id, x.status, x.result, x.score_percentage
+            FROM assessments x WHERE x.job_id IN ({placeholders})""",
+            tuple(job_ids),
+        ).fetchall()
+
+        interviews_count = db.execute(
+            f"""SELECT COUNT(*) FROM interviews i
+            JOIN applications a ON a.id = i.application_id
+            WHERE a.job_id IN ({placeholders})""",
+            tuple(job_ids),
+        ).fetchone()[0]
+
+        ready_count = 0
+        incomplete_count = 0
+        jobs_breakdown = []
+        for j in jobs:
+            s = job_question_summary(db, j["id"])
+            if s["ready"]:
+                ready_count += 1
+            else:
+                incomplete_count += 1
+            job_apps = [a for a in all_apps if a["job_id"] == j["id"]]
+            job_ass = [x for x in assessments if x["job_id"] == j["id"] and x["status"] == "Completed"]
+            job_passed = sum(1 for x in job_ass if x["result"] == "Passed")
+            avg_s = round(sum(x["score_percentage"] or 0.0 for x in job_ass) / len(job_ass), 1) if job_ass else None
+            jobs_breakdown.append({
+                "job_id": j["id"],
+                "title": j["title"],
+                "company": j["company"],
+                "status": j["status"],
+                "assessment_question_count": j["assessment_question_count"],
+                "allow_detailed_results": bool(j["allow_detailed_results"]),
+                "applicant_count": len(job_apps),
+                "assessment_completed_count": len(job_ass),
+                "assessment_pass_rate": round(job_passed / len(job_ass) * 100, 1) if job_ass else None,
+                "average_score": avg_s,
+                "question_bank_ready": s["ready"],
+                "additional_questions_needed": s["additional_needed"],
+            })
+
+        all_skills: dict[str, int] = {}
+        for j in jobs:
+            try:
+                for sk in json.loads(j["skills_json"] or "[]"):
+                    all_skills[sk] = all_skills.get(sk, 0) + 1
+            except Exception:
+                pass
+        top_skills = [{"skill": k, "count": v} for k, v in sorted(all_skills.items(), key=lambda x: x[1], reverse=True)[:8]]
+
+        return {
+            "range": report_range,
+            "start_date": start.isoformat(),
+            "end_date": (end - timedelta(days=1)).isoformat(),
+            "summary": {
+                "total_jobs": len(jobs),
+                "total_applications": len(all_apps),
+                "applications_in_period": len(apps),
+                "assessments_completed": sum(1 for x in assessments if x["status"] == "Completed"),
+                "interviews_scheduled": interviews_count,
+                "accepted": sum(1 for a in all_apps if a["status"] in ("Accepted", "Selected")),
+            },
+            "conversion_funnel": funnel,
+            "jobs_breakdown": jobs_breakdown,
+            "top_skills": top_skills,
+            "question_bank_readiness": {
+                "ready_jobs": ready_count,
+                "incomplete_jobs": incomplete_count,
+            },
+        }
 
 
 @app.get("/api/assessment-reviews/{assessment_id}/proctoring")
@@ -4565,6 +4988,14 @@ def analytics(
         start, end = monday, monday + timedelta(days=7)
     elif report_range == "last_week":
         start, end = monday - timedelta(days=7), monday
+    elif report_range == "this_month":
+        start = today.replace(day=1)
+        next_month = (start + timedelta(days=32)).replace(day=1)
+        end = next_month
+    elif report_range == "last_month":
+        this_month_start = today.replace(day=1)
+        end = this_month_start
+        start = (this_month_start - timedelta(days=1)).replace(day=1)
     elif report_range == "custom":
         try:
             start = date.fromisoformat(start_date or "")
@@ -4574,7 +5005,7 @@ def analytics(
         if end <= start:
             raise HTTPException(status_code=422, detail="end_date must be on or after start_date")
     else:
-        raise HTTPException(status_code=422, detail="Choose this_week, last_week, or custom")
+        raise HTTPException(status_code=422, detail="Choose this_week, last_week, this_month, last_month, or custom")
 
     range_start = datetime.combine(start, datetime.min.time(), timezone.utc).isoformat()
     range_end = datetime.combine(end, datetime.min.time(), timezone.utc).isoformat()
@@ -4682,6 +5113,35 @@ def analytics(
             GROUP BY technology ORDER BY assessments DESC, technology LIMIT 5""",
             (range_start, range_end),
         )]
+        weak_tech_rows = db.execute(
+            """SELECT technology, COUNT(*) AS failed_count
+            FROM assessments WHERE submitted_at >= ? AND submitted_at < ?
+            AND result = 'Failed' AND technology IS NOT NULL
+            GROUP BY technology ORDER BY failed_count DESC LIMIT 5""",
+            (range_start, range_end),
+        ).fetchall()
+        weak_technologies = [{"technology": r["technology"], "failed_count": r["failed_count"]} for r in weak_tech_rows]
+
+        all_platform_apps = db.execute("SELECT status FROM applications").fetchall()
+        total_all_applied = len(all_platform_apps)
+        funnel_stages = [
+            ("Applied", lambda s: True),
+            ("Under Review", lambda s: s not in ("Applied",)),
+            ("Shortlisted", lambda s: s in ("Shortlisted", "Assessment Sent", "Assessment Started", "Assessment Completed", "Round 1 Passed", "Round 1 Failed", "Interview", "Accepted", "Selected")),
+            ("Assessment Completed", lambda s: s in ("Assessment Completed", "Round 1 Passed", "Round 1 Failed", "Interview", "Accepted", "Selected")),
+            ("Round 1 Passed", lambda s: s in ("Round 1 Passed", "Interview", "Accepted", "Selected")),
+            ("Interview", lambda s: s in ("Interview", "Accepted", "Selected")),
+            ("Accepted", lambda s: s in ("Accepted", "Selected")),
+        ]
+        conversion_funnel = [
+            {
+                "stage": stage_name,
+                "count": sum(1 for a in all_platform_apps if matcher(a["status"])),
+                "conversion_rate": round(sum(1 for a in all_platform_apps if matcher(a["status"])) / total_all_applied * 100, 1) if total_all_applied else 0.0,
+            }
+            for stage_name, matcher in funnel_stages
+        ]
+
         counts["weekly"] = {
             "range": report_range,
             "start_date": start.isoformat(),
@@ -4712,6 +5172,8 @@ def analytics(
             "daily_trend": daily_trend,
             "top_jobs": top_jobs,
             "top_technologies": top_technologies,
+            "weak_technologies": weak_technologies,
+            "conversion_funnel": conversion_funnel,
         }
         counts["users_list"] = [dict(row) for row in db.execute("SELECT id, name, email, role, active, created_at FROM users ORDER BY created_at DESC LIMIT 100")]
         counts["recent_applications"] = [dict(row) for row in db.execute(

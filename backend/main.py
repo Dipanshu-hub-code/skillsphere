@@ -130,6 +130,24 @@ app.add_middleware(
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
+
+@app.middleware("http")
+async def request_logging_middleware(request: Request, call_next: Any) -> Any:
+    start_time = time.time()
+    try:
+        response = await call_next(request)
+        duration = time.time() - start_time
+        response.headers["X-Process-Time"] = f"{duration:.4f}"
+        return response
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Unhandled error on %s %s: %s", request.method, request.url.path, exc)
+        return JSONResponse(
+            status_code=500,
+            content={"detail": "An internal server error occurred. Please try again later."},
+        )
+
 if not IS_PRODUCTION:
     logger.warning(
         "Running in DEVELOPMENT mode. "
@@ -322,7 +340,10 @@ def decode_token(token: str) -> dict[str, Any]:
 def public_user(row: sqlite3.Row) -> dict[str, Any]:
     user = dict(row)
     user.pop("password_hash", None)
-    user["profile"] = json.loads(user.pop("profile_json") or "{}")
+    try:
+        user["profile"] = json.loads(user.pop("profile_json") or "{}")
+    except (json.JSONDecodeError, KeyError, TypeError):
+        user["profile"] = {}
     return user
 
 
@@ -1038,7 +1059,10 @@ def initialize_database() -> None:
 
 def public_job(row: sqlite3.Row) -> dict[str, Any]:
     job = dict(row)
-    job["skills"] = json.loads(job.pop("skills_json"))
+    try:
+        job["skills"] = json.loads(job.pop("skills_json", "[]") or "[]")
+    except (json.JSONDecodeError, KeyError, TypeError):
+        job["skills"] = []
     return job
 
 
@@ -1046,7 +1070,10 @@ def public_resume(row: sqlite3.Row) -> dict[str, Any]:
     resume = dict(row)
     resume.pop("storage_path", None)
     resume.pop("extracted_text", None)
-    resume["parsed_profile"] = json.loads(resume.pop("parsed_profile_json") or "{}")
+    try:
+        resume["parsed_profile"] = json.loads(resume.pop("parsed_profile_json", "{}") or "{}")
+    except (json.JSONDecodeError, KeyError, TypeError):
+        resume["parsed_profile"] = {}
     return resume
 
 
@@ -1110,9 +1137,18 @@ def calculate_match(
     resume: sqlite3.Row | dict[str, Any],
     saved_profile_json: str,
 ) -> dict[str, Any]:
-    required = json.loads(job["skills_json"])
-    resume_profile = json.loads(resume["parsed_profile_json"] or "{}")
-    saved_profile = json.loads(saved_profile_json or "{}")
+    try:
+        required = json.loads(job["skills_json"]) if job["skills_json"] else []
+    except (json.JSONDecodeError, TypeError):
+        required = []
+    try:
+        resume_profile = json.loads(resume["parsed_profile_json"] or "{}")
+    except (json.JSONDecodeError, TypeError):
+        resume_profile = {}
+    try:
+        saved_profile = json.loads(saved_profile_json or "{}")
+    except (json.JSONDecodeError, TypeError):
+        saved_profile = {}
     extracted_skills = resume_profile.get("skills", [])
     saved_skills = saved_profile.get("skills", [])
     if not isinstance(extracted_skills, list) or not all(isinstance(skill, str) for skill in extracted_skills):
@@ -1386,15 +1422,19 @@ def extract_resume_text(content: bytes, content_type: str) -> str:
         text = "\n".join(page.extract_text() or "" for page in reader.pages).strip()
         if text:
             return text
-        import pypdfium2 as pdfium
-        import pytesseract
+        try:
+            import pypdfium2 as pdfium
+            import pytesseract
 
-        document = pdfium.PdfDocument(content)
-        pages = []
-        for index in range(len(document)):
-            image = document[index].render(scale=1.5).to_pil()
-            pages.append(pytesseract.image_to_string(image))
-        return "\n".join(pages).strip()
+            document = pdfium.PdfDocument(content)
+            pages = []
+            for index in range(len(document)):
+                image = document[index].render(scale=1.5).to_pil()
+                pages.append(pytesseract.image_to_string(image))
+            return "\n".join(pages).strip()
+        except Exception as ocr_error:
+            logger.warning("Scanned PDF OCR could not be performed: %s", ocr_error)
+            return ""
     from PIL import Image
     import io
     import pytesseract
@@ -1405,7 +1445,11 @@ def extract_resume_text(content: bytes, content_type: str) -> str:
         image = Image.open(io.BytesIO(content)).convert("RGB")
     except Exception as error:
         raise HTTPException(status_code=422, detail="This image is unreadable or corrupted. Please check the file and try again.") from error
-    return pytesseract.image_to_string(image).strip()
+    try:
+        return pytesseract.image_to_string(image).strip()
+    except Exception as ocr_error:
+        logger.warning("Image OCR could not be performed: %s", ocr_error)
+        return ""
 
 
 @app.on_event("startup")

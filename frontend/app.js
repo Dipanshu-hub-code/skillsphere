@@ -1057,8 +1057,6 @@ function candidateDashboard() {
     <section class="card" style="margin-top:16px">
       <div class="card-heading"><div><h2>Technical assessments <span class="badge">${assessments.length}</span></h2><p>Assigned evaluations and status</p></div><button class="text-button" data-page="Assessments">View all →</button></div>
       ${candidateAssessmentsListHtml(assessments)}
-    </section>`;
-}
     </section>
     <section class="card upcoming-interview-card" style="margin-top:16px"><div class="card-heading"><div><h2>Upcoming interviews</h2><p>Your next conversation, all in one place</p></div><button class="text-button" data-page="Interviews">View all →</button></div>
       ${upcomingInterview ? `<article class="upcoming-interview"><span class="eyebrow">${esc(upcomingInterview.company)}</span><h3>${esc(upcomingInterview.title)}</h3><p>${esc(candidateInterviewTime(upcomingInterview))} · ${esc(upcomingInterview.duration_minutes)} minutes</p><div class="interview-actions">${/^https:\/\//i.test(upcomingInterview.meeting_url || "") ? `<a class="btn btn-primary btn-small join-interview" href="${esc(upcomingInterview.meeting_url)}" target="_blank" rel="noopener noreferrer">Join Interview ↗</a>` : `<span class="stat-note">The recruiter has not added a meeting link yet.</span>`}<button class="text-button" data-action="view-interview" data-id="${esc(upcomingInterview.id)}">View Interview Details</button></div></article>` : empty("No upcoming interviews", "When a recruiter schedules an interview, it will appear here.", "◷")}

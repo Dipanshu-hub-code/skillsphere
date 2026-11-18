@@ -1300,11 +1300,11 @@ function profilePage() {
           <div class="span-2"><button class="btn btn-primary" type="submit">Save changes</button></div>
         </form>
       </section>
-      <aside class="card"><div class="card-heading"><div><h2>Your resume</h2><p>PDF or image, up to 10 MB</p></div></div>
+      <aside class="card"><div class="card-heading"><div><h2>Your resume</h2><p>PDF, Word, or image, up to 10 MB</p></div></div>
         <form id="resume-form" class="resume-panel">
-          <label class="upload-drop" for="resume-file"><span class="upload-mark">↑</span><strong>${resume ? esc(resume.filename) : "Upload your resume"}</strong><p>${resume ? `Last updated ${dateLabel(resume.uploaded_at)}` : "PDF, JPG, JPEG, or PNG · Max 10 MB"}</p><span class="btn btn-quiet btn-small">Choose a file</span><input id="resume-file" name="file" type="file" accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png" hidden /></label>
+          <label class="upload-drop" for="resume-file"><span class="upload-mark">↑</span><strong>${resume ? esc(resume.filename) : "Upload your resume"}</strong><p>${resume ? `Last updated ${dateLabel(resume.uploaded_at)}` : "PDF, DOCX, TXT, JPG, or PNG · Max 10 MB"}</p><span class="btn btn-quiet btn-small">Choose a file</span><input id="resume-file" name="file" type="file" accept=".pdf,.docx,.txt,.jpg,.jpeg,.png,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain,image/jpeg,image/png" hidden /></label>
         </form>
-        ${resume ? `<div style="margin-top:16px"><span class="badge ${resume.processing_status === "completed" ? "badge-green" : "badge-amber"}">${esc(resume.processing_status)}</span>${resume.processing_error ? `<p style="margin:9px 0 0;color:#a33d40;font-size:10px">${esc(resume.processing_error)}</p>` : ""}</div>
+        ${resume ? `<div style="margin-top:16px"><span class="badge ${resume.processing_status === "completed" ? "badge-green" : "badge-amber"}">${esc(resume.processing_status)}</span>${resume.processing_error ? `<p style="margin:9px 0 0;color:#a33d40;font-size:11px;line-height:1.4">${esc(resume.processing_error)}</p>` : ""}</div>
         <div style="margin-top:15px"><div class="card-heading"><div><h2 style="font-size:12px">Extracted details</h2></div></div>
           <div class="match-score"><div><strong>Name</strong><p>${esc(parsed.name || "Not provided")}</p></div></div>
           <div class="match-score"><div><strong>Email</strong><p>${esc(parsed.email || "Not provided")}</p></div></div>
@@ -2838,7 +2838,11 @@ async function uploadResume(file) {
     state.page = "My profile";
     await loadWorkspace();
     renderWorkspace();
-    showToast(result.processing_error || "Resume analyzed and profile updated!");
+    if (result.processing_error) {
+      showToast(result.processing_error, true);
+    } else {
+      showToast("Resume analyzed and profile updated!");
+    }
   } catch (error) { showToast(error.message, true); }
 }
 

@@ -1588,14 +1588,27 @@ def detect_profile(text: str) -> dict[str, Any]:
 
     # Location Detection: scan for common location patterns
     location = ""
-    loc_match = re.search(
-        r"\b([A-Z][a-zA-Z\s]{2,20},\s*(?:[A-Z]{2}|[A-Z][a-zA-Z]{2,15}))\b",
-        text
+    loc_explicit_match = re.search(
+        r"(?:location|address|city|residing\s+in)[\s:\-]+([A-Z][a-zA-Z\s]{2,25},\s*(?:[A-Z]{2}|[A-Z][a-zA-Z]{2,20}))\b",
+        text,
+        re.I
     )
-    if loc_match:
-        cand_loc = loc_match.group(1).strip()
+    if loc_explicit_match:
+        cand_loc = loc_explicit_match.group(1).strip()
         if not noise_header.search(cand_loc) and len(cand_loc.split()) <= 4:
             location = cand_loc
+    if not location:
+        generic_loc_match = re.search(
+            r"\b([A-Z][a-zA-Z\s]{2,20},\s*(?:[A-Z]{2}|[A-Z][a-zA-Z]{2,15}))\b",
+            text
+        )
+        if generic_loc_match:
+            cand_loc = generic_loc_match.group(1).strip()
+            cand_lower = cand_loc.lower()
+            # Ensure it is not matching tech skills like "Python, React" or section headers
+            tech_noise = ("python", "react", "sql", "java", "fastapi", "docker", "developer", "engineer", "analyst")
+            if not noise_header.search(cand_loc) and not any(k in cand_lower for k in tech_noise) and len(cand_loc.split()) <= 4:
+                location = cand_loc
 
     # Summary Detection: scan text for introductory overview
     summary = ""
@@ -1976,36 +1989,121 @@ def assessment_for_match(
         )
 
 
+def extract_docx_text(content: bytes) -> str:
+    import zipfile
+    import xml.etree.ElementTree as ET
+    try:
+        with zipfile.ZipFile(io.BytesIO(content)) as docx:
+            xml_content = docx.read("word/document.xml")
+            root = ET.fromstring(xml_content)
+            namespaces = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+            paragraphs = []
+            for p in root.findall(".//w:p", namespaces):
+                p_text = "".join(node.text for node in p.findall(".//w:t", namespaces) if node.text)
+                if p_text.strip():
+                    paragraphs.append(p_text.strip())
+            if paragraphs:
+                return "\n".join(paragraphs).strip()
+            all_text = " ".join(node.text for node in root.findall(".//w:t", namespaces) if node.text)
+            return all_text.strip()
+    except Exception as e:
+        logger.warning("DOCX text extraction failed: %s", e)
+        return ""
+
+
+def extract_pdf_stream_text(content: bytes) -> str:
+    import zlib
+    import re
+    extracted_parts: list[str] = []
+    # Find all stream ... endstream blocks in PDF
+    for m in re.finditer(b"stream\r?\n(.*?)\r?\nendstream", content, re.DOTALL):
+        raw_stream = m.group(1)
+        decompressed = None
+        for wbits in (zlib.MAX_WBITS, -zlib.MAX_WBITS, 32 + zlib.MAX_WBITS):
+            try:
+                decompressed = zlib.decompress(raw_stream, wbits)
+                break
+            except Exception:
+                continue
+        if decompressed is None:
+            decompressed = raw_stream
+        if decompressed:
+            # Look for Tj PDF text operator: (Text) Tj
+            for tj in re.finditer(rb"\(([^)]+)\)\s*Tj", decompressed):
+                try:
+                    s = tj.group(1).decode("latin-1", errors="ignore")
+                    if s.strip():
+                        extracted_parts.append(s.strip())
+                except Exception:
+                    pass
+            # Look for TJ PDF text operator: [(Text) 120 (More)] TJ
+            for tj_arr in re.finditer(rb"\[([^\]]+)\]\s*TJ", decompressed):
+                for sub in re.finditer(rb"\(([^)]+)\)", tj_arr.group(1)):
+                    try:
+                        s = sub.group(1).decode("latin-1", errors="ignore")
+                        if s.strip():
+                            extracted_parts.append(s.strip())
+                    except Exception:
+                        pass
+    raw_text = " ".join(extracted_parts).strip()
+    if len(raw_text) >= 25 and re.search(r"[a-zA-Z]{3,}", raw_text):
+        return raw_text
+    return ""
+
+
 def extract_text_via_gemini_vision(content: bytes, mime_type: str) -> str:
     gemini_key = os.environ.get("GEMINI_API_KEY")
     if not gemini_key:
         return ""
     import base64
-    b64 = base64.b64encode(content).decode("utf-8")
-    target_mime = mime_type if mime_type in {"application/pdf", "image/jpeg", "image/png"} else "application/pdf"
-    for model in ["gemini-1.5-flash", "gemini-2.5-flash", "gemini-2.0-flash"]:
+    import io
+
+    images_to_send: list[tuple[str, str]] = []
+    if mime_type == "application/pdf":
+        try:
+            import pypdfium2 as pdfium
+            doc = pdfium.PdfDocument(content)
+            # Render first 1-3 pages to JPEG for optimal multimodal OCR
+            for i in range(min(len(doc), 3)):
+                pil_img = doc[i].render(scale=1.5).to_pil()
+                buf = io.BytesIO()
+                pil_img.save(buf, format="JPEG", quality=85)
+                images_to_send.append(("image/jpeg", base64.b64encode(buf.getvalue()).decode("utf-8")))
+        except Exception as e:
+            logger.warning("Rendering PDF pages to JPEG for Gemini Vision failed: %s", e)
+            images_to_send.append(("application/pdf", base64.b64encode(content).decode("utf-8")))
+    elif mime_type in {"image/jpeg", "image/png"}:
+        images_to_send.append((mime_type, base64.b64encode(content).decode("utf-8")))
+    else:
+        return ""
+
+    for model in ["gemini-2.0-flash", "gemini-1.5-flash"]:
         try:
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={gemini_key}"
-            payload = {
-                "contents": [
-                    {
-                        "role": "user",
-                        "parts": [
-                            {"text": "Transcribe and extract all resume text from this document accurately, including contact information, education, work experience, and skills. Return ONLY the extracted plain text without markdown or commentary."},
-                            {"inline_data": {"mime_type": target_mime, "data": b64}}
-                        ]
+            parts: list[dict[str, Any]] = [
+                {"text": "Transcribe and extract all resume text from this document accurately, including contact information, education, work experience, and technical/professional skills. Return ONLY the extracted plain text without commentary."}
+            ]
+            for img_mime, img_b64 in images_to_send:
+                parts.append({
+                    "inlineData": {
+                        "mimeType": img_mime,
+                        "data": img_b64
                     }
-                ],
+                })
+            payload = {
+                "contents": [{"role": "user", "parts": parts}],
                 "generationConfig": {"temperature": 0.1}
             }
-            with httpx.Client(timeout=25.0) as client:
+            with httpx.Client(timeout=30.0) as client:
                 res = client.post(url, json=payload)
                 if res.status_code == 200:
                     data = res.json()
-                    parts = data.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])
-                    raw_text = parts[0].get("text", "").strip()
+                    parts_out = data.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])
+                    raw_text = parts_out[0].get("text", "").strip()
                     if raw_text and len(raw_text) >= 10:
                         return raw_text
+                else:
+                    logger.warning("Gemini Vision HTTP %s: %s", res.status_code, res.text[:200])
         except Exception as e:
             logger.warning("Gemini Vision resume extraction failed with %s: %s", model, e)
     return ""
@@ -2018,6 +2116,12 @@ def extract_resume_text(content: bytes, content_type: str) -> str:
         except Exception:
             return ""
 
+    if content_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+        docx_text = extract_docx_text(content)
+        if docx_text and len(docx_text) >= 10:
+            return docx_text
+        return ""
+
     if content_type == "application/pdf":
         from pypdf import PdfReader
         import io
@@ -2028,7 +2132,28 @@ def extract_resume_text(content: bytes, content_type: str) -> str:
             reader = PdfReader(io.BytesIO(content))
             if len(reader.pages) > 40:
                 raise HTTPException(status_code=422, detail="This PDF has too many pages. Please upload a document with 40 pages or fewer.")
-            pypdf_text = "\n".join(page.extract_text() or "" for page in reader.pages).strip()
+
+            # Try layout mode first for multi-column resumes, then standard
+            pages_text = []
+            for page in reader.pages:
+                try:
+                    pt = page.extract_text(extraction_mode="layout") or page.extract_text() or ""
+                except Exception:
+                    pt = page.extract_text() or ""
+                if pt.strip():
+                    pages_text.append(pt.strip())
+
+            # Also extract interactive form fields if present
+            if hasattr(reader, "get_form_text_fields"):
+                try:
+                    form_fields = reader.get_form_text_fields()
+                    if form_fields:
+                        for k, v in form_fields.items():
+                            if v and str(v).strip():
+                                pages_text.append(f"{k}: {v}")
+                except Exception:
+                    pass
+            pypdf_text = "\n\n".join(pages_text).strip()
         except HTTPException:
             raise
         except Exception as error:
@@ -2044,7 +2169,8 @@ def extract_resume_text(content: bytes, content_type: str) -> str:
                 try:
                     page = document[index]
                     textpage = page.get_textpage()
-                    pt = textpage.get_text_range()
+                    # count=-1 extracts all characters on the page
+                    pt = textpage.get_text_range(0, -1) or textpage.get_text_range()
                     if pt and pt.strip():
                         pdfium_pages.append(pt.strip())
                 except Exception:
@@ -2058,14 +2184,24 @@ def extract_resume_text(content: bytes, content_type: str) -> str:
         if best_offline_text and len(best_offline_text) >= 15:
             return best_offline_text
 
-        # Stage 3: Try local Tesseract OCR (if installed)
+        # Stage 3: Low-level PDF stream decompression (100% offline pure Python)
+        stream_text = extract_pdf_stream_text(content)
+        if stream_text and len(stream_text) >= 25:
+            return stream_text
+
+        # Stage 4: Try Gemini Vision OCR (multimodal AI cloud OCR)
+        gemini_text = extract_text_via_gemini_vision(content, "application/pdf")
+        if gemini_text and len(gemini_text) >= 15:
+            return gemini_text
+
+        # Stage 5: Try local Tesseract OCR (if installed)
         try:
             import pypdfium2 as pdfium
             import pytesseract
 
             document = pdfium.PdfDocument(content)
             pages = []
-            for index in range(min(len(document), 10)):
+            for index in range(min(len(document), 5)):
                 image = document[index].render(scale=1.5).to_pil()
                 page_ocr = pytesseract.image_to_string(image).strip()
                 if page_ocr:
@@ -2076,11 +2212,6 @@ def extract_resume_text(content: bytes, content_type: str) -> str:
         except Exception as ocr_error:
             logger.warning("Scanned PDF local OCR could not be performed: %s", ocr_error)
 
-        # Stage 4: Try Gemini Vision OCR (if GEMINI_API_KEY is configured)
-        gemini_text = extract_text_via_gemini_vision(content, "application/pdf")
-        if gemini_text:
-            return gemini_text
-
         return ""
 
     if content_type in {"image/jpeg", "image/png"}:
@@ -2090,23 +2221,23 @@ def extract_resume_text(content: bytes, content_type: str) -> str:
         try:
             image = Image.open(io.BytesIO(content))
             image.verify()
-            image = Image.open(io.BytesIO(content)).convert("RGB")
         except Exception as error:
             raise HTTPException(status_code=422, detail="This image is unreadable or corrupted. Please check the file and try again.") from error
 
-        # Stage 1: Try local Tesseract OCR
+        # Stage 1: Try Gemini Vision OCR (cloud multimodal AI)
+        gemini_text = extract_text_via_gemini_vision(content, content_type)
+        if gemini_text and len(gemini_text) >= 15:
+            return gemini_text
+
+        # Stage 2: Try local Tesseract OCR (if installed)
         try:
             import pytesseract
+            image = Image.open(io.BytesIO(content)).convert("RGB")
             ocr_res = pytesseract.image_to_string(image).strip()
             if ocr_res and len(ocr_res) >= 15:
                 return ocr_res
         except Exception as ocr_error:
             logger.warning("Image local OCR could not be performed: %s", ocr_error)
-
-        # Stage 2: Try Gemini Vision OCR
-        gemini_text = extract_text_via_gemini_vision(content, content_type)
-        if gemini_text:
-            return gemini_text
 
         return ""
 
@@ -2502,7 +2633,7 @@ def extract_question_bank_pdf_text(content: bytes) -> str:
 def call_llm_json(prompt: str, system: str = "") -> dict[str, Any] | None:
     gemini_key = os.environ.get("GEMINI_API_KEY")
     if gemini_key:
-        for model in ["gemini-1.5-flash", "gemini-2.5-flash", "gemini-2.0-flash"]:
+        for model in ["gemini-2.0-flash", "gemini-1.5-flash"]:
             try:
                 url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={gemini_key}"
                 payload = {
@@ -7088,12 +7219,21 @@ async def upload_resume(
         raise HTTPException(status_code=413, detail="Resume must be 10 MB or smaller")
     name = Path(file.filename or "resume").name
     suffix = Path(name).suffix.lower()
-    mime_by_suffix = {".pdf": "application/pdf", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png"}
+    mime_by_suffix = {
+        ".pdf": "application/pdf",
+        ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        ".txt": "text/plain",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".png": "image/png",
+    }
     expected_type = mime_by_suffix.get(suffix)
     if not expected_type:
-        raise HTTPException(status_code=415, detail="Use a PDF, JPG, JPEG, or PNG resume")
+        raise HTTPException(status_code=415, detail="Use a PDF, DOCX, TXT, JPG, JPEG, or PNG resume")
     if expected_type == "application/pdf" and b"%PDF-" not in content[:1024]:
         raise HTTPException(status_code=415, detail="This file does not contain a valid PDF")
+    if expected_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document" and not content.startswith(b"PK\x03\x04"):
+        raise HTTPException(status_code=415, detail="This file does not contain a valid DOCX document")
     if expected_type == "image/jpeg" and not content.startswith(b"\xff\xd8\xff"):
         raise HTTPException(status_code=415, detail="This file does not contain a valid JPEG image")
     if expected_type == "image/png" and not content.startswith(b"\x89PNG\r\n\x1a\n"):
@@ -7105,20 +7245,29 @@ async def upload_resume(
         text = await run_in_threadpool(extract_resume_text, content, expected_type)
         if not text:
             status = "needs_review"
-            processing_error = "No readable text was found. Try a clearer, text-based PDF or image."
+            if not os.environ.get("GEMINI_API_KEY") and expected_type in {"image/jpeg", "image/png"}:
+                processing_error = "This image could not be read because OCR is not enabled. Please upload a PDF or Word (.docx) document, or configure GEMINI_API_KEY in Render."
+            elif not os.environ.get("GEMINI_API_KEY"):
+                processing_error = "No readable text found in this file. Please upload a standard text-based PDF or Word (.docx) document, or configure GEMINI_API_KEY for image OCR."
+            else:
+                processing_error = "No readable text was found. Try a clearer, text-based PDF or Word document."
     except HTTPException:
         raise
     except Exception as error:
         text = ""
         status = "needs_review"
         if error.__class__.__name__ == "TesseractNotFoundError":
-            processing_error = "Resume uploaded, but OCR is unavailable. Install Tesseract OCR and try again."
+            processing_error = "Resume uploaded, but OCR is unavailable. Upload a text-based PDF or Word document."
         elif expected_type == "application/pdf":
-            processing_error = f"Resume uploaded, but text could not be extracted: {error.__class__.__name__}. Try a text-based PDF."
+            processing_error = f"Resume uploaded, but text could not be extracted: {error.__class__.__name__}. Try a text-based PDF or Word document."
         else:
-            processing_error = f"Resume uploaded, but text could not be extracted: {error.__class__.__name__}. Try a clearer image."
+            processing_error = f"Resume uploaded, but text could not be extracted: {error.__class__.__name__}. Try a clearer file or Word document."
     storage_path.write_bytes(content)
     profile = detect_profile(text)
+    if not profile.get("name") and user.get("name"):
+        profile["name"] = user["name"]
+    if not profile.get("email") and user.get("email"):
+        profile["email"] = user["email"]
     try:
         with connect() as db:
             old = db.execute("SELECT storage_path FROM resumes WHERE candidate_id = ?", (user["id"],)).fetchone()

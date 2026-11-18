@@ -1703,48 +1703,138 @@ def assessment_for_match(
         )
 
 
+def extract_text_via_gemini_vision(content: bytes, mime_type: str) -> str:
+    gemini_key = os.environ.get("GEMINI_API_KEY")
+    if not gemini_key:
+        return ""
+    import base64
+    b64 = base64.b64encode(content).decode("utf-8")
+    target_mime = mime_type if mime_type in {"application/pdf", "image/jpeg", "image/png"} else "application/pdf"
+    for model in ["gemini-1.5-flash", "gemini-2.5-flash", "gemini-2.0-flash"]:
+        try:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={gemini_key}"
+            payload = {
+                "contents": [
+                    {
+                        "role": "user",
+                        "parts": [
+                            {"text": "Transcribe and extract all resume text from this document accurately, including contact information, education, work experience, and skills. Return ONLY the extracted plain text without markdown or commentary."},
+                            {"inline_data": {"mime_type": target_mime, "data": b64}}
+                        ]
+                    }
+                ],
+                "generationConfig": {"temperature": 0.1}
+            }
+            with httpx.Client(timeout=25.0) as client:
+                res = client.post(url, json=payload)
+                if res.status_code == 200:
+                    data = res.json()
+                    parts = data.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])
+                    raw_text = parts[0].get("text", "").strip()
+                    if raw_text and len(raw_text) >= 10:
+                        return raw_text
+        except Exception as e:
+            logger.warning("Gemini Vision resume extraction failed with %s: %s", model, e)
+    return ""
+
+
 def extract_resume_text(content: bytes, content_type: str) -> str:
+    if content_type == "text/plain":
+        try:
+            return content.decode("utf-8", errors="ignore").strip()
+        except Exception:
+            return ""
+
     if content_type == "application/pdf":
         from pypdf import PdfReader
         import io
 
+        # Stage 1: Try pypdf text extraction
         try:
             reader = PdfReader(io.BytesIO(content))
+            if len(reader.pages) > 40:
+                raise HTTPException(status_code=422, detail="This PDF has too many pages. Please upload a document with 40 pages or fewer.")
+            text = "\n".join(page.extract_text() or "" for page in reader.pages).strip()
+            if text and len(text) >= 15:
+                return text
+        except HTTPException:
+            raise
         except Exception as error:
-            raise HTTPException(status_code=422, detail="This PDF is unreadable or corrupted. Please check the file and try again.") from error
-        if len(reader.pages) > 40:
-            raise HTTPException(status_code=422, detail="This PDF has too many pages. Please upload a document with 40 pages or fewer.")
-        text = "\n".join(page.extract_text() or "" for page in reader.pages).strip()
-        if text:
-            return text
+            logger.warning("pypdf text extraction failed: %s", error)
+
+        # Stage 2: Try pypdfium2 native textpage extraction (extracts text without needing OCR)
+        try:
+            import pypdfium2 as pdfium
+            document = pdfium.PdfDocument(content)
+            pdfium_pages = []
+            for index in range(len(document)):
+                try:
+                    page = document[index]
+                    textpage = page.get_textpage()
+                    pt = textpage.get_text_range()
+                    if pt and pt.strip():
+                        pdfium_pages.append(pt.strip())
+                except Exception:
+                    continue
+            pdfium_text = "\n\n".join(pdfium_pages).strip()
+            if pdfium_text and len(pdfium_text) >= 15:
+                return pdfium_text
+        except Exception as pdfium_err:
+            logger.warning("pypdfium2 native textpage extraction failed: %s", pdfium_err)
+
+        # Stage 3: Try local Tesseract OCR (if installed)
         try:
             import pypdfium2 as pdfium
             import pytesseract
 
             document = pdfium.PdfDocument(content)
             pages = []
-            for index in range(len(document)):
+            for index in range(min(len(document), 10)):
                 image = document[index].render(scale=1.5).to_pil()
-                pages.append(pytesseract.image_to_string(image))
-            return "\n".join(pages).strip()
+                page_ocr = pytesseract.image_to_string(image).strip()
+                if page_ocr:
+                    pages.append(page_ocr)
+            ocr_text = "\n\n".join(pages).strip()
+            if ocr_text and len(ocr_text) >= 15:
+                return ocr_text
         except Exception as ocr_error:
-            logger.warning("Scanned PDF OCR could not be performed: %s", ocr_error)
-            return ""
-    from PIL import Image
-    import io
-    import pytesseract
+            logger.warning("Scanned PDF local OCR could not be performed: %s", ocr_error)
 
-    try:
-        image = Image.open(io.BytesIO(content))
-        image.verify()
-        image = Image.open(io.BytesIO(content)).convert("RGB")
-    except Exception as error:
-        raise HTTPException(status_code=422, detail="This image is unreadable or corrupted. Please check the file and try again.") from error
-    try:
-        return pytesseract.image_to_string(image).strip()
-    except Exception as ocr_error:
-        logger.warning("Image OCR could not be performed: %s", ocr_error)
+        # Stage 4: Try Gemini Vision OCR (if GEMINI_API_KEY is configured)
+        gemini_text = extract_text_via_gemini_vision(content, "application/pdf")
+        if gemini_text:
+            return gemini_text
+
         return ""
+
+    if content_type in {"image/jpeg", "image/png"}:
+        from PIL import Image
+        import io
+
+        try:
+            image = Image.open(io.BytesIO(content))
+            image.verify()
+            image = Image.open(io.BytesIO(content)).convert("RGB")
+        except Exception as error:
+            raise HTTPException(status_code=422, detail="This image is unreadable or corrupted. Please check the file and try again.") from error
+
+        # Stage 1: Try local Tesseract OCR
+        try:
+            import pytesseract
+            ocr_res = pytesseract.image_to_string(image).strip()
+            if ocr_res and len(ocr_res) >= 15:
+                return ocr_res
+        except Exception as ocr_error:
+            logger.warning("Image local OCR could not be performed: %s", ocr_error)
+
+        # Stage 2: Try Gemini Vision OCR
+        gemini_text = extract_text_via_gemini_vision(content, content_type)
+        if gemini_text:
+            return gemini_text
+
+        return ""
+
+    return ""
 
 
 @app.on_event("startup")
@@ -6726,7 +6816,7 @@ async def upload_resume(
     expected_type = mime_by_suffix.get(suffix)
     if not expected_type:
         raise HTTPException(status_code=415, detail="Use a PDF, JPG, JPEG, or PNG resume")
-    if expected_type == "application/pdf" and not content.startswith(b"%PDF-"):
+    if expected_type == "application/pdf" and b"%PDF-" not in content[:1024]:
         raise HTTPException(status_code=415, detail="This file does not contain a valid PDF")
     if expected_type == "image/jpeg" and not content.startswith(b"\xff\xd8\xff"):
         raise HTTPException(status_code=415, detail="This file does not contain a valid JPEG image")

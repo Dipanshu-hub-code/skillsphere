@@ -2837,7 +2837,8 @@ async function uploadResume(file) {
     state.resume = result;
     state.page = "My profile";
     await loadWorkspace();
-    showToast(result.processing_error || "Your resume was uploaded.");
+    renderWorkspace();
+    showToast(result.processing_error || "Resume analyzed and profile updated!");
   } catch (error) { showToast(error.message, true); }
 }
 

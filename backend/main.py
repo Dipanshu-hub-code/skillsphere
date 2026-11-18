@@ -1372,34 +1372,68 @@ def public_application(row: sqlite3.Row) -> dict[str, Any]:
 
 
 def detect_profile(text: str) -> dict[str, Any]:
+    gemini_key = os.environ.get("GEMINI_API_KEY")
+    if gemini_key and len(text) >= 20:
+        prompt = (
+            "Analyze this resume text and extract candidate profile information. "
+            "Respond ONLY with a JSON object in this exact structure:\n"
+            "{\n"
+            '  "name": "Full Name",\n'
+            '  "email": "email@example.com",\n'
+            '  "phone": "phone number",\n'
+            '  "location": "City, Country",\n'
+            '  "skills": ["Skill 1", "Skill 2"],\n'
+            '  "summary": "1-2 sentence professional summary"\n'
+            "}\n\n"
+            f"Resume Text:\n{text[:4000]}"
+        )
+        try:
+            llm_result = call_llm_json(prompt, "You are a professional resume parser.")
+            if isinstance(llm_result, dict) and llm_result.get("skills"):
+                return {
+                    "name": str(llm_result.get("name") or "").strip(),
+                    "email": str(llm_result.get("email") or "").strip(),
+                    "phone": str(llm_result.get("phone") or "").strip(),
+                    "location": str(llm_result.get("location") or "").strip(),
+                    "skills": [str(s).strip() for s in llm_result.get("skills", []) if s][:30],
+                    "summary": str(llm_result.get("summary") or "").strip(),
+                }
+        except Exception as e:
+            logger.warning("Gemini resume profile parsing failed: %s", e)
+
     email = re.search(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", text, re.I)
     phone = re.search(r"(?<!\w)(?:\+?\d[\d\s().-]{7,}\d)(?!\w)", text)
     name = None
     for line in (line.strip() for line in text.splitlines()):
         if line and len(line) < 70 and not re.search(r"[@\d]", line) and len(line.split()) <= 5:
+            if re.search(r"\b(resume|curriculum vitae|cv|page|profile|summary|contact|portfolio|phone|email)\b", line, re.I):
+                continue
             name = line
             break
+
     known_skills = (
         # Languages
         "python", "javascript", "typescript", "java", "kotlin", "swift",
         "go", "golang", "rust", "c++", "c#", "php", "ruby", "scala", "dart",
+        "c", "r", "matlab",
         # Frontend
         "react", "next.js", "nextjs", "vue", "vue.js", "nuxt", "angular",
-        "svelte", "html", "css", "sass", "tailwind", "webpack", "vite",
+        "svelte", "html", "html5", "css", "css3", "sass", "tailwind", "tailwindcss",
+        "bootstrap", "webpack", "vite", "redux",
         # Backend / APIs
-        "fastapi", "django", "flask", "node.js", "nodejs", "express",
-        "spring boot", "rails", "graphql", "rest", "grpc",
+        "fastapi", "django", "flask", "node.js", "nodejs", "express", "expressjs",
+        "spring boot", "spring", "rails", "graphql", "rest", "grpc", "api",
         # Databases
         "sql", "postgresql", "postgres", "mysql", "mongodb", "redis",
-        "sqlite", "elasticsearch", "dynamodb", "firebase",
+        "sqlite", "elasticsearch", "dynamodb", "firebase", "oracle",
         # Cloud / DevOps
-        "aws", "azure", "google cloud", "gcp", "docker", "kubernetes",
+        "aws", "azure", "google cloud", "gcp", "docker", "kubernetes", "k8s",
         "terraform", "ansible", "ci/cd", "github actions", "jenkins",
-        "linux", "bash", "shell scripting",
+        "git", "github", "gitlab", "linux", "bash", "shell scripting",
         # Data / ML / AI
-        "machine learning", "deep learning", "pytorch", "tensorflow",
-        "scikit-learn", "pandas", "numpy", "data analysis", "data science",
-        "llm", "nlp", "computer vision", "tableau", "power bi", "excel",
+        "machine learning", "deep learning", "pytorch", "tensorflow", "keras",
+        "scikit-learn", "sklearn", "pandas", "numpy", "data analysis", "data science",
+        "llm", "nlp", "computer vision", "opencv", "tableau", "power bi", "excel",
         "spark", "airflow", "dbt",
         # Design / Product
         "figma", "sketch", "ux research", "product design", "prototyping",
@@ -1408,16 +1442,33 @@ def detect_profile(text: str) -> dict[str, Any]:
         "project management", "agile", "scrum", "communication",
         "leadership", "product management", "jira",
     )
-    skills = [
-        skill.title()
-        for skill in known_skills
-        if re.search(rf"(?<![a-z0-9]){re.escape(skill)}(?![a-z0-9])", text, re.I)
-    ]
+
+    skill_display_map = {
+        "sql": "SQL", "aws": "AWS", "gcp": "GCP", "html": "HTML", "html5": "HTML5",
+        "css": "CSS", "css3": "CSS3", "api": "API", "rest": "REST API", "graphql": "GraphQL",
+        "ci/cd": "CI/CD", "llm": "LLM", "nlp": "NLP", "c++": "C++", "c#": "C#", "php": "PHP",
+        "javascript": "JavaScript", "typescript": "TypeScript", "nodejs": "Node.js",
+        "node.js": "Node.js", "react": "React", "nextjs": "Next.js", "next.js": "Next.js",
+        "vue": "Vue.js", "vue.js": "Vue.js", "fastapi": "FastAPI", "postgresql": "PostgreSQL",
+        "postgres": "PostgreSQL", "mongodb": "MongoDB", "mysql": "MySQL", "docker": "Docker",
+        "kubernetes": "Kubernetes", "python": "Python", "java": "Java", "figma": "Figma",
+        "git": "Git", "github": "GitHub", "gitlab": "GitLab", "linux": "Linux"
+    }
+
+    found_skills: list[str] = []
+    seen: set[str] = set()
+    for skill in known_skills:
+        if re.search(rf"(?<![a-z0-9]){re.escape(skill)}(?![a-z0-9])", text, re.I):
+            display = skill_display_map.get(skill.lower(), skill.title())
+            if display.lower() not in seen:
+                seen.add(display.lower())
+                found_skills.append(display)
+
     return {
         "name": name or "",
         "email": email.group(0) if email else "",
         "phone": phone.group(0).strip() if phone else "",
-        "skills": skills,
+        "skills": found_skills,
         "summary": "",
     }
 

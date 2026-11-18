@@ -543,6 +543,13 @@ class QuestionBody(BaseModel):
     learning_resource_url: str = Field(default="", max_length=1000)
     subtopic: str = Field(default="", max_length=100)
 
+    @field_validator("explanation", "learning_resource_url", "subtopic", mode="before")
+    @classmethod
+    def sanitize_question_fields(cls, v: Any) -> str:
+        if v is None:
+            return ""
+        return str(v)
+
 
 class QuestionUpdateBody(QuestionBody):
     pass
@@ -552,8 +559,15 @@ class AIQuestionGenerateBody(BaseModel):
     technology: str = Field(min_length=1, max_length=50)
     count: int = Field(default=5, ge=1, le=20)
     difficulty: str = Field(default="Mixed", pattern="^(Mixed|Easy|Medium|Hard)$")
-    subtopic: str = Field(default="", max_length=100)
-    custom_prompt: str = Field(default="", max_length=500)
+    subtopic: str | None = Field(default="", max_length=100)
+    custom_prompt: str | None = Field(default="", max_length=500)
+
+    @field_validator("subtopic", "custom_prompt", mode="before")
+    @classmethod
+    def sanitize_optional_str(cls, v: Any) -> str:
+        if v is None:
+            return ""
+        return str(v).strip()
 
 
 class QuestionBatchBody(BaseModel):
@@ -2121,27 +2135,28 @@ def extract_question_bank_pdf_text(content: bytes) -> str:
 def call_llm_json(prompt: str, system: str = "") -> dict[str, Any] | None:
     gemini_key = os.environ.get("GEMINI_API_KEY")
     if gemini_key:
-        try:
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={gemini_key}"
-            payload = {
-                "contents": [
-                    {"role": "user", "parts": [{"text": f"{system}\n\n{prompt}"}]}
-                ],
-                "generationConfig": {
-                    "responseMimeType": "application/json",
-                    "temperature": 0.3,
+        for model in ["gemini-1.5-flash", "gemini-2.5-flash", "gemini-2.0-flash"]:
+            try:
+                url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={gemini_key}"
+                payload = {
+                    "contents": [
+                        {"role": "user", "parts": [{"text": f"{system}\n\n{prompt}"}]}
+                    ],
+                    "generationConfig": {
+                        "responseMimeType": "application/json",
+                        "temperature": 0.3,
+                    }
                 }
-            }
-            with httpx.Client(timeout=15.0) as client:
-                res = client.post(url, json=payload)
-                if res.status_code == 200:
-                    data = res.json()
-                    parts = data.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])
-                    raw_text = parts[0].get("text", "")
-                    if raw_text:
-                        return json.loads(raw_text)
-        except Exception as e:
-            logger.warning("Gemini API call failed, falling back to local engine: %s", e)
+                with httpx.Client(timeout=15.0) as client:
+                    res = client.post(url, json=payload)
+                    if res.status_code == 200:
+                        data = res.json()
+                        parts = data.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])
+                        raw_text = parts[0].get("text", "")
+                        if raw_text:
+                            return json.loads(raw_text)
+            except Exception as e:
+                logger.warning("Gemini %s call failed: %s", model, e)
 
     openai_key = os.environ.get("OPENAI_API_KEY")
     if openai_key:

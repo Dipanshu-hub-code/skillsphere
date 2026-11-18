@@ -2213,6 +2213,15 @@ Answer: A
         data = gen_res.json()
         self.assertEqual(data["technology"], "Python")
         self.assertEqual(len(data["questions"]), 5)
+
+        # Recruiter generates questions with null subtopic and null custom_prompt
+        gen_null_res = self.client.post(
+            f"/api/jobs/{job['id']}/questions/ai-generate",
+            headers=recruiter,
+            json={"technology": "Python", "count": 5, "difficulty": "Mixed", "subtopic": None, "custom_prompt": None},
+        )
+        self.assertEqual(gen_null_res.status_code, 200, gen_null_res.text)
+        self.assertEqual(len(gen_null_res.json()["questions"]), 5)
         for q in data["questions"]:
             self.assertEqual(q["technology"], "Python")
             self.assertEqual(len(q["options"]), 4)

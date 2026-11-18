@@ -2629,7 +2629,7 @@ function syncAiQuestionsFromDOM() {
     const prompt = card.querySelector(".ai-q-prompt")?.value?.trim();
     if (prompt) state.aiGeneratedQuestions[idx].question = prompt;
     const explanation = card.querySelector(".ai-q-explanation")?.value?.trim();
-    state.aiGeneratedQuestions[idx].explanation = explanation || null;
+    state.aiGeneratedQuestions[idx].explanation = explanation || "";
     const options = Array.from(card.querySelectorAll(".ai-q-option")).map(input => input.value.trim());
     if (options.length === 4) state.aiGeneratedQuestions[idx].options = options;
     const checkedRadio = card.querySelector(`input[name="ai_correct_${idx}"]:checked`);
@@ -2679,7 +2679,7 @@ function syncAiQuestionsFromDOM() {
     const prompt = card.querySelector(".ai-q-prompt")?.value?.trim();
     if (prompt) state.aiGeneratedQuestions[idx].question = prompt;
     const explanation = card.querySelector(".ai-q-explanation")?.value?.trim();
-    state.aiGeneratedQuestions[idx].explanation = explanation || null;
+    state.aiGeneratedQuestions[idx].explanation = explanation || "";
     const options = Array.from(card.querySelectorAll(".ai-q-option")).map(input => input.value.trim());
     if (options.length === 4) state.aiGeneratedQuestions[idx].options = options;
     const checkedRadio = card.querySelector(`input[name="ai_correct_${idx}"]:checked`);
@@ -2869,10 +2869,10 @@ app.addEventListener("submit", async event => {
     const values = Object.fromEntries(new FormData(form));
     const payload = {
       technology: (values.technology || "").trim(),
-      subtopic: (values.subtopic || "").trim() || null,
+      subtopic: (values.subtopic || "").trim(),
       difficulty: values.difficulty || "Mixed",
       count: Number(values.count || 5),
-      custom_prompt: (values.custom_prompt || "").trim() || null
+      custom_prompt: (values.custom_prompt || "").trim()
     };
     state.aiGenerating = true;
     renderWorkspace();

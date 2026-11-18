@@ -62,6 +62,15 @@ try:
 except ImportError:
     HAS_CLOUDINARY = False
 
+try:
+    import libsql_experimental as libsql
+    HAS_TURSO = True
+except ImportError:
+    HAS_TURSO = False
+
+TURSO_DATABASE_URL = os.environ.get("TURSO_DATABASE_URL")
+TURSO_AUTH_TOKEN = os.environ.get("TURSO_AUTH_TOKEN")
+
 ROOT = Path(__file__).resolve().parents[1]
 FRONTEND_DIR = ROOT / "frontend"
 DATA_DIR = Path(os.environ.get("SKILLSPHERE_DATA_DIR", ROOT / "data")).resolve()
@@ -342,21 +351,42 @@ def record_application_status(
 @contextmanager
 def connect() -> Iterator[sqlite3.Connection]:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    connection = sqlite3.connect(DB_PATH, timeout=10)
-    connection.row_factory = sqlite3.Row
-    connection.execute("PRAGMA journal_mode=WAL")       # concurrent reads + writes
-    connection.execute("PRAGMA synchronous=NORMAL")     # safe & faster than FULL
-    connection.execute("PRAGMA foreign_keys = ON")
-    connection.execute("PRAGMA cache_size=-8000")       # ~8 MB page cache
-    connection.execute("PRAGMA temp_store=MEMORY")
-    try:
-        yield connection
-        connection.commit()
-    except Exception:
-        connection.rollback()
-        raise
-    finally:
-        connection.close()
+    if TURSO_DATABASE_URL and HAS_TURSO:
+        # Turso Embedded Replica: Fast local SQLite with automatic cloud synchronization
+        connection = libsql.connect(str(DB_PATH), sync_url=TURSO_DATABASE_URL, auth_token=TURSO_AUTH_TOKEN)
+        connection.row_factory = sqlite3.Row
+        try:
+            connection.sync()
+        except Exception as e:
+            logger.warning("Turso sync warning on connect: %s", e)
+        try:
+            yield connection
+            connection.commit()
+            try:
+                connection.sync()
+            except Exception as e:
+                logger.warning("Turso sync warning on commit: %s", e)
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+    else:
+        connection = sqlite3.connect(DB_PATH, timeout=10)
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA journal_mode=WAL")       # concurrent reads + writes
+        connection.execute("PRAGMA synchronous=NORMAL")     # safe & faster than FULL
+        connection.execute("PRAGMA foreign_keys = ON")
+        connection.execute("PRAGMA cache_size=-8000")       # ~8 MB page cache
+        connection.execute("PRAGMA temp_store=MEMORY")
+        try:
+            yield connection
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
 
 
 def password_hash(password: str, salt: bytes | None = None) -> str:
@@ -783,6 +813,14 @@ def seed_assessment_questions(db: sqlite3.Connection) -> None:
 
 def initialize_database() -> None:
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    QUESTION_BANK_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    if TURSO_DATABASE_URL and HAS_TURSO:
+        try:
+            init_conn = libsql.connect(str(DB_PATH), sync_url=TURSO_DATABASE_URL, auth_token=TURSO_AUTH_TOKEN)
+            init_conn.sync()
+            init_conn.close()
+        except Exception as e:
+            logger.warning("Turso initial sync warning: %s", e)
     with connect() as db:
         db.executescript(
             """

@@ -11,3 +11,4 @@ tzdata>=2024.1
 slowapi>=0.1.9,<1.0
 cloudinary>=1.36.0
 gunicorn>=21.2.0,<23.0
+libsql-experimental>=0.0.47

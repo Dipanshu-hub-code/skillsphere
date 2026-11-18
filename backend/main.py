@@ -1297,53 +1297,54 @@ def initialize_database() -> None:
                 SELECT 1 FROM application_status_history h WHERE h.application_id = a.id
             )"""
         )
-        if IS_PRODUCTION:
-            admin_email = os.environ.get("SKILLSPHERE_ADMIN_EMAIL")
-            admin_password = os.environ.get("SKILLSPHERE_ADMIN_PASSWORD")
-            if admin_email and admin_password and not db.execute(
-                "SELECT 1 FROM users WHERE email = ?", (admin_email,)
-            ).fetchone():
-                db.execute(
-                    "INSERT INTO users (name, email, password_hash, role, created_at) VALUES (?, ?, ?, 'admin', ?)",
-                    ("SkillSphere Admin", admin_email, password_hash(admin_password), now()),
+        enable_demo = os.environ.get("SKILLSPHERE_ENABLE_DEMO", "true").lower() not in {"false", "0", "no"}
+
+        # Seed configured production admin if specified
+        admin_email = os.environ.get("SKILLSPHERE_ADMIN_EMAIL")
+        admin_password = os.environ.get("SKILLSPHERE_ADMIN_PASSWORD")
+        if admin_email and admin_password and not db.execute(
+            "SELECT 1 FROM users WHERE email = ?", (admin_email,)
+        ).fetchone():
+            db.execute(
+                "INSERT INTO users (name, email, password_hash, role, created_at) VALUES (?, ?, ?, 'admin', ?)",
+                ("SkillSphere Admin", admin_email, password_hash(admin_password), now()),
+            )
+
+        if not enable_demo:
+            return
+
+        # Seed demo users if they do not exist
+        if not db.execute("SELECT 1 FROM users WHERE email = ?", ("candidate@skillsphere.dev",)).fetchone():
+            users = [
+                ("Alex Morgan", "candidate@skillsphere.dev", password_hash("Demo123!"), "candidate", '{"location":"Brooklyn, NY"}', now()),
+                ("Jamie Rivera", "recruiter@skillsphere.dev", password_hash("Demo123!"), "recruiter", '{"company":"Northstar"}', now()),
+                ("Avery Chen", "admin@skillsphere.dev", password_hash("Demo123!"), "admin", "{}", now()),
+            ]
+            db.executemany(
+                "INSERT OR IGNORE INTO users (name, email, password_hash, role, profile_json, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                users,
+            )
+
+        # Seed demo jobs if none exist
+        if not db.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]:
+            recruiter_row = db.execute("SELECT id FROM users WHERE email = ?", ("recruiter@skillsphere.dev",)).fetchone()
+            if recruiter_row:
+                recruiter_id = recruiter_row["id"]
+                jobs = [
+                    ("Product Designer", "Northstar", "Shape clear, human-centered product experiences from early discovery through thoughtful delivery. Partner with product and engineering to make complex workflows feel effortless.", "New York, NY", "2–4 years", "Full-time", "$95k – $125k", ["Figma", "UX research", "Prototyping", "Design systems"]),
+                    ("Frontend Engineer", "Layer", "Help us make useful tools feel delightful. Build accessible, polished interfaces with a product-minded team that cares about performance, collaboration, and the details.", "Remote · US", "3–5 years", "Remote", "$110k – $145k", ["React", "TypeScript", "CSS", "Accessibility"]),
+                    ("Data Analyst", "Goodkind", "Turn questions into insights that help our teams and customers make better decisions. Work across product analytics, experimentation, and clear data storytelling.", "Austin, TX", "1–3 years", "Full-time", "$82k – $105k", ["SQL", "Python", "Tableau", "Analytics"]),
+                    ("People Operations Partner", "Fieldwork", "Create warm, thoughtful experiences across the employee journey. Help build scalable people programs in a growing, remote-friendly company.", "Remote · US", "3–6 years", "Remote", "$88k – $118k", ["People ops", "HR", "Communication", "Operations"]),
+                    ("Marketing Associate", "Sunday Studio", "Bring a curious, creative perspective to campaigns that help more people discover our work. You'll collaborate across content, community, and growth.", "Brooklyn, NY", "1–2 years", "Full-time", "$65k – $82k", ["Content", "Social media", "Writing", "Marketing"]),
+                    ("Backend Engineer", "Northstar", "Build dependable APIs and thoughtfully designed services for a growing product. We value ownership, clear communication, and pragmatic engineering.", "New York, NY", "4–6 years", "Contract", "$125k – $160k", ["Python", "FastAPI", "PostgreSQL", "APIs"]),
+                ]
+                seeded_at = now()
+                db.executemany(
+                    """INSERT INTO jobs
+                    (recruiter_id, title, company, description, location, experience, job_type, salary, skills_json, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    [(recruiter_id, *job[:7], json.dumps(job[7]), seeded_at) for job in jobs],
                 )
-            return
-        if db.execute("SELECT COUNT(*) FROM users").fetchone()[0]:
-            return
-        users = [
-            ("Alex Morgan", "candidate@skillsphere.dev", password_hash("Demo123!"), "candidate", '{"location":"Brooklyn, NY"}', now()),
-            ("Jamie Rivera", "recruiter@skillsphere.dev", password_hash("Demo123!"), "recruiter", '{"company":"Northstar"}', now()),
-            ("Avery Chen", "admin@skillsphere.dev", password_hash("Demo123!"), "admin", "{}", now()),
-        ]
-        if os.environ.get("SKILLSPHERE_ENV", "development").lower() == "production":
-            admin_email = os.environ.get("SKILLSPHERE_ADMIN_EMAIL")
-            admin_password = os.environ.get("SKILLSPHERE_ADMIN_PASSWORD")
-            if admin_email and admin_password:
-                db.execute(
-                    "INSERT INTO users (name, email, password_hash, role, created_at) VALUES (?, ?, ?, 'admin', ?)",
-                    ("SkillSphere Admin", admin_email, password_hash(admin_password), now()),
-                )
-            return
-        db.executemany(
-            "INSERT INTO users (name, email, password_hash, role, profile_json, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-            users,
-        )
-        recruiter_id = db.execute("SELECT id FROM users WHERE email = ?", ("recruiter@skillsphere.dev",)).fetchone()["id"]
-        jobs = [
-            ("Product Designer", "Northstar", "Shape clear, human-centered product experiences from early discovery through thoughtful delivery. Partner with product and engineering to make complex workflows feel effortless.", "New York, NY", "2–4 years", "Full-time", "$95k – $125k", ["Figma", "UX research", "Prototyping", "Design systems"]),
-            ("Frontend Engineer", "Layer", "Help us make useful tools feel delightful. Build accessible, polished interfaces with a product-minded team that cares about performance, collaboration, and the details.", "Remote · US", "3–5 years", "Remote", "$110k – $145k", ["React", "TypeScript", "CSS", "Accessibility"]),
-            ("Data Analyst", "Goodkind", "Turn questions into insights that help our teams and customers make better decisions. Work across product analytics, experimentation, and clear data storytelling.", "Austin, TX", "1–3 years", "Full-time", "$82k – $105k", ["SQL", "Python", "Tableau", "Analytics"]),
-            ("People Operations Partner", "Fieldwork", "Create warm, thoughtful experiences across the employee journey. Help build scalable people programs in a growing, remote-friendly company.", "Remote · US", "3–6 years", "Remote", "$88k – $118k", ["People ops", "HR", "Communication", "Operations"]),
-            ("Marketing Associate", "Sunday Studio", "Bring a curious, creative perspective to campaigns that help more people discover our work. You'll collaborate across content, community, and growth.", "Brooklyn, NY", "1–2 years", "Full-time", "$65k – $82k", ["Content", "Social media", "Writing", "Marketing"]),
-            ("Backend Engineer", "Northstar", "Build dependable APIs and thoughtfully designed services for a growing product. We value ownership, clear communication, and pragmatic engineering.", "New York, NY", "4–6 years", "Contract", "$125k – $160k", ["Python", "FastAPI", "PostgreSQL", "APIs"]),
-        ]
-        seeded_at = now()
-        db.executemany(
-            """INSERT INTO jobs
-            (recruiter_id, title, company, description, location, experience, job_type, salary, skills_json, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            [(recruiter_id, *job[:7], json.dumps(job[7]), seeded_at) for job in jobs],
-        )
 
 
 def public_job(row: sqlite3.Row) -> dict[str, Any]:

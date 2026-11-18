@@ -1372,6 +1372,7 @@ def public_application(row: sqlite3.Row) -> dict[str, Any]:
 
 
 def detect_profile(text: str) -> dict[str, Any]:
+    # 1. Attempt AI-assisted parsing if Gemini is configured and functional
     gemini_key = os.environ.get("GEMINI_API_KEY")
     if gemini_key and len(text) >= 20:
         prompt = (
@@ -1399,17 +1400,81 @@ def detect_profile(text: str) -> dict[str, Any]:
                     "summary": str(llm_result.get("summary") or "").strip(),
                 }
         except Exception as e:
-            logger.warning("Gemini resume profile parsing failed: %s", e)
+            logger.warning("Gemini resume profile parsing failed, using standalone local engine: %s", e)
 
-    email = re.search(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", text, re.I)
-    phone = re.search(r"(?<!\w)(?:\+?\d[\d\s().-]{7,}\d)(?!\w)", text)
-    name = None
-    for line in (line.strip() for line in text.splitlines()):
-        if line and len(line) < 70 and not re.search(r"[@\d]", line) and len(line.split()) <= 5:
-            if re.search(r"\b(resume|curriculum vitae|cv|page|profile|summary|contact|portfolio|phone|email)\b", line, re.I):
-                continue
-            name = line
-            break
+    # 2. Standalone Intelligent Local Parser (100% offline, zero external dependencies)
+    email_match = re.search(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b", text)
+    email = email_match.group(0).lower() if email_match else ""
+
+    phone_match = re.search(
+        r"(?:(?:\+|00)\d{1,3}[\s.-]?)?(?:\(?\d{2,5}\)?[\s.-]?)?\d{3,4}[\s.-]?\d{3,4}\b",
+        text
+    )
+    phone = phone_match.group(0).strip() if phone_match else ""
+
+    # Name Detection: scan candidate lines with header noise filters + email fallback
+    name = ""
+    noise_header = re.compile(
+        r"\b(resume|curriculum\s+vitae|cv|page|profile|summary|contact|portfolio|phone|email|"
+        r"education|experience|projects|skills|technical|github|linkedin|address|personal|details|"
+        r"developer|engineer|analyst|intern|senior|junior|lead|manager|consultant)\b",
+        re.I
+    )
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    for line in lines[:8]:
+        if 2 <= len(line) <= 50 and not re.search(r"[@\d:/\\|]", line):
+            words = line.split()
+            if 1 <= len(words) <= 4 and not noise_header.search(line):
+                # Verify words look like proper names
+                if all(w[0].isalpha() for w in words):
+                    name = " ".join(w.capitalize() for w in words)
+                    break
+
+    # If header name was not found, deduce candidate name from email username
+    if not name and email:
+        username = email.split("@")[0]
+        cleaned_parts = [p.capitalize() for p in re.split(r"[._\-+]+", username) if len(p) >= 2 and not p.isdigit()]
+        if cleaned_parts:
+            name = " ".join(cleaned_parts)
+
+    # Location Detection: scan for common location patterns
+    location = ""
+    loc_match = re.search(
+        r"\b([A-Z][a-zA-Z\s]{2,20},\s*(?:[A-Z]{2}|[A-Z][a-zA-Z]{2,15}))\b",
+        text
+    )
+    if loc_match:
+        cand_loc = loc_match.group(1).strip()
+        if not noise_header.search(cand_loc) and len(cand_loc.split()) <= 4:
+            location = cand_loc
+
+    # Summary Detection: scan text for introductory overview
+    summary = ""
+    sum_match = re.search(
+        r"(?:summary|professional\s+summary|profile|about\s+me|objective)[\s:\-\n]+(.*?)(?=\n\s*(?:experience|skills|education|projects|technical|\Z))",
+        text,
+        re.I | re.S
+    )
+    if sum_match:
+        extracted_summary = " ".join(sum_match.group(1).split()).strip()
+        if 20 <= len(extracted_summary) <= 300:
+            summary = extracted_summary
+
+    # Comprehensive Skills Detection (Section Parsing + Keyword Dictionary)
+    skill_display_map = {
+        "sql": "SQL", "aws": "AWS", "gcp": "GCP", "html": "HTML", "html5": "HTML5",
+        "css": "CSS", "css3": "CSS3", "api": "API", "rest": "REST API", "graphql": "GraphQL",
+        "ci/cd": "CI/CD", "llm": "LLM", "nlp": "NLP", "c++": "C++", "c#": "C#", "php": "PHP",
+        "javascript": "JavaScript", "typescript": "TypeScript", "nodejs": "Node.js",
+        "node.js": "Node.js", "react": "React", "react.js": "React", "nextjs": "Next.js",
+        "next.js": "Next.js", "vue": "Vue.js", "vue.js": "Vue.js", "fastapi": "FastAPI",
+        "postgresql": "PostgreSQL", "postgres": "PostgreSQL", "mongodb": "MongoDB",
+        "mysql": "MySQL", "docker": "Docker", "kubernetes": "Kubernetes", "k8s": "Kubernetes",
+        "python": "Python", "java": "Java", "figma": "Figma", "git": "Git", "github": "GitHub",
+        "gitlab": "GitLab", "linux": "Linux", "tailwind": "Tailwind", "tailwindcss": "Tailwind CSS",
+        "redux": "Redux", "express": "Express", "expressjs": "Express", "django": "Django",
+        "flask": "Flask", "spring": "Spring Boot", "spring boot": "Spring Boot", "jira": "Jira"
+    }
 
     known_skills = (
         # Languages
@@ -1417,7 +1482,7 @@ def detect_profile(text: str) -> dict[str, Any]:
         "go", "golang", "rust", "c++", "c#", "php", "ruby", "scala", "dart",
         "c", "r", "matlab",
         # Frontend
-        "react", "next.js", "nextjs", "vue", "vue.js", "nuxt", "angular",
+        "react", "react.js", "next.js", "nextjs", "vue", "vue.js", "nuxt", "angular",
         "svelte", "html", "html5", "css", "css3", "sass", "tailwind", "tailwindcss",
         "bootstrap", "webpack", "vite", "redux",
         # Backend / APIs
@@ -1443,20 +1508,27 @@ def detect_profile(text: str) -> dict[str, Any]:
         "leadership", "product management", "jira",
     )
 
-    skill_display_map = {
-        "sql": "SQL", "aws": "AWS", "gcp": "GCP", "html": "HTML", "html5": "HTML5",
-        "css": "CSS", "css3": "CSS3", "api": "API", "rest": "REST API", "graphql": "GraphQL",
-        "ci/cd": "CI/CD", "llm": "LLM", "nlp": "NLP", "c++": "C++", "c#": "C#", "php": "PHP",
-        "javascript": "JavaScript", "typescript": "TypeScript", "nodejs": "Node.js",
-        "node.js": "Node.js", "react": "React", "nextjs": "Next.js", "next.js": "Next.js",
-        "vue": "Vue.js", "vue.js": "Vue.js", "fastapi": "FastAPI", "postgresql": "PostgreSQL",
-        "postgres": "PostgreSQL", "mongodb": "MongoDB", "mysql": "MySQL", "docker": "Docker",
-        "kubernetes": "Kubernetes", "python": "Python", "java": "Java", "figma": "Figma",
-        "git": "Git", "github": "GitHub", "gitlab": "GitLab", "linux": "Linux"
-    }
-
     found_skills: list[str] = []
     seen: set[str] = set()
+
+    # Pass A: Extract skills directly from explicit "Skills:" sections in resume
+    sec_match = re.search(
+        r"(?:technical\s+skills|skills\s*&?\s*tools|skills|technologies|core\s+competencies|languages\s*&?\s*frameworks)[\s:\-\n]+(.*?)(?=\n\s*(?:experience|employment|work|education|projects|certifications|\Z))",
+        text,
+        re.I | re.S
+    )
+    if sec_match:
+        tokens = re.split(r"[,•|\n\t;*\/·]+", sec_match.group(1))
+        for tok in tokens:
+            cleaned = re.sub(r"^[a-zA-Z\s]+:\s*", "", tok).strip()
+            if 2 <= len(cleaned) <= 25 and not re.search(r"[@\d]{3,}", cleaned):
+                if cleaned.lower() not in {"and", "etc", "various", "tools", "skills", "experience", "basic"}:
+                    display = skill_display_map.get(cleaned.lower(), cleaned.title())
+                    if display.lower() not in seen:
+                        seen.add(display.lower())
+                        found_skills.append(display)
+
+    # Pass B: Scan full text against the curated tech dictionary
     for skill in known_skills:
         if re.search(rf"(?<![a-z0-9]){re.escape(skill)}(?![a-z0-9])", text, re.I):
             display = skill_display_map.get(skill.lower(), skill.title())
@@ -1466,10 +1538,11 @@ def detect_profile(text: str) -> dict[str, Any]:
 
     return {
         "name": name or "",
-        "email": email.group(0) if email else "",
-        "phone": phone.group(0).strip() if phone else "",
-        "skills": found_skills,
-        "summary": "",
+        "email": email,
+        "phone": phone,
+        "location": location,
+        "skills": found_skills[:30],
+        "summary": summary,
     }
 
 
@@ -1800,20 +1873,20 @@ def extract_resume_text(content: bytes, content_type: str) -> str:
         from pypdf import PdfReader
         import io
 
-        # Stage 1: Try pypdf text extraction
+        # Stage 1: Try pypdf text extraction (100% offline)
+        pypdf_text = ""
         try:
             reader = PdfReader(io.BytesIO(content))
             if len(reader.pages) > 40:
                 raise HTTPException(status_code=422, detail="This PDF has too many pages. Please upload a document with 40 pages or fewer.")
-            text = "\n".join(page.extract_text() or "" for page in reader.pages).strip()
-            if text and len(text) >= 15:
-                return text
+            pypdf_text = "\n".join(page.extract_text() or "" for page in reader.pages).strip()
         except HTTPException:
             raise
         except Exception as error:
             logger.warning("pypdf text extraction failed: %s", error)
 
-        # Stage 2: Try pypdfium2 native textpage extraction (extracts text without needing OCR)
+        # Stage 2: Try pypdfium2 native textpage extraction (100% offline Chromium PDF engine)
+        pdfium_text = ""
         try:
             import pypdfium2 as pdfium
             document = pdfium.PdfDocument(content)
@@ -1828,10 +1901,13 @@ def extract_resume_text(content: bytes, content_type: str) -> str:
                 except Exception:
                     continue
             pdfium_text = "\n\n".join(pdfium_pages).strip()
-            if pdfium_text and len(pdfium_text) >= 15:
-                return pdfium_text
         except Exception as pdfium_err:
             logger.warning("pypdfium2 native textpage extraction failed: %s", pdfium_err)
+
+        # Pick whichever offline engine extracted more content
+        best_offline_text = pdfium_text if len(pdfium_text) > len(pypdf_text) else pypdf_text
+        if best_offline_text and len(best_offline_text) >= 15:
+            return best_offline_text
 
         # Stage 3: Try local Tesseract OCR (if installed)
         try:

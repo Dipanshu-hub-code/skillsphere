@@ -61,24 +61,62 @@ Every assessment is **Round 1: Technical MCQ Test** and contains exactly 20 job-
 
 After submission, the application timeline records **Assessment Completed** followed by **Round 1 Passed** or **Round 1 Failed**. Passing does not automatically move someone to Interview. Recruiters can review answer-by-answer results and choose a next stage; candidates can see their Round 1 result in **Assessments**, **Applications**, and notifications. The recruiter review supports result, score, job, assessment-status, and completion-date filters. The Admin Dashboard reports weekly Round 1 completions, pass/fail counts and rate, average score, job-level results, and pass/fail distribution.
 
-#### Consent-based assessment proctoring
+#### Consent-based assessment proctoring & webcam recording
 
-Proctoring is required by default. Before the assessment timer starts, the candidate must consent and grant camera access. The browser uses the locally bundled MediaPipe Face Detection 0.4.1646425229 scripts, model, and WebAssembly files in `frontend/vendor/mediapipe/`; it does not fetch detector code or send camera frames to SkillSphere or a third party. No images, video, audio, or biometric identifiers are uploaded or stored. SkillSphere stores only consent/camera timestamps, warning counts, and event type/time/duration. Recruiters for the job and administrators can review the event timeline; the Admin Dashboard provides candidate, job, date, and flag filters. A flag is a prompt for human review, not proof of misconduct.
+Proctoring and video recording are required by default. Before the assessment timer starts, the candidate must consent to webcam recording and grant camera access.
 
-Camera access requires a secure browser context (HTTPS, or localhost for development) and current Chrome, Edge, Firefox, or Safari with camera permission and WebAssembly support. If the detector or camera is unavailable, the candidate cannot start a required assessment; an in-progress assessment must reconnect its camera to continue. Denying permission does not start the timer.
+- **Candidate Consent Screen**:
+  - The consent screen clearly states that webcam video will be recorded during the assessment, securely stored for integrity review, accessible strictly by authorized administrators, and may capture face orientation and surroundings.
+  - Candidates must select the checkbox `I understand and consent to webcam recording during this assessment.`
+  - The **Start assessment →** button remains disabled until consent is checked, camera permission is granted, and the live video stream is active.
+- **Browser Video Recording (MediaRecorder API)**:
+  - When the assessment starts, the browser captures the candidate's camera stream using the `MediaRecorder` API (WebM format).
+  - During the test, a live preview and recording indicator (pulsing red dot + `Camera recording active`) remain visible.
+  - Recording stops automatically upon test submission, timer expiration, or proctoring policy auto-submission.
+- **Secure Cloudinary Upload with Local Development Fallback**:
+  - Recordings are securely uploaded to Cloudinary using signed server-side credentials stored only on the backend.
+  - **No secrets on frontend**: The Cloudinary API secret is never exposed to the client.
+  - **Non-blocking submission resilience**: When a candidate submits answers, their answers and test score are saved immediately. Video upload finalization occurs smoothly in the background, ensuring test submissions are never lost or delayed.
+  - **Local Development Fallback**: If Cloudinary environment variables are unset or during offline development, SkillSphere falls back cleanly to local video storage under `data/recordings/` and serves video through an admin-authenticated streaming endpoint (`/api/admin/recordings/{id}/stream`).
+  - **Failure Handling**: If an upload fails, the status is marked as `Failed` in the database, test scores remain preserved, and an in-app notification is dispatched to administrators.
+- **Admin Review & Synchronized Playback**:
+  - **Access Control**: Only authorized users with the **Admin** role can access recording playback and streaming endpoints. Recruiters and candidates see only safe status badges and summary metadata without playback URLs.
+  - **Audit Logging**: Every admin video view is logged with administrator ID, timestamp, IP address, and user agent.
+  - **Playback Modal**: Admins can watch the webcam video with standard controls (play, pause, seek, speed) accompanied by a synchronized proctoring timeline. Admins can jump directly to the timestamp of flagged events (e.g., face absent, multiple faces, tab switch, window blur).
+- **Configurable Retention Policy**:
+  - Recordings expire after a configurable retention window (default: 30 days via `SKILLSPHERE_RECORDING_RETENTION_DAYS`).
+  - Admins can run retention cleanup from the integrity panel (`POST /api/admin/recordings/retention-cleanup`) to purge expired recordings from Cloudinary/disk while preserving proctoring logs and assessment scores. Flagged assessments are preserved by default.
 
-Configure proctoring before starting the API:
+Configure Cloudinary and proctoring recording with these environment variables:
 
 ```powershell
+# Cloudinary Configuration (Optional in local dev; falls back to data/recordings/)
+$env:CLOUDINARY_CLOUD_NAME = "your-cloud-name"
+$env:CLOUDINARY_API_KEY = "your-api-key"
+$env:CLOUDINARY_API_SECRET = "your-api-secret"
+$env:CLOUDINARY_UPLOAD_FOLDER = "skillsphere/recordings"
+
+# Proctoring & Recording Settings
+$env:SKILLSPHERE_RECORDING_REQUIRED = "true"
+$env:SKILLSPHERE_RECORDING_RETENTION_DAYS = "30"
+$env:SKILLSPHERE_RECORDING_MAX_UPLOAD_MB = "150"
 $env:SKILLSPHERE_PROCTORING_REQUIRED = "true"
 $env:SKILLSPHERE_PROCTORING_FACE_MISSING_SECONDS = "10"
 $env:SKILLSPHERE_PROCTORING_MAX_WARNINGS = "3"
 $env:SKILLSPHERE_PROCTORING_AUTO_SUBMIT = "false"
 ```
 
-The face-missing threshold and warning limit must be positive integers. The default records a warning after a face has been absent for 10 seconds, flags an assessment at 3 warnings, and does not auto-submit. If auto-submit is enabled, reaching the configured warning limit submits the current answers. Setting `SKILLSPHERE_PROCTORING_REQUIRED` to `false` disables the consent/camera gate for new assessments. Assessments that were already started before the migration are allowed to finish without interruption.
-
-Manual verification flow: send an assessment as a recruiter → open the candidate link in a supported browser → verify **Start assessment** remains unavailable until consent and camera access are granted → verify the preview and face-presence status work while answering → switch tabs, briefly leave the camera view, or stop camera access and verify the events and warning count update → submit the assessment → review its event timeline as the job's recruiter → sign in as Admin and filter **Assessment integrity** by candidate, job, date, and flag status. Confirm the timeline contains event metadata only and no image or video data.
+Manual verification flow:
+1. Send an assessment as a recruiter → open the candidate link.
+2. Confirm the consent screen displays webcam recording guidelines and the consent checkbox.
+3. Verify **Start assessment →** remains disabled until the consent checkbox is checked and camera permission is granted.
+4. Click **Start assessment →**: verify the live camera preview displays the red pulsing dot and `Camera recording active`.
+5. Complete questions and submit: verify the test submission succeeds immediately with score and pass/fail result.
+6. Sign in as Admin → open **Assessment integrity & recordings**:
+   - Check that the recording status badge displays `📹 Ready`.
+   - Click `▶ Play Video`: verify the playback modal opens with HTML5 player and synchronized proctoring events timeline.
+   - Click `Jump to ⏱` on a timeline event to verify video seeks to the event offset.
+7. Verify that signing in as candidate or recruiter blocks direct access to `/api/admin/recordings/{id}/playback` with HTTP 403 Forbidden.
 
 Configure outbound email and the public link origin with these environment variables:
 
@@ -110,6 +148,37 @@ After submitting an assessment, candidates can review their performance in detai
 - **Actionable Recommendations**: Topic-tailored study recommendations highlighting key concepts to practice (e.g. SQL joins and window functions, pandas data cleaning, async JavaScript).
 - **Question-by-Question Review**: Questions answered incorrectly, candidate's selected choice, and (if permitted) the correct answer, explanation, and learning resource links.
 - **Candidate Privacy & Recruiter Control**: A recruiter setting (`Allow detailed candidate results`, default ON) controls whether candidates can see exact answer keys and explanations after testing. When disabled, candidates see scores, topic breakdowns, and study recommendations, but exact correct answers remain concealed. Recruiters and administrators can always view full answer keys and question reviews for authorized jobs.
+
+### Live candidate video monitoring for recruiters
+
+SkillSphere allows recruiters and administrators to view a candidate's live camera feed in real time while the candidate is taking an assessment:
+- **Candidate Consent & Privacy**:
+  - The proctoring consent screen explicitly informs the candidate that authorized recruiters may view their live webcam video in real time.
+  - Transparent candidate indicators: A persistent badge indicates whether live monitoring is active (`🟢 Live monitoring active`) and when an authorized recruiter is actively observing the video (`🔴 Recruiter viewing live video`).
+  - No camera frames or video streams are routed through or stored in the database. Video is streamed purely peer-to-peer using WebRTC.
+- **Recruiter Live Assessment Monitoring**:
+  - A dedicated section on the **Recruiter Dashboard** and a **Live monitoring** navigation tab display all active assessments for the recruiter's jobs.
+  - Active candidate metadata is surfaced: candidate name, email, job title, assessment round/topic, and start time.
+  - Clear real-time statuses: `Assessment In Progress`, `Camera Connected`, `Camera Disconnected`, `Assessment Submitted`, and `Monitoring Unavailable`.
+  - Recruiter can click **▶ View Live Video** on any connected candidate to open a secure WebRTC video viewing panel.
+  - Recruiters can stop viewing at any time via **Stop Viewing**, gracefully releasing peer connections and informing the candidate.
+- **WebRTC & WebSocket Signaling Architecture**:
+  - Direct peer-to-peer WebRTC video streaming backed by public STUN servers.
+  - Authenticated WebSocket signaling through FastAPI (`/ws/live-monitoring/candidate/{token}` and `/ws/live-monitoring/recruiter/{assessment_id}`).
+  - Strict role and job-ownership authorization: Only recruiters who own the candidate's job (or administrators) can access the live feed; unauthorized requests are rejected immediately with WebSocket code 1008.
+- **Graceful Lifecycle Management**:
+  - Candidate camera disconnections, browser closures, test submissions, and timer expirations are signaled in real time to the recruiter view without video stutter or server memory leaks.
+
+### Recruiter-controlled assessment pass/fail decisions
+
+- **Confidential Results**: Candidates complete assessments normally with internal score calculation, but results (marks, percentages, pass/fail status, and correct answers) are never displayed to candidates or exposed through candidate-facing APIs. After test submission, candidates see a neutral confirmation: *"Your assessment has been submitted successfully. The recruiter will review your results and update your application status."*
+- **Recruiter Evaluation & Manual Decision**: Recruiters view full score percentages, correct/incorrect breakdowns, and question-by-question review in the Assessment Review modal. Recruiters make the final hiring decision manually using explicit **✓ Pass Candidate** or **✕ Fail Candidate** controls. The system does not automatically pass or fail candidates solely based on score percentage.
+- **Ownership & Audit**: Only the recruiter who owns the job (or an admin) can record a decision. Decisions are tracked with timestamp, decision-maker ID, and optional recruiter notes.
+
+### Job description minimum character validation
+
+- Job descriptions must contain at least 20 non-whitespace characters before publishing.
+- Enforced on both frontend and backend with the exact message: *"Job description must contain at least 20 characters before you can post this job."* Entered form inputs are preserved without clearing if validation fails.
 
 ### Job seeker assessments section
 

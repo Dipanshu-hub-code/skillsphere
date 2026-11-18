@@ -55,7 +55,12 @@ const state = {
   jobPage: 1,
   jobTotal: 0,
   modal: "",
-  busy: false
+  busy: false,
+  aiGeneratedQuestions: [],
+  aiGenerating: false,
+  aiSummaryData: null,
+  aiSummaryLoading: false,
+  aiSummaryAppId: null
 };
 
 const esc = value => String(value ?? "").replace(/[&<>"']/g, char => ({
@@ -73,7 +78,20 @@ async function api(path, options = {}) {
   const response = await fetch(`${API}${path}`, { ...options, headers });
   let payload = {};
   try { payload = await response.json(); } catch { payload = {}; }
-  if (!response.ok) throw new Error(payload.detail || `Request failed (${response.status})`);
+  if (!response.ok) {
+    let message = `Request failed (${response.status})`;
+    if (typeof payload.detail === "string") {
+      message = payload.detail;
+    } else if (Array.isArray(payload.detail)) {
+      message = payload.detail.map(d => {
+        const field = Array.isArray(d.loc) ? d.loc[d.loc.length - 1] : "";
+        return field ? `${field}: ${d.msg}` : (d.msg || JSON.stringify(d));
+      }).join("; ");
+    } else if (payload.detail && typeof payload.detail === "object") {
+      message = JSON.stringify(payload.detail);
+    }
+    throw new Error(message);
+  }
   return payload;
 }
 
@@ -88,14 +106,33 @@ function showToast(message, error = false) {
 }
 
 function assessmentProctoringPanel(assessment) {
-  const proctoring = assessment.data.proctoring;
-  const monitor = assessment.proctor;
+  const proctoring = assessment?.data?.proctoring;
+  const monitor = assessment?.proctor;
   if (!proctoring?.required) return "";
   const status = monitor?.status || "Camera is not enabled";
+  const isRecording = Boolean(assessment?.recorder?.isRecording || (monitor?.started && monitor?.stream));
+  const isViewing = Boolean(assessment?.liveMonitoring?.isViewing);
+  const isLiveActive = Boolean(assessment?.liveMonitoring?.connected);
+
   return `<section class="assessment-proctoring" aria-live="polite">
     <video id="assessment-camera-preview" class="assessment-camera-preview" autoplay muted playsinline ${monitor?.stream ? "" : "hidden"}></video>
-    <div><strong>Camera and face-presence check</strong><p>${esc(status)}</p>
-    ${monitor?.started ? `<small>Warnings: ${esc(monitor.warningCount)}/${esc(proctoring.max_warnings)}${monitor.flagged ? " · Flagged for recruiter review" : ""}</small>` : ""}</div>
+    <div>
+      <div class="proctoring-header-line">
+        <strong>Camera & Proctoring Check</strong>
+        <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
+          ${isRecording ? `<span class="recording-badge"><span class="recording-dot"></span> Camera recording active</span>` : ""}
+          ${monitor?.started ? (
+            isViewing
+              ? `<span class="live-monitoring-badge viewing"><span class="live-dot-pulse"></span> Recruiter viewing live video</span>`
+              : isLiveActive
+                ? `<span class="live-monitoring-badge active"><span class="live-dot"></span> Live monitoring active</span>`
+                : `<span class="live-monitoring-badge ready"><span class="live-dot-ready"></span> Live monitoring ready</span>`
+          ) : ""}
+        </div>
+      </div>
+      <p>${esc(status)}</p>
+      ${monitor?.started ? `<small>Warnings: ${esc(monitor.warningCount)}/${esc(proctoring.max_warnings)}${monitor.flagged ? " · Flagged for recruiter review" : ""}</small>` : ""}
+    </div>
   </section>`;
 }
 
@@ -107,17 +144,51 @@ function renderPublicAssessment() {
     content = `<div class="assessment-message"><span class="eyebrow">Assessment unavailable</span><h1>This link cannot be used</h1><p>${esc(assessment.error)}</p></div>`;
   } else if (assessment?.result) {
     const result = assessment.result;
-    content = `<div class="assessment-message"><span class="eyebrow">Assessment completed</span><h1>${esc(result.assessment_name || "Round 1: Technical MCQ Test")}</h1><p>${esc(result.job_title || "")} · ${esc(result.assessment_round || "Round 1")}</p><div class="assessment-score">${esc(result.score_percentage)}<small>%</small></div><p>${esc(result.correct_answer_count)} correct answers out of ${esc(result.total_questions)}</p><p><strong>Result: ${esc(result.result)}</strong></p><p>${esc(result.message)}</p><p>You may close this page now.</p></div>`;
+    const msg = result.message || "Your assessment has been submitted successfully. The recruiter will review your results and update your application status.";
+    content = `<div class="assessment-message">
+      <span class="eyebrow">Assessment completed</span>
+      <h1>${esc(result.assessment_name || "Assessment Completed")}</h1>
+      <p>${esc(result.job_title || "")}${result.assessment_round ? " · " + esc(result.assessment_round) : ""}</p>
+      <div class="assessment-status-banner" style="margin:24px 0;padding:16px;background:#f4f6f8;border-radius:8px;border-left:4px solid #4a6ee0;">
+        <p style="margin:0;font-size:15px;color:#1e293b;line-height:1.5;">${esc(msg)}</p>
+      </div>
+      <p style="color:#64748b;font-size:13px;">You may close this page now.</p>
+    </div>`;
   } else if (data?.status === "Sent") {
     const required = data.proctoring?.required;
-    const cameraReady = assessment.proctor?.cameraReady;
+    const cameraReady = Boolean(assessment.proctor?.cameraReady);
+    const recConsent = Boolean(assessment.proctor?.recordingConsentGiven);
+    const canStart = !required || (cameraReady && recConsent && Boolean(assessment.proctor?.stream));
     content = `<div class="assessment-welcome"><span class="eyebrow">${esc(data.assessment_round)} · ${esc(data.company)}</span><h1>${esc(data.assessment_name)}</h1><p class="assessment-company">${esc(data.job_title)} · ${esc(data.technology)}</p><div class="assessment-facts"><span><strong>Questions</strong>${esc(data.total_questions)} multiple-choice</span><span><strong>Time limit</strong>${esc(data.duration_minutes)} minutes after starting</span><span><strong>Passing score</strong>${esc(data.pass_percentage)}%</span><span><strong>Link expires</strong>${new Date(data.expires_at).toLocaleString()}</span></div><p>Complete this assessment independently. Once started, the timer cannot be paused and the link can be submitted only once.</p>
-      ${required ? `<div class="assessment-consent"><strong>Before you begin</strong><p>Camera access and face-presence checks are required. Video frames are processed locally in your browser and are never uploaded, recorded, or stored. Only monitoring events and warning counts are saved for review.</p><label class="checkbox-field"><input type="checkbox" data-proctor-consent ${assessment.proctor?.consentGiven ? "checked" : ""} /> I consent to the camera-based proctoring described above.</label>${assessment.proctor?.error ? `<p class="assessment-proctor-error" role="alert">${esc(assessment.proctor.error)}</p>` : ""}${assessmentProctoringPanel(assessment)}<button class="btn btn-quiet" data-assessment-action="enable-proctoring" ${assessment.busy ? "disabled" : ""}>${cameraReady ? "Camera enabled" : "Enable camera and continue"}</button></div>` : ""}
-      <button class="btn btn-primary" data-assessment-action="start" ${assessment.busy || (required && !cameraReady) ? "disabled" : ""}>Start assessment →</button></div>`;
+      ${required ? `<div class="assessment-consent">
+        <strong>Proctoring, Video Recording & Live Monitoring Consent</strong>
+        <p>This assessment uses real-time webcam proctoring to protect test integrity:</p>
+        <ul class="assessment-consent-points">
+          <li><strong>Camera access is required</strong> throughout the duration of the assessment.</li>
+          <li><strong>Webcam video will be recorded</strong> during the test and securely uploaded for cheating and integrity review.</li>
+          <li><strong>Live recruiter monitoring:</strong> Authorized recruiters may view your live webcam stream in real time during the assessment.</li>
+          <li><strong>Secure and restricted storage:</strong> Recordings and live sessions are strictly restricted to authorized recruiters and administrators.</li>
+          <li><strong>Video scope:</strong> The camera stream may include your face, head orientation, and immediate surroundings.</li>
+          <li><strong>Automated checks:</strong> The browser monitors face-presence, tab switching, and window focus.</li>
+          <li><strong>Consent required:</strong> The assessment timer will start only after you confirm consent and camera verification succeeds.</li>
+        </ul>
+        <label class="checkbox-field" style="margin-bottom:12px;cursor:pointer">
+          <input type="checkbox" data-recording-consent ${recConsent ? "checked" : ""} />
+          <span>I understand and consent to webcam recording and live recruiter monitoring during this assessment.</span>
+        </label>
+        ${assessment.proctor?.error ? `<p class="assessment-proctor-error" role="alert">${esc(assessment.proctor.error)}</p>` : ""}
+        ${assessmentProctoringPanel(assessment)}
+        <div style="margin-top:12px">
+          <button class="btn btn-quiet" data-assessment-action="enable-proctoring" ${assessment.busy || !recConsent ? "disabled" : ""}>
+            ${cameraReady ? "✓ Camera stream active" : "Enable camera and verify stream"}
+          </button>
+        </div>
+      </div>` : ""}
+      <button class="btn btn-primary" data-assessment-action="start" ${assessment.busy || !canStart ? "disabled" : ""}>Start assessment →</button></div>`;
   } else if (data?.status === "Started") {
     const remaining = Math.max(0, Math.ceil((new Date(data.expires_at).getTime() - Date.now()) / 1000));
     if (data.proctoring?.required && !assessment.proctor?.cameraReady) {
-      content = `<div class="assessment-message"><span class="eyebrow">Assessment in progress</span><h1>Reconnect your camera</h1><p>The timer is running. Camera access is required to continue; no video is uploaded or stored.</p>${assessment.proctor?.error ? `<p class="assessment-proctor-error" role="alert">${esc(assessment.proctor.error)}</p>` : ""}${assessmentProctoringPanel(assessment)}<button class="btn btn-primary" data-assessment-action="resume-camera" ${assessment.busy ? "disabled" : ""}>Enable camera and resume</button></div>`;
+      content = `<div class="assessment-message"><span class="eyebrow">Assessment in progress</span><h1>Reconnect your camera</h1><p>The timer is running. Continuous camera access and recording are required to proceed.</p>${assessment.proctor?.error ? `<p class="assessment-proctor-error" role="alert">${esc(assessment.proctor.error)}</p>` : ""}${assessmentProctoringPanel(assessment)}<button class="btn btn-primary" data-assessment-action="resume-camera" ${assessment.busy ? "disabled" : ""}>Enable camera and resume</button></div>`;
     } else {
       const currentQuestion = data.questions[assessment.current] || data.questions[0];
       const answered = Object.keys(assessment.answers).length;
@@ -136,6 +207,7 @@ function renderPublicAssessment() {
       const monitor = assessment.proctor;
       if (!video.isConnected || !monitor.cameraReady) return;
       monitor.error = `The camera preview could not play: ${error.message}`;
+      stopAssessmentRecording();
       stopAssessmentProctoring();
       renderPublicAssessment();
     });
@@ -147,10 +219,13 @@ async function loadPublicAssessment(token) {
   state.publicAssessment = {
     token, data: null, current: 0, answers: {}, confirming: false, busy: false,
     error: "", result: null, timer: null,
+    recorder: {
+      mediaRecorder: null, chunks: [], startTime: 0, isRecording: false, mimeType: "video/webm"
+    },
     proctor: {
       stream: null, detector: null, video: null, animationFrame: 0, missingTimer: null,
       missingSince: null, missingReported: false, lastFaceCount: 0, cameraReady: false,
-      consentGiven: false, started: false, warningCount: 0, flagged: false,
+      consentGiven: false, recordingConsentGiven: false, started: false, warningCount: 0, flagged: false,
       status: "Camera is not enabled", error: "", stopping: false, processing: false,
       reportingErrorShown: false, visibilityHandler: null, blurHandler: null, focusHandler: null
     }
@@ -162,6 +237,7 @@ async function loadPublicAssessment(token) {
     state.publicAssessment.proctor.warningCount = assessment.proctoring?.warning_count || 0;
     state.publicAssessment.proctor.flagged = Boolean(assessment.proctoring?.flagged);
     state.publicAssessment.proctor.consentGiven = Boolean(assessment.proctoring?.consent_given);
+    state.publicAssessment.proctor.recordingConsentGiven = Boolean(assessment.proctoring?.recording_consent_given || assessment.proctoring?.consent_given);
     state.publicAssessment.proctor.started = Boolean(assessment.proctoring?.camera_permission_granted);
     renderPublicAssessment();
     if (assessment.status === "Started") {
@@ -287,8 +363,8 @@ async function enableAssessmentCamera(resume = false) {
   const assessment = state.publicAssessment;
   const monitor = assessment?.proctor;
   if (!assessment || !monitor || monitor.cameraReady) return;
-  if (!resume && !document.querySelector("[data-proctor-consent]")?.checked) {
-    monitor.error = "Please confirm consent before enabling camera access.";
+  if (!resume && !assessment.proctor?.recordingConsentGiven) {
+    monitor.error = "Please check the recording consent box before enabling camera access.";
     renderPublicAssessment();
     return;
   }
@@ -322,22 +398,38 @@ async function enableAssessmentCamera(resume = false) {
     await monitor.detector.initialize();
     const registration = await api(`/assessments/${encodeURIComponent(assessment.token)}/proctoring/start`, {
       method: "POST",
-      body: JSON.stringify({ consent_given: true, camera_permission_granted: true })
+      body: JSON.stringify({
+        consent_given: true,
+        camera_permission_granted: true,
+        recording_consent_given: true,
+        recording_consent_version: "1.0"
+      })
     });
     if (!registration.started && registration.required) {
       throw new Error("Camera consent and permission are required before starting.");
     }
     monitor.consentGiven = true;
+    monitor.recordingConsentGiven = true;
     monitor.cameraReady = true;
     monitor.started = Boolean(assessment.data.status === "Started");
-    monitor.status = "Camera is active. Frames are processed only in this browser.";
+    monitor.status = "Camera is active. Real-time proctoring enabled.";
     monitor.error = "";
-    if (monitor.started) attachProctoringActivityListeners();
+    if (monitor.started) {
+      attachProctoringActivityListeners();
+      if (!assessment.recorder?.isRecording && monitor.stream) {
+        startAssessmentRecording(monitor.stream);
+      }
+      if (!assessment.liveMonitoring?.connected && monitor.stream) {
+        startCandidateLiveMonitoring(assessment.token, monitor.stream);
+      }
+    }
     for (const track of monitor.stream.getVideoTracks()) {
       track.addEventListener("ended", () => {
         if (monitor.stopping) return;
         const message = "Camera access stopped.";
         if (monitor.started) reportProctoringEvent("camera_stopped");
+        stopCandidateLiveMonitoring();
+        stopAssessmentRecording();
         stopAssessmentProctoring();
         monitor.status = "Camera access stopped.";
         monitor.error = message;
@@ -357,15 +449,248 @@ async function enableAssessmentCamera(resume = false) {
     } catch (eventError) {
       eventErrorMessage = ` The camera event could not be recorded: ${eventError.message}`;
     }
+    stopAssessmentRecording();
     stopAssessmentProctoring();
     monitor.error = `${error.message}${eventErrorMessage}`;
     renderPublicAssessment();
   }
 }
 
+function startAssessmentRecording(stream) {
+  const assessment = state.publicAssessment;
+  if (!assessment || !stream) return;
+  if (typeof window.MediaRecorder === "undefined") {
+    console.warn("MediaRecorder is not supported in this browser.");
+    return;
+  }
+  let mimeType = "video/webm";
+  if (MediaRecorder.isTypeSupported("video/webm;codecs=vp9")) mimeType = "video/webm;codecs=vp9";
+  else if (MediaRecorder.isTypeSupported("video/webm;codecs=vp8")) mimeType = "video/webm;codecs=vp8";
+  else if (MediaRecorder.isTypeSupported("video/webm")) mimeType = "video/webm";
+  else if (MediaRecorder.isTypeSupported("video/mp4")) mimeType = "video/mp4";
+
+  assessment.recorder = {
+    mediaRecorder: null,
+    chunks: [],
+    startTime: Date.now(),
+    isRecording: false,
+    mimeType
+  };
+
+  try {
+    const recorder = new MediaRecorder(stream, { mimeType });
+    assessment.recorder.mediaRecorder = recorder;
+
+    recorder.ondataavailable = event => {
+      if (event.data && event.data.size > 0) {
+        assessment.recorder.chunks.push(event.data);
+      }
+    };
+
+    recorder.onerror = event => {
+      console.warn("MediaRecorder error:", event.error);
+    };
+
+    recorder.onstop = () => {
+      finalizeAssessmentRecordingUpload();
+    };
+
+    recorder.start(4000);
+    assessment.recorder.isRecording = true;
+
+    api(`/assessments/${encodeURIComponent(assessment.token)}/recording/start`, {
+      method: "POST",
+      body: JSON.stringify({ consent: true, consent_version: "1.0" })
+    }).catch(err => console.warn("Recording start endpoint registration note:", err));
+  } catch (err) {
+    console.warn("Could not start MediaRecorder:", err);
+  }
+}
+
+function stopAssessmentRecording() {
+  const rec = state.publicAssessment?.recorder;
+  if (rec && rec.mediaRecorder && rec.mediaRecorder.state !== "inactive") {
+    try {
+      rec.isRecording = false;
+      rec.mediaRecorder.stop();
+    } catch (e) {
+      console.warn("Error stopping MediaRecorder:", e);
+    }
+  }
+}
+
+async function finalizeAssessmentRecordingUpload() {
+  const assessment = state.publicAssessment;
+  const rec = assessment?.recorder;
+  if (!assessment || !rec || !rec.chunks.length) return;
+  const chunksToUpload = [...rec.chunks];
+  rec.chunks = [];
+  const duration = Math.max(1, Math.round((Date.now() - (rec.startTime || Date.now())) / 1000));
+  const blob = new Blob(chunksToUpload, { type: rec.mimeType || "video/webm" });
+
+  const formData = new FormData();
+  formData.append("video", blob, `assessment_${assessment.data?.id || "rec"}.webm`);
+  formData.append("duration_seconds", String(duration));
+
+  showToast("Finalizing secure video recording upload…");
+  try {
+    const response = await fetch(`/api/assessments/${encodeURIComponent(assessment.token)}/recording/complete?duration_seconds=${duration}`, {
+      method: "POST",
+      body: formData
+    });
+    if (response.ok) {
+      showToast("Webcam recording securely stored.");
+    } else {
+      console.warn("Recording completion status:", response.status);
+    }
+  } catch (err) {
+    console.warn("Error uploading recording:", err);
+  }
+}
+
+function startCandidateLiveMonitoring(token, stream) {
+  const assessment = state.publicAssessment;
+  if (!assessment || !token) return;
+  stopCandidateLiveMonitoring();
+
+  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+  const wsUrl = `${protocol}//${window.location.host}/ws/live-monitoring/candidate/${encodeURIComponent(token)}`;
+
+  assessment.liveMonitoring = {
+    ws: null,
+    pc: null,
+    activeViewers: 0,
+    connected: false,
+    isViewing: false,
+  };
+
+  try {
+    const ws = new WebSocket(wsUrl);
+    assessment.liveMonitoring.ws = ws;
+
+    ws.onopen = () => {
+      if (!assessment.liveMonitoring) return;
+      assessment.liveMonitoring.connected = true;
+      const camActive = Boolean(stream && stream.active && stream.getVideoTracks().some(t => t.readyState === "live"));
+      ws.send(JSON.stringify({ type: "camera_status", connected: camActive }));
+      renderPublicAssessment();
+    };
+
+    ws.onmessage = async (evt) => {
+      try {
+        const msg = JSON.parse(evt.data);
+        if (msg.type === "viewer_joined") {
+          if (!assessment.liveMonitoring) return;
+          assessment.liveMonitoring.activeViewers = msg.viewers_count || 1;
+          assessment.liveMonitoring.isViewing = true;
+          renderPublicAssessment();
+        } else if (msg.type === "viewer_left") {
+          if (!assessment.liveMonitoring) return;
+          const remaining = msg.viewers_count || 0;
+          assessment.liveMonitoring.activeViewers = remaining;
+          assessment.liveMonitoring.isViewing = remaining > 0;
+          if (remaining === 0 && assessment.liveMonitoring.pc) {
+            try { assessment.liveMonitoring.pc.close(); } catch (e) {}
+            assessment.liveMonitoring.pc = null;
+          }
+          renderPublicAssessment();
+        } else if (msg.type === "request_offer") {
+          if (!assessment.liveMonitoring) return;
+          assessment.liveMonitoring.isViewing = true;
+          renderPublicAssessment();
+          await createWebRtcOfferForRecruiter(ws, stream);
+        } else if (msg.type === "webrtc_answer") {
+          const pc = assessment.liveMonitoring?.pc;
+          if (pc && msg.sdp) {
+            await pc.setRemoteDescription(new RTCSessionDescription(msg.sdp));
+          }
+        } else if (msg.type === "ice_candidate") {
+          const pc = assessment.liveMonitoring?.pc;
+          if (pc && msg.candidate) {
+            await pc.addIceCandidate(new RTCIceCandidate(msg.candidate)).catch(() => {});
+          }
+        }
+      } catch (err) {
+        console.warn("Live monitoring candidate error:", err);
+      }
+    };
+
+    ws.onclose = () => {
+      if (assessment.liveMonitoring) {
+        assessment.liveMonitoring.connected = false;
+        assessment.liveMonitoring.isViewing = false;
+      }
+      renderPublicAssessment();
+    };
+
+    ws.onerror = (err) => {
+      console.warn("Candidate live monitoring WS error:", err);
+    };
+  } catch (err) {
+    console.warn("Candidate live monitoring init error:", err);
+  }
+}
+
+async function createWebRtcOfferForRecruiter(ws, stream) {
+  const assessment = state.publicAssessment;
+  if (!assessment || !ws || ws.readyState !== WebSocket.OPEN) return;
+
+  if (assessment.liveMonitoring?.pc) {
+    try { assessment.liveMonitoring.pc.close(); } catch (e) {}
+  }
+
+  const rtcConfig = {
+    iceServers: [
+      { urls: "stun:stun.l.google.com:19302" },
+      { urls: "stun:stun1.l.google.com:19302" }
+    ]
+  };
+
+  try {
+    const pc = new RTCPeerConnection(rtcConfig);
+    assessment.liveMonitoring.pc = pc;
+
+    if (stream) {
+      stream.getTracks().forEach(track => {
+        pc.addTrack(track, stream);
+      });
+    }
+
+    pc.onicecandidate = (event) => {
+      if (event.candidate && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: "ice_candidate", candidate: event.candidate }));
+      }
+    };
+
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    ws.send(JSON.stringify({ type: "webrtc_offer", sdp: pc.localDescription }));
+  } catch (err) {
+    console.warn("Failed to create WebRTC offer:", err);
+  }
+}
+
+function stopCandidateLiveMonitoring() {
+  const assessment = state.publicAssessment;
+  if (!assessment || !assessment.liveMonitoring) return;
+  const { ws, pc } = assessment.liveMonitoring;
+  if (pc) {
+    try { pc.close(); } catch (e) {}
+  }
+  if (ws) {
+    if (ws.readyState === WebSocket.OPEN) {
+      try { ws.send(JSON.stringify({ type: "assessment_submitted" })); } catch (e) {}
+    }
+    try { ws.close(); } catch (e) {}
+  }
+  assessment.liveMonitoring = null;
+}
+
 function stopAssessmentProctoring() {
   const monitor = state.publicAssessment?.proctor;
   if (!monitor) return;
+  stopCandidateLiveMonitoring();
+  stopAssessmentRecording();
   monitor.stopping = true;
   if (monitor.animationFrame) cancelAnimationFrame(monitor.animationFrame);
   clearTimeout(monitor.missingTimer);
@@ -441,7 +766,13 @@ async function handleAssessmentAction(action) {
       assessment.proctor.started = Boolean(assessment.data.proctoring?.required);
       assessment.proctor.warningCount = assessment.data.proctoring?.warning_count || 0;
       assessment.proctor.flagged = Boolean(assessment.data.proctoring?.flagged);
-      if (assessment.proctor.started) attachProctoringActivityListeners();
+      if (assessment.proctor.started) {
+        attachProctoringActivityListeners();
+        if (assessment.proctor.stream) {
+          startAssessmentRecording(assessment.proctor.stream);
+          startCandidateLiveMonitoring(assessment.token, assessment.proctor.stream);
+        }
+      }
       assessment.busy = false;
       renderPublicAssessment();
       startAssessmentTimer();
@@ -461,10 +792,15 @@ async function handleAssessmentAction(action) {
         body: JSON.stringify({ answers: assessment.answers })
       });
       clearInterval(assessment.timer);
+      stopCandidateLiveMonitoring();
+      stopAssessmentRecording();
       stopAssessmentProctoring();
     } catch (error) {
       assessment.error = error.message;
       clearInterval(assessment.timer);
+      stopCandidateLiveMonitoring();
+      stopAssessmentRecording();
+      stopAssessmentProctoring();
     } finally {
       assessment.busy = false;
       renderPublicAssessment();
@@ -514,8 +850,8 @@ function renderAuth(register = false) {
 
 function navItems() {
   const common = [["Dashboard", "⌂"], ["Find jobs", "⌕"], ["Applications", "▤"], ["Assessments", "✓"], ["My profile", "◉"]];
-  if (state.user?.role === "recruiter") return [["Dashboard", "⌂"], ["My jobs", "▣"], ["Applicants", "♙"], ["Assessments", "✓"], ["Question bank", "☷"], ["Interviews", "◷"], ["Company profile", "◉"]];
-  if (state.user?.role === "admin") return [["Dashboard", "⌂"], ["Users", "♙"], ["Job listings", "▣"], ["Assessments", "✓"], ["Question bank", "☷"], ["Interviews", "◷"]];
+  if (state.user?.role === "recruiter") return [["Dashboard", "⌂"], ["My jobs", "▣"], ["Applicants", "♙"], ["Assessments", "✓"], ["Live monitoring", "◎"], ["Question bank", "☷"], ["Interviews", "◷"], ["Company profile", "◉"]];
+  if (state.user?.role === "admin") return [["Dashboard", "⌂"], ["Users", "♙"], ["Job listings", "▣"], ["Assessments", "✓"], ["Live monitoring", "◎"], ["Question bank", "☷"], ["Interviews", "◷"]];
   return [...common, ["Interviews", "◷"]];
 }
 
@@ -525,6 +861,7 @@ function updatePageTitle(pageName) {
     "Find jobs": "Find Jobs — SkillSphere",
     "Applications": "My Applications — SkillSphere",
     "Assessments": "Assessments — SkillSphere",
+    "Live monitoring": "Live Assessment Monitoring — SkillSphere",
     "My profile": "My Profile — SkillSphere",
     "Applicants": "Applicants — SkillSphere",
     "My jobs": "My Jobs — SkillSphere",
@@ -675,12 +1012,12 @@ function candidateAssessmentsListHtml(assessments) {
           <small style="display:block;color:var(--muted,#666);margin-top:2px">${esc(item.company)} · ${esc(item.technology || "General")} (${esc(item.total_questions || 20)} questions · ${esc(item.duration_minutes || 20)} min)</small>
         </div>
         <div style="display:flex;align-items:center;gap:10px">
-          ${item.result
-            ? `<span class="badge ${item.result === "Passed" ? "badge-green" : "badge-red"}">${esc(item.result)} · ${esc(item.score_percentage)}%</span>`
-            : `<span class="badge badge-amber">${esc(item.assessment_status)}</span>`}
-          ${item.assessment_status === "Completed"
-            ? `<button class="btn btn-quiet btn-small" data-action="review-assessment" data-id="${esc(item.id)}">Review</button>`
-            : ["Sent", "Started"].includes(item.assessment_status)
+          ${["Completed", "Pending Recruiter Decision", "Submitted"].includes(item.assessment_status)
+            ? `<span class="badge badge-blue">Submitted · Under Review</span>`
+            : item.assessment_status === "Expired"
+            ? `<span class="badge badge-red">Link expired</span>`
+            : `<span class="badge badge-amber">${esc(item.assessment_status || "Pending")}</span>`}
+          ${["Sent", "Started"].includes(item.assessment_status)
             ? `<button class="btn btn-primary btn-small" data-action="take-assessment" data-url="${esc(item.action_url || "")}">${item.assessment_status === "Started" ? "Resume test →" : "Start test →"}</button>`
             : ""}
         </div>
@@ -694,8 +1031,6 @@ function candidateDashboard() {
   const latest = state.jobs.slice(0, 3);
   const upcomingInterview = state.upcomingInterviews[0];
   const analytics = state.candidateAnalytics || {};
-  const strengths = analytics.strengths || [];
-  const areasToImprove = analytics.areas_to_improve || [];
   const assessments = state.assessments || [];
   const pendingAssessments = assessments.filter(item => ["Sent", "Started"].includes(item.assessment_status));
 
@@ -703,7 +1038,7 @@ function candidateDashboard() {
     <section class="grid stats-grid">
       ${stat("Active applications", analytics.active_applications ?? candidateApps.filter(item => !["Rejected", "Withdrawn", "Accepted", "Selected"].includes(item.status)).length, "Your opportunities in progress", "↗")}
       ${stat("Technical tests", assessments.length, pendingAssessments.length ? `${pendingAssessments.length} pending action` : "Assigned evaluations", "✓")}
-      ${stat("Average test score", analytics.average_score_percentage != null ? `${analytics.average_score_percentage}%` : "—", "Across completed assessments", "★")}
+      ${stat("Completed tests", candidateApps.filter(item => ["Completed", "Pending Recruiter Decision", "Submitted"].includes(item.assessment_status)).length, "Submitted for review", "◉")}
       ${stat("Interviews", analytics.interviews_scheduled ?? state.interviews.length, "Conversations in pipeline", "◷")}
     </section>
     ${pendingAssessments.length ? `
@@ -715,32 +1050,15 @@ function candidateDashboard() {
         <button class="btn btn-primary btn-small" data-action="take-assessment" data-url="${esc(pendingAssessments[0].action_url || "")}">${pendingAssessments[0].assessment_status === "Started" ? "Resume test →" : "Take assessment now →"}</button>
       </div>
     ` : ""}
-    ${(strengths.length || areasToImprove.length) ? `
-      <section class="card" style="margin-bottom:16px">
-        <div class="card-heading"><div><h2>Skill performance overview</h2><p>Insights from your completed technical assessments</p></div><button class="btn btn-quiet btn-small" data-page="Assessments">View test reviews →</button></div>
-        <div style="display:flex;gap:16px;flex-wrap:wrap">
-          <div style="flex:1;min-width:220px">
-            <strong style="font-size:11px;color:#2f855a">Top Strengths (≥ 70%)</strong>
-            <div class="chips-row">
-              ${strengths.length ? strengths.map(s => `<span class="chip-green">★ ${esc(s)}</span>`).join("") : `<span class="stat-note">Complete assessments to showcase strengths</span>`}
-            </div>
-          </div>
-          <div style="flex:1;min-width:220px">
-            <strong style="font-size:11px;color:#b45309">Recommended Focus Areas (&lt; 70%)</strong>
-            <div class="chips-row">
-              ${areasToImprove.length ? areasToImprove.map(w => `<span class="chip-amber">▲ Practice ${esc(w)}</span>`).join("") : `<span class="chip-green">No low scoring topics</span>`}
-            </div>
-          </div>
-        </div>
-      </section>
-    ` : ""}
     <section class="columns">
       <article class="card"><div class="card-heading"><div><h2>Roles to explore</h2><p>Thoughtful opportunities for your next chapter</p></div><button class="text-button" data-page="Find jobs">See all →</button></div><div class="job-list">${latest.length ? latest.map(job => jobRow(job)).join("") : empty("No open roles yet", "Check back soon for new opportunities.")}</div></article>
       <article class="card"><div class="card-heading"><div><h2>Your applications</h2><p>A quick look at where things stand</p></div><button class="text-button" data-page="Applications">View all →</button></div><div class="application-list">${applicationRows(candidateApps)}</div></article>
     </section>
     <section class="card" style="margin-top:16px">
-      <div class="card-heading"><div><h2>Technical assessments <span class="badge">${assessments.length}</span></h2><p>Assigned evaluations and Round 1 results</p></div><button class="text-button" data-page="Assessments">View all →</button></div>
+      <div class="card-heading"><div><h2>Technical assessments <span class="badge">${assessments.length}</span></h2><p>Assigned evaluations and status</p></div><button class="text-button" data-page="Assessments">View all →</button></div>
       ${candidateAssessmentsListHtml(assessments)}
+    </section>`;
+}
     </section>
     <section class="card upcoming-interview-card" style="margin-top:16px"><div class="card-heading"><div><h2>Upcoming interviews</h2><p>Your next conversation, all in one place</p></div><button class="text-button" data-page="Interviews">View all →</button></div>
       ${upcomingInterview ? `<article class="upcoming-interview"><span class="eyebrow">${esc(upcomingInterview.company)}</span><h3>${esc(upcomingInterview.title)}</h3><p>${esc(candidateInterviewTime(upcomingInterview))} · ${esc(upcomingInterview.duration_minutes)} minutes</p><div class="interview-actions">${/^https:\/\//i.test(upcomingInterview.meeting_url || "") ? `<a class="btn btn-primary btn-small join-interview" href="${esc(upcomingInterview.meeting_url)}" target="_blank" rel="noopener noreferrer">Join Interview ↗</a>` : `<span class="stat-note">The recruiter has not added a meeting link yet.</span>`}<button class="text-button" data-action="view-interview" data-id="${esc(upcomingInterview.id)}">View Interview Details</button></div></article>` : empty("No upcoming interviews", "When a recruiter schedules an interview, it will appear here.", "◷")}
@@ -782,7 +1100,7 @@ function applicationsPage() {
       <td><strong>${esc(item.title)}</strong><small>${esc(item.company)} · <button class="text-button" data-action="application-history" data-id="${esc(item.id)}">View timeline</button></small></td>
       <td><strong>${item.match_percentage == null ? "—" : `${esc(item.match_percentage)}%`}</strong><details class="skill-details"><summary>Skills</summary><small>Matched: ${esc((item.matched_skills || []).join(", ") || "None")}</small><small>To develop: ${esc((item.missing_skills || []).join(", ") || "None")}</small></details></td>
       <td>${dateLabel(item.applied_at)}</td><td><span class="badge ${["Accepted", "Selected"].includes(item.status) ? "badge-green" : item.status === "Rejected" ? "" : "badge-red"}">${esc(item.status)}</span></td>
-      <td>${item.assessment_status ? `<span class="badge ${item.assessment_result === "Passed" ? "badge-green" : item.assessment_result === "Failed" ? "badge-red" : "badge-amber"}">${esc(item.assessment_result || item.assessment_status)}</span>${item.assessment_score_percentage == null ? "" : `<small class="assessment-result">${esc(item.assessment_score_percentage)}% · ${esc(item.assessment_correct_count ?? item.assessment_score ?? "")}/${esc(item.assessment_total_questions || 20)}</small>`}${item.assessment_id && item.assessment_status === "Completed" ? `<button class="text-button" style="display:block;margin-top:4px" data-action="review-assessment" data-id="${esc(item.assessment_id)}">Review performance →</button>` : ""}${["Sent", "Assessment Sent", "Started", "Assessment Started"].includes(item.assessment_status) ? `<button class="btn btn-primary btn-small" style="display:inline-block;margin-top:4px" data-action="take-assessment" data-url="${esc(item.assessment_action_url || "")}">${item.assessment_status.includes("Started") ? "Resume test →" : "Take test →"}</button>` : ""}` : "—"}</td>
+      <td>${item.assessment_status ? `<span class="badge ${['Completed', 'Pending Recruiter Decision', 'Submitted'].includes(item.assessment_status) ? 'badge-blue' : item.assessment_status === 'Expired' ? 'badge-red' : 'badge-amber'}">${['Completed', 'Pending Recruiter Decision', 'Submitted'].includes(item.assessment_status) ? 'Submitted · Under Review' : esc(item.assessment_status)}</span>${["Sent", "Assessment Sent", "Started", "Assessment Started"].includes(item.assessment_status) ? `<button class="btn btn-primary btn-small" style="display:inline-block;margin-top:4px" data-action="take-assessment" data-url="${esc(item.assessment_action_url || "")}">${item.assessment_status.includes("Started") ? "Resume test →" : "Take test →"}</button>` : ""}` : "—"}</td>
       <td>${item.interview ? interviewScheduleDetails(item.interview) : "—"}</td>
       <td>${["Applied", "Under Review", "Shortlisted", "Assessment Sent", "Assessment Started"].includes(item.status) ? `<button class="text-button" data-action="withdraw" data-id="${esc(item.id)}">Withdraw</button>` : "—"}</td>
     </tr>`).join("")}</tbody></table></div>` : empty("Your story starts here", "Find a role that feels right and apply when you're ready.")}
@@ -814,25 +1132,21 @@ function assessmentsPage() {
 
   if (state.user.role === "candidate") {
     const active = rows.filter(item => ["Sent", "Started"].includes(item.assessment_status));
-    const completed = rows.filter(item => item.assessment_status === "Completed");
-    const passed = completed.filter(item => item.result === "Passed").length;
-    const avgScore = completed.length
-      ? Math.round(completed.reduce((acc, c) => acc + (c.score_percentage || 0), 0) / completed.length)
-      : null;
+    const submitted = rows.filter(item => ["Completed", "Pending Recruiter Decision", "Submitted"].includes(item.assessment_status));
 
-    return `${heading("Your technical assessments", "My Assessments", "View your technical evaluations, take active assessments, and review performance breakdowns.")}
+    return `${heading("Your technical assessments", "My Assessments", "View your assigned evaluations and take active assessments.")}
       <section class="grid stats-grid" style="margin-bottom:16px">
         ${stat("Total assessments", rows.length, "Assigned to your applications", "✓")}
         ${stat("Pending tests", active.length, active.length ? "Ready to take" : "All caught up", active.length ? "⚡" : "★")}
-        ${stat("Completed", completed.length, `${passed} passed of ${completed.length}`, "◉")}
-        ${stat("Average score", avgScore != null ? `${avgScore}%` : "—", "Across completed tests", "★")}
+        ${stat("Submitted tests", submitted.length, "Under recruiter review", "◉")}
+        ${stat("Status", submitted.length ? "Under review" : "In progress", "Application pipeline", "◷")}
       </section>
 
       ${active.length ? `
         <div class="pending-assessment-banner">
           <div>
             <strong>⚡ Active assessment ready: ${esc(active[0].title)} · ${esc(active[0].company)}</strong>
-            <p>${esc(active[0].technology || "Technical Evaluation")} · ${esc(active[0].total_questions)} questions · ${esc(active[0].duration_minutes)} minutes · Required pass: ${esc(active[0].pass_percentage)}%</p>
+            <p>${esc(active[0].technology || "Technical Evaluation")} · ${esc(active[0].total_questions)} questions · ${esc(active[0].duration_minutes)} minutes</p>
           </div>
           <button class="btn btn-primary" data-action="take-assessment" data-url="${esc(active[0].action_url || "")}">${active[0].assessment_status === "Started" ? "Resume assessment →" : "Take assessment now →"}</button>
         </div>
@@ -851,8 +1165,7 @@ function assessmentsPage() {
               <th>Role & Company</th>
               <th>Assessment & Topic</th>
               <th>Format</th>
-              <th>Score</th>
-              <th>Status & Result</th>
+              <th>Status</th>
               <th>Date</th>
               <th>Action</th>
             </tr>
@@ -862,13 +1175,12 @@ function assessmentsPage() {
               <tr>
                 <td><strong>${esc(item.title)}</strong><small>${esc(item.company)}</small></td>
                 <td><strong>${esc(item.assessment_name || "Round 1: Technical MCQ Test")}</strong><small>${esc(item.technology || "Topic not selected")}</small></td>
-                <td>${esc(item.total_questions)} questions<small>${esc(item.duration_minutes)} min · Pass ${esc(item.pass_percentage)}%</small></td>
-                <td>${item.score_percentage == null ? "—" : `<strong>${esc(item.score_percentage)}%</strong><small>${esc(item.correct_answer_count ?? item.score)} / ${esc(item.total_questions)}</small>`}</td>
-                <td>${item.result ? `<span class="badge ${item.result === "Passed" ? "badge-green" : "badge-red"}">${esc(item.result)}</span>${item.result === "Passed" ? "<small style='display:block;color:#15803d;margin-top:2px'>Passed Round 1</small>" : "<small style='display:block;color:#b91c1c;margin-top:2px'>Did not meet passing score</small>"}` : `<span class="badge badge-amber">${esc(item.assessment_status)}</span>`}</td>
+                <td>${esc(item.total_questions)} questions<small>${esc(item.duration_minutes)} min</small></td>
+                <td><span class="badge ${['Completed', 'Pending Recruiter Decision', 'Submitted'].includes(item.assessment_status) ? 'badge-blue' : item.assessment_status === 'Expired' ? 'badge-red' : 'badge-amber'}">${['Completed', 'Pending Recruiter Decision', 'Submitted'].includes(item.assessment_status) ? 'Submitted · Under Review' : esc(item.assessment_status)}</span></td>
                 <td>${dateTimeLabel(item.submitted_at || item.email_sent_at || item.starts_at)}</td>
                 <td>
-                  ${item.assessment_status === "Completed"
-                    ? `<button class="btn btn-quiet btn-small" data-action="review-assessment" data-id="${esc(item.id)}">Performance review →</button>`
+                  ${["Completed", "Pending Recruiter Decision", "Submitted"].includes(item.assessment_status)
+                    ? `<span class="stat-note" style="color:#2563eb;font-weight:600;">Under Recruiter Review</span>`
                     : ["Sent", "Started"].includes(item.assessment_status)
                     ? `<button class="btn btn-primary btn-small" data-action="take-assessment" data-url="${esc(item.action_url || "")}">${item.assessment_status === "Started" ? "Resume test →" : "Take test →"}</button>`
                     : item.assessment_status === "Expired"
@@ -902,7 +1214,7 @@ function assessmentsPage() {
       <td>${item.score_percentage == null ? "—" : `<strong>${esc(item.score_percentage)}%</strong><small>${esc(item.correct_answer_count ?? item.score)} correct / ${esc(item.total_questions)}</small>`}</td>
       <td>${item.result ? `<span class="badge ${item.result === "Passed" ? "badge-green" : "badge-red"}">${esc(item.result)}</span>` : `<span class="badge badge-amber">${esc(item.assessment_status)}</span>`}</td>
       <td>${dateTimeLabel(item.submitted_at)}</td>
-      <td>${esc(item.application_status)}</td><td>${item.result === "Passed" ? `<select class="status-select" data-assessment-pipeline="${esc(item.application_id)}" aria-label="Move ${esc(item.candidate_name)} to next stage"><option value="">Choose next stage</option>${statusOptions(item.application_status).filter(value => ["Interview", "Accepted", "Rejected"].includes(value)).map(value => `<option>${value}</option>`).join("")}</select>` : "—"}</td><td>${item.assessment_status === "Completed" ? `<button class="text-button" data-action="review-assessment" data-id="${esc(item.id)}">Review answers</button>` : "—"}</td>
+      <td>${esc(item.application_status)}</td><td>${item.result === "Passed" ? `<select class="status-select" data-assessment-pipeline="${esc(item.application_id)}" aria-label="Move ${esc(item.candidate_name)} to next stage"><option value="">Choose next stage</option>${statusOptions(item.application_status).filter(value => ["Interview", "Accepted", "Rejected"].includes(value)).map(value => `<option>${value}</option>`).join("")}</select>` : "—"}</td><td>${item.assessment_status === "Completed" ? `<button class="text-button" data-action="review-assessment" data-id="${esc(item.id)}">Review answers</button>` : item.assessment_status === "Started" ? `<button class="text-button" data-action="view-live-video" data-id="${esc(item.id)}" style="color:#16a34a;font-weight:600;">◎ Live Video</button>` : "—"}</td>
     </tr>`).join("")}</tbody></table></div>` : empty("No assessments found", "Assessments matching your filters will appear here.", "✓")}
     </section>`;
 }
@@ -918,8 +1230,19 @@ function questionBankPage() {
   const summary = state.questionBankSummary || { active_count: 0, topics: [] };
   const counts = summary.topics || [];
   const preview = state.questionImportPreview;
-  return `${heading("Question bank", esc(state.questionBankJob.title), `${esc(state.questionBankJob.company)} · Assessments use 20 active questions across relevant skill topics.`, `<button class="btn btn-quiet btn-small" data-action="back-question-banks">← All jobs</button>`)}
+  const qCount = summary.configured_assessment_question_count || 20;
+  return `${heading("Question bank", esc(state.questionBankJob.title), `${esc(state.questionBankJob.company)} · Assessments use ${qCount} active questions across relevant skill topics.`, `<div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn btn-primary btn-small" data-action="open-ai-question-generator">⚡ Generate with AI</button><button class="btn btn-quiet btn-small" data-action="back-question-banks">← All jobs</button></div>`)}
     <section class="grid stats-grid bank-topics">${counts.map(topic => stat(topic.technology, topic.active_count, topic.ready ? "Ready for assessments" : `${topic.additional_needed} more active questions needed`, topic.ready ? "✓" : "＋")).join("") || stat("No topics yet", 0, "Add questions to create a topic", "＋")}</section>
+    <section class="card" style="background:linear-gradient(135deg,#ffffff 0%,#fff8f7 100%);border-color:#f8dedb;margin-bottom:16px;">
+      <div class="card-heading" style="margin-bottom:0">
+        <div>
+          <span class="eyebrow" style="color:var(--red)">⚡ AI Assessment Builder</span>
+          <h2 style="margin:4px 0 6px">Instant Technical Question Generator</h2>
+          <p>Generate targeted, job-aligned MCQs with verified correct answers, explanations, and difficulty levels in seconds.</p>
+        </div>
+        <button class="btn btn-primary" data-action="open-ai-question-generator">⚡ Generate with AI →</button>
+      </div>
+    </section>
     <section class="card import-card"><div class="card-heading"><div><h2>Import a question-bank PDF</h2><p>Questions remain a preview until you review and confirm the selections.</p></div><span class="badge ${preview ? "badge-amber" : "badge-green"}">${preview ? "Review required" : "Private upload"}</span></div>
       <form id="question-bank-import-form" class="import-upload">
         <div class="field"><label for="question-bank-pdf">PDF file (10 MB maximum)</label><input class="input" id="question-bank-pdf" name="pdf" type="file" accept="application/pdf,.pdf" required /></div>
@@ -1009,6 +1332,107 @@ function companyProfilePage() {
     </section>`;
 }
 
+function liveAssessmentMonitoringSection(activeList) {
+  const items = activeList || [];
+  const inProgressCount = items.filter(x => x.assessment_status === "Started").length;
+
+  return `
+    <section class="card" style="margin-bottom:16px;">
+      <div class="card-heading">
+        <div>
+          <div style="display:flex;align-items:center;gap:8px;">
+            <h2 style="margin:0;">Live Assessment Monitoring</h2>
+            ${inProgressCount > 0 ? `<span class="badge badge-green" style="font-size:11px;"><span class="live-dot-pulse"></span> ${inProgressCount} In Progress</span>` : ""}
+          </div>
+          <p>Monitor candidates currently taking assessments for your roles in real time via live camera streaming</p>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center;">
+          <button class="btn btn-quiet btn-small" data-action="refresh-live-monitoring">↻ Refresh</button>
+          <button class="text-button" data-page="Live monitoring">Full view →</button>
+        </div>
+      </div>
+
+      ${items.length === 0 ? empty("No active assessments", "Candidates currently taking assessments for your jobs will appear here with live camera status.", "◎") : `
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Candidate</th>
+                <th>Role</th>
+                <th>Assessment</th>
+                <th>Started</th>
+                <th>Assessment Status</th>
+                <th>Camera Status</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${items.map(item => {
+                const isStarted = item.assessment_status === "Started";
+                const isConnected = item.camera_status === "Camera Connected";
+                return `
+                  <tr>
+                    <td>
+                      <strong>${esc(item.candidate_name)}</strong>
+                      <small style="display:block;color:#64748b;">${esc(item.candidate_email)}</small>
+                    </td>
+                    <td>
+                      <span>${esc(item.job_title)}</span>
+                      <small style="display:block;color:#64748b;">${esc(item.company)}</small>
+                    </td>
+                    <td>
+                      <span>${esc(item.assessment_name)}</span>
+                      <small style="display:block;color:#64748b;">${esc(item.assessment_round || "Round 1")} · ${esc(item.technology || "")}</small>
+                    </td>
+                    <td>
+                      <small>${item.starts_at ? new Date(item.starts_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : "—"}</small>
+                    </td>
+                    <td>
+                      <span class="badge ${isStarted ? 'badge-blue' : 'badge-neutral'}">${esc(item.status)}</span>
+                    </td>
+                    <td>
+                      <span class="badge ${isConnected ? 'badge-green' : item.camera_status === 'Camera Disconnected' ? 'badge-red' : 'badge-amber'}">
+                        ${isConnected ? '<span class="live-dot-pulse"></span> ' : ''}${esc(item.camera_status)}
+                      </span>
+                    </td>
+                    <td>
+                      ${item.monitoring_available ? `
+                        <button class="btn btn-primary btn-small" data-action="view-live-video" data-id="${esc(item.assessment_id)}">
+                          ▶ View Live Video
+                        </button>
+                      ` : `
+                        <button class="btn btn-quiet btn-small" disabled title="${esc(item.camera_status)}">
+                          View Live Video
+                        </button>
+                      `}
+                    </td>
+                  </tr>
+                `;
+              }).join("")}
+            </tbody>
+          </table>
+        </div>
+      `}
+    </section>
+  `;
+}
+
+function liveMonitoringPage() {
+  const items = state.liveMonitoringAssessments || [];
+  const inProgress = items.filter(x => x.assessment_status === "Started");
+  const connected = items.filter(x => x.camera_connected);
+
+  return `${heading("Real-time Proctoring", "Live Assessment Monitoring", "Observe candidates taking assessments for your roles in real-time via peer-to-peer WebRTC live streaming.", `<button class="btn btn-quiet btn-small" data-action="refresh-live-monitoring">↻ Refresh feeds</button>`)}
+    <section class="grid stats-grid" style="margin-bottom:16px;">
+      ${stat("Active Assessments", inProgress.length, "Candidates currently testing", "◎")}
+      ${stat("Cameras Connected", connected.length, "Active camera streams", "◉")}
+      ${stat("Total Sessions", items.length, "Recent and active assessments", "✓")}
+    </section>
+
+    ${liveAssessmentMonitoringSection(items)}
+  `;
+}
+
 function recruiterDashboard() {
   const ownJobs = state.jobs;
   const applicants = state.applications;
@@ -1025,6 +1449,8 @@ function recruiterDashboard() {
       ${stat("Assessments passed", summary.assessments_completed ?? 0, "Technical tests completed", "✓")}
       ${stat("Interviews scheduled", summary.interviews_scheduled ?? 0, "Conversations arranged", "◷")}
     </section>
+
+    ${liveAssessmentMonitoringSection(state.liveMonitoringAssessments)}
 
     <section class="card" style="margin-bottom:16px">
       <div class="card-heading">
@@ -1109,8 +1535,8 @@ function applicantsPage() {
           ? `<button class="text-button" data-action="send-assessment" data-id="${esc(item.id)}">Send assessment</button>`
           : ["Sent", "Expired"].includes(assessmentStatus)
             ? `<button class="text-button" data-action="reissue-assessment" data-id="${esc(item.id)}">Re-send link</button>`
-            : assessmentStatus === "Started" ? "In progress"
-              : assessmentStatus === "Completed" ? "Completed"
+            : assessmentStatus === "Started" ? `<button class="text-button" data-action="view-live-video" data-id="${esc(item.assessment_id || item.id)}" style="color:#16a34a;font-weight:600;">◎ Live Video</button>`
+              : ["Completed", "Pending Recruiter Decision"].includes(assessmentStatus) ? (item.status.startsWith("Round 1 ") ? `<span class="badge ${item.status === 'Round 1 Passed' ? 'badge-green' : 'badge-red'}">${esc(item.status)}</span>` : `<span class="badge badge-amber">Pending Decision</span>`)
                 : assessmentStatus === "Manual Topic Required" ? "Choose topic"
                   : assessmentStatus === "Expired" ? "Expired"
                     : "—";
@@ -1123,7 +1549,7 @@ function applicantsPage() {
         : currentInterview && ["Scheduled", "Rescheduled"].includes(currentInterview.status)
           ? `<button class="text-button" data-action="edit-interview" data-id="${esc(currentInterview.id)}">Reschedule Interview</button>`
           : `<button class="text-button" data-action="schedule-interview" data-id="${esc(item.id)}">Schedule Interview</button>`;
-      return `<tr><td><strong>${esc(item.candidate_name)}</strong><small>${esc(item.candidate_email)}</small></td><td>${esc(item.title)}</td><td><strong>${item.match_percentage == null ? "—" : `${esc(item.match_percentage)}%`}</strong><details class="skill-details"><summary>Skills</summary><small>Matched: ${esc((item.matched_skills || []).join(", ") || "None")}</small><small>Missing: ${esc((item.missing_skills || []).join(", ") || "None")}</small></details></td><td>${dateLabel(item.applied_at)}</td><td><button class="text-button" data-action="download-resume" data-id="${esc(item.id)}">Open resume ↗</button></td><td><select class="status-select" data-status="${esc(item.id)}" aria-label="Update status for ${esc(item.candidate_name)}">${statusOptions(item.status).map(status => `<option ${status === (item.status === "Selected" ? "Accepted" : item.status) ? "selected" : ""}>${esc(status)}</option>`).join("")}</select></td><td>${assessmentAction}</td><td>${topic}</td><td>${item.assessment_email_sent_at ? dateLabel(item.assessment_email_sent_at) : "—"}</td><td>${item.assessment_score == null ? "—" : `${esc(item.assessment_score)}/20`}${item.assessment_result ? `<small>${esc(item.assessment_score_percentage)}% · ${esc(item.assessment_result)}</small>` : ""}</td><td>${item.assessment_submitted_at ? dateLabel(item.assessment_submitted_at) : "—"}</td><td><div class="inline-actions"><button class="text-button" data-action="application-history" data-id="${esc(item.id)}">History</button><button class="text-button" data-action="edit-note" data-id="${esc(item.id)}">Notes</button>${item.assessment_id && assessmentStatus === "Completed" ? `<button class="text-button" data-action="review-assessment" data-id="${esc(item.assessment_id)}">Review test</button>` : ""}${interviewAction}</div></td></tr>`;
+      return `<tr><td><strong>${esc(item.candidate_name)}</strong><small>${esc(item.candidate_email)}</small></td><td>${esc(item.title)}</td><td><strong>${item.match_percentage == null ? "—" : `${esc(item.match_percentage)}%`}</strong><details class="skill-details"><summary>Skills</summary><small>Matched: ${esc((item.matched_skills || []).join(", ") || "None")}</small><small>Missing: ${esc((item.missing_skills || []).join(", ") || "None")}</small></details></td><td>${dateLabel(item.applied_at)}</td><td><button class="text-button" data-action="download-resume" data-id="${esc(item.id)}">Open resume ↗</button></td><td><select class="status-select" data-status="${esc(item.id)}" aria-label="Update status for ${esc(item.candidate_name)}">${statusOptions(item.status).map(status => `<option ${status === (item.status === "Selected" ? "Accepted" : item.status) ? "selected" : ""}>${esc(status)}</option>`).join("")}</select></td><td>${assessmentAction}</td><td>${topic}</td><td>${item.assessment_email_sent_at ? dateLabel(item.assessment_email_sent_at) : "—"}</td><td>${item.assessment_score == null ? "—" : `${esc(item.assessment_score)}/20`}${item.assessment_result ? `<small>${esc(item.assessment_score_percentage)}% · ${esc(item.assessment_result)}</small>` : ""}</td><td>${item.assessment_submitted_at ? dateLabel(item.assessment_submitted_at) : "—"}</td><td><div class="inline-actions"><button class="text-button" data-action="view-ai-summary" data-id="${esc(item.id)}" title="Synthesize AI screening evaluation">⚡ AI Summary</button><button class="text-button" data-action="application-history" data-id="${esc(item.id)}">History</button><button class="text-button" data-action="edit-note" data-id="${esc(item.id)}">Notes</button>${item.assessment_id && ["Completed", "Pending Recruiter Decision"].includes(assessmentStatus) ? `<button class="text-button" data-action="review-assessment" data-id="${esc(item.assessment_id)}">Review & Decide</button>` : ""}${interviewAction}</div></td></tr>`;
     }).join("")}</tbody></table></div>` : empty("No applicants yet", "Candidate applications for your jobs will appear here.", "♙")}
     </section>`;
 }
@@ -1160,7 +1586,7 @@ function proctoringEventTimeline(events) {
 function adminProctoringPanel() {
   const filters = state.proctoringFilters;
   const items = state.proctoringItems;
-  return `<section class="card admin-proctoring"><div class="card-heading"><div><h2>Assessment integrity</h2><p>Review browser and face-presence events. Flags are review signals, not proof of misconduct.</p></div><span class="badge ${items.some(item => item.flagged) ? "badge-amber" : "badge-green"}">${items.filter(item => item.flagged).length} flagged</span></div>
+  return `<section class="card admin-proctoring"><div class="card-heading"><div><h2>Assessment integrity & recordings</h2><p>Review candidate browser events, face-presence logs, and verified webcam recordings.</p></div><div style="display:flex;gap:8px;align-items:center"><button class="btn btn-quiet btn-small" data-action="admin-retention-cleanup" title="Purge recordings older than retention policy">🧹 Retention cleanup</button><span class="badge ${items.some(item => item.flagged) ? "badge-amber" : "badge-green"}">${items.filter(item => item.flagged).length} flagged</span></div></div>
     <form id="admin-proctoring-filter-form" class="filters proctoring-filters">
       <input class="input" name="candidate" value="${esc(filters.candidate)}" placeholder="Candidate name or email" aria-label="Filter by candidate" />
       <select class="select" name="job_id" aria-label="Filter by job"><option value="">All jobs</option>${state.adminJobs.map(job => `<option value="${esc(job.id)}" ${String(filters.job_id) === String(job.id) ? "selected" : ""}>${esc(job.title)}</option>`).join("")}</select>
@@ -1169,14 +1595,30 @@ function adminProctoringPanel() {
       <select class="select" name="flagged_only" aria-label="Filter by flag status"><option value="">All records</option><option value="true" ${filters.flagged_only === "true" ? "selected" : ""}>Flagged only</option><option value="false" ${filters.flagged_only === "false" ? "selected" : ""}>Not flagged</option></select>
       <button class="btn btn-quiet btn-small" type="submit">Apply filters</button>
     </form>
-    ${items.length ? `<div class="table-wrap"><table><thead><tr><th>Candidate</th><th>Job and recruiter</th><th>Started</th><th>Warnings</th><th>Review status</th><th>Timeline</th></tr></thead><tbody>${items.map(item => `<tr>
-      <td><strong>${esc(item.candidate_name)}</strong><small>${esc(item.candidate_email)}</small></td>
-      <td>${esc(item.title)}<small>${esc(item.company)} · ${esc(item.recruiter_name)}</small></td>
-      <td>${dateTimeLabel(item.proctoring_started_at)}</td>
-      <td>${esc(item.proctoring_warning_count)}</td>
-      <td><span class="badge ${item.flagged ? "badge-amber" : "badge-green"}">${item.flagged ? "Flagged for review" : esc(item.status)}</span></td>
-      <td><details class="proctoring-timeline"><summary>${item.events.length} event${item.events.length === 1 ? "" : "s"}</summary>${proctoringEventTimeline(item.events)}</details></td>
-    </tr>`).join("")}</tbody></table></div>` : empty("No proctoring records found", "Assessment monitoring events will appear here when available.")}
+    ${items.length ? `<div class="table-wrap"><table><thead><tr><th>Candidate</th><th>Job and recruiter</th><th>Started</th><th>Warnings</th><th>Review status</th><th>Webcam Video</th><th>Timeline</th><th>Action</th></tr></thead><tbody>${items.map(item => {
+      const recStatus = item.recording_status;
+      const recBadge = recStatus === "Uploaded"
+        ? `<span class="badge badge-green">📹 Ready ${item.recording_duration ? `(${item.recording_duration}s)` : ""}</span>`
+        : recStatus === "Uploading" || recStatus === "Pending"
+          ? `<span class="badge badge-amber">⏳ ${recStatus}</span>`
+          : recStatus === "Failed"
+            ? `<span class="badge badge-red" title="${esc(item.recording_error || "Upload failed")}">⚠️ Failed</span>`
+            : `<span class="badge" style="background:#f3f4f6;color:#6b7280">—</span>`;
+      return `<tr>
+        <td><strong>${esc(item.candidate_name)}</strong><small>${esc(item.candidate_email)}</small></td>
+        <td>${esc(item.title)}<small>${esc(item.company)} · ${esc(item.recruiter_name)}</small></td>
+        <td>${dateTimeLabel(item.proctoring_started_at)}</td>
+        <td>${esc(item.proctoring_warning_count)}</td>
+        <td><span class="badge ${item.flagged ? "badge-amber" : "badge-green"}">${item.flagged ? "Flagged for review" : esc(item.status)}</span></td>
+        <td>${recBadge}</td>
+        <td><details class="proctoring-timeline"><summary>${item.events.length} event${item.events.length === 1 ? "" : "s"}</summary>${proctoringEventTimeline(item.events)}</details></td>
+        <td>${item.recording_id && recStatus === "Uploaded"
+          ? `<button class="btn btn-quiet btn-small" data-action="view-recording" data-id="${esc(item.recording_id)}">▶ Play Video</button>`
+          : recStatus === "Failed"
+            ? `<small style="color:#b91c1c">${esc(item.recording_error || "Failed")}</small>`
+            : `<small style="color:#9ca3af">—</small>`}</td>
+      </tr>`;
+    }).join("")}</tbody></table></div>` : empty("No proctoring records found", "Assessment monitoring events will appear here when available.")}
   </section>`;
 }
 
@@ -1243,6 +1685,7 @@ function currentContent() {
     if (state.page === "My jobs") return recruiterJobsPage();
     if (state.page === "Applicants") return applicantsPage();
     if (state.page === "Assessments") return assessmentsPage();
+    if (state.page === "Live monitoring") return liveMonitoringPage();
     if (state.page === "Question bank") return questionBankPage();
     if (state.page === "Interviews") return interviewListPage();
     if (state.page === "Interview room") return interviewRoomPage();
@@ -1253,6 +1696,7 @@ function currentContent() {
     if (state.page === "Users") return adminUsersPage();
     if (state.page === "Job listings") return adminJobListingsPage();
     if (state.page === "Assessments") return assessmentsPage();
+    if (state.page === "Live monitoring") return liveMonitoringPage();
     if (state.page === "Question bank") return questionBankPage();
     if (state.page === "Interviews") return interviewListPage();
     return adminDashboard();
@@ -1269,14 +1713,14 @@ function currentContent() {
 function renderModal() {
   if (state.modal === "new-job") return `<div class="modal-backdrop" data-action="close-modal"><section class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
     <div class="modal-head"><div><span class="eyebrow">Grow your team</span><h2 id="modal-title">Post a new role</h2><p>Share the details that help the right people find you.</p></div><button class="icon-button" aria-label="Close dialog" data-action="close-modal">×</button></div>
-    <form id="job-form" class="profile-form"><div class="field span-2"><label>Role title</label><input class="input" name="title" placeholder="e.g. Product Designer" required /></div>
-    <div class="field"><label>Company</label><input class="input" name="company" placeholder="Your company" required /></div><div class="field"><label>Location</label><input class="input" name="location" placeholder="Remote, New York..." required /></div>
-    <div class="field"><label>Experience</label><input class="input" name="experience" placeholder="e.g. 2–4 years" required /></div><div class="field"><label>Job type</label><select class="select" name="job_type"><option>Full-time</option><option>Part-time</option><option>Contract</option><option>Remote</option></select></div>
-    <div class="field span-2"><label>Salary range</label><input class="input" name="salary" placeholder="e.g. $90k – $120k" /></div>
-    <div class="field span-2"><label>Required skills, comma-separated</label><input class="input" name="skills" placeholder="e.g. Figma, UX research, prototyping" required /></div>
+    <form id="job-form" class="profile-form"><div class="field span-2"><label>Role title</label><input class="input" name="title" placeholder="e.g. Product Designer" required minlength="2" maxlength="120" /></div>
+    <div class="field"><label>Company</label><input class="input" name="company" placeholder="Your company" required minlength="2" maxlength="100" /></div><div class="field"><label>Location</label><input class="input" name="location" placeholder="Remote, New York..." required minlength="2" maxlength="100" /></div>
+    <div class="field"><label>Experience</label><input class="input" name="experience" placeholder="e.g. 2–4 years" required minlength="2" maxlength="80" /></div><div class="field"><label>Job type</label><select class="select" name="job_type"><option>Full-time</option><option>Part-time</option><option>Contract</option><option>Remote</option></select></div>
+    <div class="field span-2"><label>Salary range</label><input class="input" name="salary" placeholder="e.g. $90k – $120k" maxlength="80" /></div>
+    <div class="field span-2"><label>Required skills, comma-separated</label><input class="input" name="skills" placeholder="e.g. Python, SQL, Docker" required /></div>
     <div class="field"><label>Assessment questions (5–50)</label><input class="input" type="number" name="assessment_question_count" min="5" max="50" value="20" required /></div>
     <div class="field"><label>Candidate results</label><label class="checkbox-field" style="display:flex;align-items:center;gap:8px;font-size:11px;margin-top:6px;cursor:pointer;"><input type="checkbox" name="allow_detailed_results" checked /> Allow detailed question explanations after test</label></div>
-    <div class="field span-2"><label>Role description</label><textarea class="textarea" name="description" required placeholder="What will this person do? What makes your team a great place to grow?"></textarea></div>
+    <div class="field span-2"><label>Role description (minimum 20 characters)</label><textarea class="textarea" name="description" required minlength="20" placeholder="Describe the role responsibilities and requirements (at least 20 characters)..."></textarea></div>
     <div class="span-2"><button class="btn btn-primary" type="submit">Publish role →</button></div></form>
     </section></div>`;
   if (state.modal?.startsWith("job:")) {
@@ -1393,6 +1837,34 @@ function renderModal() {
         </div>
       </div>
 
+      <div class="recruiter-decision-panel" style="margin:16px 0;padding:16px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;">
+          <div>
+            <h3 style="margin:0 0 4px;font-size:14px;color:#0f172a;">Recruiter Final Decision</h3>
+            ${review.recruiter_decision ? `
+              <p style="margin:0;font-size:12px;color:#475569;">
+                Status: <span class="badge ${review.recruiter_decision === 'Passed' ? 'badge-green' : 'badge-red'}">${esc(review.recruiter_decision)}</span>
+                ${review.recruiter_decision_at ? ` · Decided ${dateTimeLabel(review.recruiter_decision_at)}` : ''}
+                ${review.recruiter_decision_notes ? ` · Note: "${esc(review.recruiter_decision_notes)}"` : ''}
+              </p>
+            ` : `
+              <p style="margin:0;font-size:12px;color:#d97706;">
+                <span class="badge badge-amber">Pending Recruiter Decision</span>
+                Automatic evaluation completed. Review the results below and manually Pass or Fail this candidate.
+              </p>
+            `}
+          </div>
+          <div style="display:flex;gap:8px;align-items:center;">
+            <button class="btn btn-small" data-action="make-decision" data-id="${esc(review.id)}" data-decision="Pass" style="background:#16a34a;border-color:#16a34a;color:#fff;cursor:pointer;">
+              ✓ Pass Candidate
+            </button>
+            <button class="btn btn-small" data-action="make-decision" data-id="${esc(review.id)}" data-decision="Fail" style="background:#dc2626;border-color:#dc2626;color:#fff;cursor:pointer;">
+              ✕ Fail Candidate
+            </button>
+          </div>
+        </div>
+      </div>
+
       <section class="skill-analysis-card">
         <h3>Strengths & Areas to Improve</h3>
         <p>A skill-gap diagnostic based on candidate answers across tested technologies.</p>
@@ -1449,6 +1921,16 @@ function renderModal() {
         </section>
       ` : ""}
 
+      ${!isCandidate && review.application_id ? `
+        <div style="margin-top:14px;padding:12px 14px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:10px;display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
+          <div>
+            <strong style="color:#166534;font-size:12px;display:block">⚡ AI Screening Summary & Interview Guide</strong>
+            <p style="margin:2px 0 0;font-size:11px;color:#15803d">Synthesized evaluation combining resume fit, Round 1 test accuracy, and proctoring integrity.</p>
+          </div>
+          <button class="btn btn-primary btn-small" data-action="view-ai-summary" data-id="${esc(review.application_id)}">Open AI Summary →</button>
+        </div>
+      ` : ""}
+
       <section style="margin-top:14px">
         <div class="card-heading">
           <div>
@@ -1481,6 +1963,373 @@ function renderModal() {
           }).join("")}
         </div>
       </section>
+    </section></div>`;
+  }
+  if (state.modal === "ai-questions") {
+    const job = state.questionBankJob;
+    const isGenerating = state.aiGenerating;
+    const questions = state.aiGeneratedQuestions || [];
+    const suggestedTech = (job?.skills && job.skills[0]) || "Python";
+    return `<div class="modal-backdrop" data-action="close-modal"><section class="modal ai-modal-wide" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+      <div class="modal-head">
+        <div>
+          <span class="eyebrow">⚡ AI Assessment Builder · ${esc(job?.title || "Job")}</span>
+          <h2 id="modal-title">AI Question Generator</h2>
+          <p>Generate high-quality technical MCQs powered by Gemini / OpenAI or smart local generation.</p>
+        </div>
+        <button class="icon-button" aria-label="Close dialog" data-action="close-modal">×</button>
+      </div>
+
+      <form id="ai-question-generate-form">
+        <div class="ai-generator-form">
+          <div class="field">
+            <label>Technology / Skill Topic</label>
+            <input class="input" name="technology" list="ai-tech-suggestions" value="${esc(suggestedTech)}" required placeholder="e.g. Python, SQL, React" ${isGenerating ? "disabled" : ""} />
+            <datalist id="ai-tech-suggestions">
+              ${(job?.skills || []).map(s => `<option value="${esc(s)}"></option>`).join("")}
+              <option value="Python"></option><option value="JavaScript"></option><option value="React"></option><option value="SQL"></option><option value="Java"></option><option value="TypeScript"></option><option value="Docker"></option><option value="AWS"></option>
+            </datalist>
+          </div>
+          <div class="field">
+            <label>Subtopic / Domain (Optional)</label>
+            <input class="input" name="subtopic" placeholder="e.g. Joins, Async/Await, Hooks" ${isGenerating ? "disabled" : ""} />
+          </div>
+          <div class="field">
+            <label>Difficulty Level</label>
+            <select class="select" name="difficulty" ${isGenerating ? "disabled" : ""}>
+              <option value="Mixed">Mixed (Easy, Medium, Hard)</option>
+              <option value="Easy">Easy</option>
+              <option value="Medium">Medium</option>
+              <option value="Hard">Hard</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>Question Count (1–20)</label>
+            <select class="select" name="count" ${isGenerating ? "disabled" : ""}>
+              <option value="5" selected>5 Questions</option>
+              <option value="10">10 Questions</option>
+              <option value="15">15 Questions</option>
+              <option value="20">20 Questions (Complete Bank)</option>
+            </select>
+          </div>
+          <div class="field span-2">
+            <label>Custom Instructions / Context (Optional)</label>
+            <textarea class="textarea" name="custom_prompt" rows="2" placeholder="e.g. Focus on practical debugging scenarios, common production mistakes, and clean code principles." ${isGenerating ? "disabled" : ""}></textarea>
+          </div>
+        </div>
+        <div style="display:flex;justify-content:flex-end;gap:10px;align-items:center">
+          <button class="btn btn-primary" type="submit" ${isGenerating ? "disabled" : ""}>
+            ${isGenerating ? `<span class="spinner" style="width:14px;height:14px;border-width:2px;display:inline-block"></span> Generating questions…` : `✨ Generate Questions →`}
+          </button>
+        </div>
+      </form>
+
+      ${questions.length ? `
+        <div class="ai-preview-container">
+          <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--line)">
+            <div>
+              <strong style="font-size:13px">${questions.length} Generated Questions Ready for Review</strong>
+              <small style="display:block;color:var(--muted);font-size:10px">Review, tweak, or discard before saving to the question bank.</small>
+            </div>
+            <button class="btn btn-primary btn-small" data-action="save-ai-questions">✓ Save All (${questions.length}) to Bank →</button>
+          </div>
+
+          ${questions.map((q, idx) => `
+            <article class="ai-question-card" data-ai-question-index="${idx}">
+              <div class="ai-question-card-head">
+                <div class="ai-question-badges">
+                  <span class="eyebrow" style="font-size:10px">Q${idx + 1}</span>
+                  <span class="badge badge-amber">${esc(q.technology)}</span>
+                  <span class="badge ${q.difficulty === "Easy" ? "badge-green" : q.difficulty === "Hard" ? "badge-red" : "badge-amber"}">${esc(q.difficulty)}</span>
+                  ${q.subtopic ? `<span class="chip-green" style="font-size:9px;padding:2px 6px">${esc(q.subtopic)}</span>` : ""}
+                </div>
+                <button class="text-button danger-text" data-action="remove-ai-question" data-index="${idx}" title="Discard this question">Discard ✕</button>
+              </div>
+
+              <div class="field" style="margin:0">
+                <label style="font-size:10px">Question Prompt</label>
+                <textarea class="textarea ai-q-prompt" data-idx="${idx}" style="min-height:55px;font-size:11px" required>${esc(q.question)}</textarea>
+              </div>
+
+              <div class="ai-options-grid">
+                ${(q.options || []).map((opt, optIdx) => `
+                  <div class="ai-option-item">
+                    <input type="radio" name="ai_correct_${idx}" data-idx="${idx}" value="${optIdx}" ${optIdx === q.correct_index ? "checked" : ""} title="Mark as correct answer" />
+                    <input class="input ai-q-option" data-idx="${idx}" data-opt-idx="${optIdx}" value="${esc(opt)}" style="font-size:11px;padding:5px 8px" placeholder="Option ${String.fromCharCode(65 + optIdx)}" required />
+                  </div>
+                `).join("")}
+              </div>
+
+              <div class="field" style="margin:0">
+                <label style="font-size:10px">Explanation (Shown in performance review after submission)</label>
+                <input class="input ai-q-explanation" data-idx="${idx}" value="${esc(q.explanation || "")}" placeholder="Explanation for correct answer" style="font-size:11px;padding:5px 8px" />
+              </div>
+            </article>
+          `).join("")}
+
+          <div style="display:flex;justify-content:space-between;align-items:center;padding:12px 0 4px;border-top:1px solid var(--line);margin-top:8px">
+            <button class="btn btn-quiet btn-small" data-action="clear-ai-questions">Discard All</button>
+            <button class="btn btn-primary" data-action="save-ai-questions">✓ Save All (${questions.length}) to Question Bank →</button>
+          </div>
+        </div>
+      ` : ""}
+    </section></div>`;
+  }
+  if (state.modal?.startsWith("ai-summary:")) {
+    const loading = state.aiSummaryLoading;
+    const summary = state.aiSummaryData;
+    const appId = state.modal.slice("ai-summary:".length);
+
+    if (loading || !summary) {
+      return `<div class="modal-backdrop" data-action="close-modal"><section class="modal ai-modal-wide" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+        <div class="modal-head">
+          <div>
+            <span class="eyebrow">⚡ AI Screening Summary</span>
+            <h2 id="modal-title">Analyzing Candidate Profile…</h2>
+            <p>Synthesizing resume qualifications, Round 1 test performance, and proctoring logs.</p>
+          </div>
+          <button class="icon-button" aria-label="Close dialog" data-action="close-modal">×</button>
+        </div>
+        <div class="loading" style="padding:48px 0"><span class="spinner"></span><p style="margin-top:14px;color:var(--muted);font-size:12px">Generating AI executive evaluation & interview guide…</p></div>
+      </section></div>`;
+    }
+
+    const recClass = summary.recommendation === "Strong Hire" ? "ai-rec-strong"
+      : summary.recommendation === "Recommended" ? "ai-rec-recommended"
+      : summary.recommendation === "Borderline" ? "ai-rec-borderline"
+      : "ai-rec-not-recommended";
+
+    const recIcon = summary.recommendation === "Strong Hire" ? "★"
+      : summary.recommendation === "Recommended" ? "✓"
+      : summary.recommendation === "Borderline" ? "⚠"
+      : "✕";
+
+    const strengths = summary.strengths || [];
+    const risks = summary.risks || [];
+    const questions = summary.interview_questions || [];
+
+    return `<div class="modal-backdrop" data-action="close-modal"><section class="modal ai-modal-wide" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+      <div class="modal-head">
+        <div>
+          <span class="eyebrow">⚡ Recruiter AI Evaluation · ${esc(summary.company)}</span>
+          <h2 id="modal-title">${esc(summary.candidate_name)}</h2>
+          <p>${esc(summary.job_title)} · Synthesized candidate screening report</p>
+        </div>
+        <button class="icon-button" aria-label="Close dialog" data-action="close-modal">×</button>
+      </div>
+
+      <div class="ai-rec-banner ${recClass}">
+        <div>
+          <span style="font-size:10px;text-transform:uppercase;letter-spacing:0.8px;display:block;opacity:0.85">AI Recommendation</span>
+          <strong style="font-size:17px;letter-spacing:-0.3px">${recIcon} ${esc(summary.recommendation)}</strong>
+        </div>
+        <span class="ai-rec-badge">${esc(summary.recommendation)}</span>
+      </div>
+
+      <div class="ai-summary-metrics">
+        <div class="ai-summary-metric-card">
+          <small>Resume Match</small>
+          <strong>${summary.resume_match_percentage == null ? "—" : `${summary.resume_match_percentage}%`}</strong>
+        </div>
+        <div class="ai-summary-metric-card">
+          <small>Round 1 Score</small>
+          <strong>${summary.assessment_score_percentage == null ? "Pending" : `${summary.assessment_score_percentage}%`}</strong>
+        </div>
+        <div class="ai-summary-metric-card">
+          <small>Test Status</small>
+          <strong>${esc(summary.assessment_result || summary.assessment_status || "Not Started")}</strong>
+        </div>
+        <div class="ai-summary-metric-card">
+          <small>Proctoring</small>
+          <strong style="color:${summary.proctoring_flagged ? "#c53030" : "#2f855a"}">${summary.proctoring_flagged ? `Flagged (${summary.proctoring_warning_count})` : `${summary.proctoring_warning_count || 0} warnings`}</strong>
+        </div>
+      </div>
+
+      <div class="ai-exec-summary">
+        <strong style="display:block;margin-bottom:4px;font-size:11px;color:var(--red-dark);text-transform:uppercase;letter-spacing:0.6px">Executive Screening Summary</strong>
+        ${esc(summary.summary)}
+      </div>
+
+      <div class="ai-insights-grid">
+        <div class="ai-insight-box strengths">
+          <h4><span>★</span> Key Candidate Strengths</h4>
+          <ul>
+            ${strengths.length ? strengths.map(s => `<li>${esc(s)}</li>`).join("") : `<li>Profile meets baseline requirements.</li>`}
+          </ul>
+        </div>
+        <div class="ai-insight-box risks">
+          <h4><span>⚠️</span> Risk Flags & Skill Gaps</h4>
+          <ul>
+            ${risks.length ? risks.map(r => `<li>${esc(r)}</li>`).join("") : `<li>No critical risk flags detected.</li>`}
+          </ul>
+        </div>
+      </div>
+
+      <div class="ai-interview-questions-section">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+          <div>
+            <h3 style="font-size:13px;margin:0">🎯 Targeted Round 2 Interview Questions</h3>
+            <p style="font-size:11px;color:var(--muted);margin:2px 0 0">Customized questions to probe weak areas and verify practical depth.</p>
+          </div>
+          <span class="badge badge-green" style="font-size:9px">${questions.length} Questions</span>
+        </div>
+
+        ${questions.map((item, qIdx) => `
+          <div class="ai-interview-question-card">
+            <div class="ai-interview-question-head">
+              <span class="eyebrow" style="font-size:9px">Question ${qIdx + 1}${item.focus_area ? ` · ${esc(item.focus_area)}` : ""}</span>
+            </div>
+            <div class="ai-interview-question-text">${esc(item.question)}</div>
+            ${item.what_to_look_for ? `<div class="ai-interview-question-lookfor"><strong>What to evaluate:</strong> ${esc(item.what_to_look_for)}</div>` : ""}
+          </div>
+        `).join("")}
+      </div>
+
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-top:18px;padding-top:14px;border-top:1px solid var(--line)">
+        <button class="btn btn-quiet btn-small" data-action="refresh-ai-summary" data-id="${esc(appId)}">↻ Re-analyze with AI</button>
+        <button class="btn btn-primary btn-small" data-action="close-modal">Done</button>
+      </div>
+    </section></div>`;
+  }
+  if (state.modal?.startsWith("admin-recording:")) {
+    const loading = state.adminRecordingLoading;
+    const rec = state.adminRecordingData;
+
+    if (loading || !rec) {
+      return `<div class="modal-backdrop" data-action="close-modal"><section class="modal admin-recording-modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+        <div class="modal-head">
+          <div>
+            <span class="eyebrow">📹 Proctoring Video Review</span>
+            <h2 id="modal-title">Loading Candidate Recording…</h2>
+            <p>Fetching authorized stream and synchronized proctoring logs.</p>
+          </div>
+          <button class="icon-button" aria-label="Close dialog" data-action="close-modal">×</button>
+        </div>
+        <div class="loading" style="padding:48px 0"><span class="spinner"></span><p style="margin-top:14px;color:var(--muted);font-size:12px">Authorizing secure stream access…</p></div>
+      </section></div>`;
+    }
+
+    const events = rec.events || [];
+
+    return `<div class="modal-backdrop" data-action="close-modal"><section class="modal admin-recording-modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+      <div class="modal-head">
+        <div>
+          <span class="eyebrow">📹 Secure Assessment Recording · #${esc(rec.recording_id)}</span>
+          <h2 id="modal-title">${esc(rec.candidate_name)}</h2>
+          <p>Candidate webcam recording and proctoring integrity timeline</p>
+        </div>
+        <button class="icon-button" aria-label="Close dialog" data-action="close-modal">×</button>
+      </div>
+
+      <div class="admin-video-player-wrap">
+        <video id="admin-recording-video" class="admin-video-player" controls playsinline controlsList="nodownload">
+          <source src="${esc(rec.playback_url)}" type="video/webm">
+          Your browser does not support HTML5 video playback.
+        </video>
+      </div>
+
+      <div class="admin-video-details-grid">
+        <div class="admin-video-detail-box">
+          <small>Duration</small>
+          <strong>${rec.duration_seconds ? `${rec.duration_seconds}s` : "—"}</strong>
+        </div>
+        <div class="admin-video-detail-box">
+          <small>Format</small>
+          <strong>${esc(rec.format || "WebM")}</strong>
+        </div>
+        <div class="admin-video-detail-box">
+          <small>Status</small>
+          <strong style="color:#059669">${esc(rec.recording_status)}</strong>
+        </div>
+        <div class="admin-video-detail-box">
+          <small>Events Logged</small>
+          <strong>${events.length} event${events.length === 1 ? "" : "s"}</strong>
+        </div>
+      </div>
+
+      <div class="admin-recording-sync-timeline">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+          <h3 style="font-size:13px;margin:0">⏱ Synchronized Proctoring Timeline</h3>
+          <span class="badge ${events.some(e => e.severity === 'warning') ? 'badge-amber' : 'badge-green'}" style="font-size:10px">
+            ${events.filter(e => e.severity === 'warning').length} Warning(s)
+          </span>
+        </div>
+        ${events.length ? events.map((e, idx) => {
+          const isWarn = e.severity === "warning";
+          const desc = e.event_type === "face_missing" ? "Candidate face not detected"
+            : e.event_type === "multiple_faces" ? "Multiple faces detected in frame"
+            : e.event_type === "tab_hidden" ? "Candidate switched browser tab"
+            : e.event_type === "window_blur" ? "Assessment window lost focus"
+            : e.event_type === "camera_stopped" ? "Webcam stream stopped unexpectedly"
+            : e.event_type === "warning_limit_reached" ? "Suspicious warning threshold exceeded"
+            : e.event_type.replace(/_/g, " ");
+          const offset = rec.duration_seconds ? Math.min(rec.duration_seconds, Math.max(0, idx * 5)) : 0;
+          return `<div class="admin-timeline-event ${isWarn ? 'event-warning' : ''}">
+            <div>
+              <strong>${esc(desc)}</strong>
+              <small style="display:block;color:var(--muted)">${new Date(e.created_at).toLocaleTimeString()}${e.duration_seconds ? ` · ${e.duration_seconds}s duration` : ""}</small>
+            </div>
+            <div style="display:flex;gap:6px;align-items:center">
+              <span class="badge ${isWarn ? 'badge-amber' : 'badge-green'}" style="font-size:9px">${esc(e.severity)}</span>
+              ${rec.duration_seconds ? `<button class="admin-timeline-seek-btn" data-action="seek-video" data-time="${offset}">Jump to ⏱</button>` : ""}
+            </div>
+          </div>`;
+        }).join("") : `<p class="stat-note">No suspicious events or warnings recorded during this session.</p>`}
+      </div>
+
+      <div style="display:flex;justify-content:flex-end;margin-top:16px;padding-top:12px;border-top:1px solid var(--line)">
+        <button class="btn btn-primary btn-small" data-action="close-modal">Close</button>
+      </div>
+    </section></div>`;
+  }
+  if (state.modal === "live-video-monitoring" && state.liveMonitoringTarget) {
+    const target = state.liveMonitoringTarget;
+    return `<div class="modal-backdrop" data-action="close-modal"><section class="modal live-modal-wide" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+      <div class="modal-head">
+        <div>
+          <span class="eyebrow">Real-Time Proctoring Feed · ${esc(target.company || "SkillSphere")}</span>
+          <h2 id="modal-title">Live Assessment Monitoring</h2>
+          <p>${esc(target.candidate_name)} · ${esc(target.job_title)} · ${esc(target.assessment_name || "Technical Assessment")}</p>
+        </div>
+        <button class="icon-button" aria-label="Close dialog" data-action="close-live-monitoring">×</button>
+      </div>
+
+      <div class="live-monitoring-body" style="margin-top:16px;">
+        <div class="live-video-player-frame" style="position:relative;background:#090d16;border-radius:12px;overflow:hidden;min-height:360px;display:flex;align-items:center;justify-content:center;box-shadow:inset 0 0 40px rgba(0,0,0,0.8);">
+          <video id="live-recruiter-video" autoplay playsinline style="width:100%;height:auto;max-height:460px;object-fit:contain;display:none;"></video>
+          
+          <div id="live-video-overlay" style="position:absolute;top:12px;left:12px;display:flex;gap:8px;align-items:center;z-index:10;">
+            <span class="live-badge" style="background:#dc2626;color:#fff;padding:3px 10px;border-radius:12px;font-size:11px;font-weight:700;display:inline-flex;align-items:center;gap:5px;letter-spacing:0.5px;">
+              <span class="live-dot-pulse" style="width:7px;height:7px;border-radius:50%;background:#fff;"></span> LIVE
+            </span>
+            <span id="live-video-status-text" style="background:rgba(15,23,42,0.85);color:#f8fafc;padding:3px 10px;border-radius:12px;font-size:11px;border:1px solid rgba(255,255,255,0.1);">
+              ${esc(state.recruiterLiveStatus || "Connecting feed…")}
+            </span>
+          </div>
+
+          <div id="live-video-placeholder" style="color:#94a3b8;text-align:center;padding:50px 20px;">
+            <div class="spinner" style="margin:0 auto 16px;"></div>
+            <p id="live-video-placeholder-text" style="margin:0;font-size:14px;color:#cbd5e1;">${esc(state.recruiterLiveStatus || "Connecting to candidate's camera stream…")}</p>
+            <small style="color:#64748b;display:block;margin-top:6px;">Direct peer-to-peer WebRTC video stream</small>
+          </div>
+        </div>
+
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-top:16px;padding-top:14px;border-top:1px solid var(--line);">
+          <div style="display:flex;gap:12px;align-items:center;">
+            <div style="width:36px;height:36px;border-radius:50%;background:#e0e7ff;color:#4338ca;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:14px;">
+              ${esc((target.candidate_name || "C").charAt(0).toUpperCase())}
+            </div>
+            <div>
+              <strong style="display:block;font-size:13px;color:var(--ink);">${esc(target.candidate_name)}</strong>
+              <small style="color:#64748b;">${esc(target.candidate_email || "")} · Started ${target.starts_at ? new Date(target.starts_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : "recently"}</small>
+            </div>
+          </div>
+          <div style="display:flex;gap:10px;align-items:center;">
+            <button class="btn btn-quiet btn-small" data-action="stop-live-monitoring">Stop Viewing</button>
+            <button class="btn btn-primary btn-small" data-action="close-live-monitoring">Done</button>
+          </div>
+        </div>
+      </div>
     </section></div>`;
   }
   return "";
@@ -1560,11 +2409,171 @@ async function loadWorkspace() {
       state.adminJobs = adminJobs.items || [];
       state.proctoringItems = (await api(proctoringListPath())).items || [];
     }
+    if (state.user.role === "recruiter" || state.user.role === "admin") {
+      try {
+        const liveData = await api("/recruiter/live-assessments");
+        state.liveMonitoringAssessments = liveData.items || [];
+      } catch (e) {
+        state.liveMonitoringAssessments = [];
+      }
+    }
   } catch (error) {
     showToast(error.message, true);
     if (/token|authentication|authorization/i.test(error.message)) signOut(false);
   }
   renderWorkspace();
+}
+
+async function loadLiveAssessments() {
+  if (!state.user || (state.user.role !== "recruiter" && state.user.role !== "admin")) return;
+  try {
+    const liveData = await api("/recruiter/live-assessments");
+    state.liveMonitoringAssessments = liveData.items || [];
+    renderWorkspace();
+  } catch (e) {
+    console.warn("Could not load live assessments:", e);
+  }
+}
+
+function connectRecruiterLiveMonitoring(assessmentId) {
+  stopRecruiterLiveMonitoring();
+
+  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+  const wsUrl = `${protocol}//${window.location.host}/ws/live-monitoring/recruiter/${encodeURIComponent(assessmentId)}?token=${encodeURIComponent(state.token)}`;
+
+  state.recruiterLiveStatus = "Connecting to signaling server…";
+  updateRecruiterLiveStatusUI();
+
+  try {
+    const ws = new WebSocket(wsUrl);
+    state.recruiterLiveWs = ws;
+
+    const rtcConfig = {
+      iceServers: [
+        { urls: "stun:stun.l.google.com:19302" },
+        { urls: "stun:stun1.l.google.com:19302" }
+      ]
+    };
+    const pc = new RTCPeerConnection(rtcConfig);
+    state.recruiterLivePc = pc;
+
+    pc.ontrack = (event) => {
+      const video = document.getElementById("live-recruiter-video");
+      const placeholder = document.getElementById("live-video-placeholder");
+      if (video && event.streams && event.streams[0]) {
+        video.srcObject = event.streams[0];
+        video.style.display = "block";
+        if (placeholder) placeholder.style.display = "none";
+        state.recruiterLiveStatus = "Live Feed Active";
+        updateRecruiterLiveStatusUI();
+      }
+    };
+
+    pc.onicecandidate = (event) => {
+      if (event.candidate && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: "ice_candidate", candidate: event.candidate }));
+      }
+    };
+
+    ws.onopen = () => {
+      state.recruiterLiveStatus = "Requesting live camera stream…";
+      updateRecruiterLiveStatusUI();
+      ws.send(JSON.stringify({ type: "request_stream" }));
+    };
+
+    ws.onmessage = async (evt) => {
+      try {
+        const msg = JSON.parse(evt.data);
+        if (msg.type === "candidate_status") {
+          if (!msg.connected || !msg.camera_connected) {
+            state.recruiterLiveStatus = msg.status || "Camera Disconnected";
+            updateRecruiterLiveStatusUI(true);
+          } else {
+            if (state.recruiterLiveStatus !== "Live Feed Active") {
+              state.recruiterLiveStatus = "Candidate online · Waiting for video…";
+              updateRecruiterLiveStatusUI();
+              ws.send(JSON.stringify({ type: "request_stream" }));
+            }
+          }
+        } else if (msg.type === "webrtc_offer") {
+          if (msg.sdp) {
+            await pc.setRemoteDescription(new RTCSessionDescription(msg.sdp));
+            const answer = await pc.createAnswer();
+            await pc.setLocalDescription(answer);
+            ws.send(JSON.stringify({ type: "webrtc_answer", sdp: pc.localDescription }));
+          }
+        } else if (msg.type === "ice_candidate") {
+          if (msg.candidate) {
+            await pc.addIceCandidate(new RTCIceCandidate(msg.candidate)).catch(() => {});
+          }
+        }
+      } catch (err) {
+        console.warn("Recruiter live monitoring message error:", err);
+      }
+    };
+
+    ws.onclose = (evt) => {
+      if (evt.code === 1008) {
+        state.recruiterLiveStatus = "Unauthorized: Only the assigned recruiter or admin can monitor this test.";
+      } else {
+        state.recruiterLiveStatus = "Signaling disconnected.";
+      }
+      updateRecruiterLiveStatusUI(true);
+    };
+
+    ws.onerror = () => {
+      state.recruiterLiveStatus = "Signaling connection error.";
+      updateRecruiterLiveStatusUI(true);
+    };
+  } catch (err) {
+    state.recruiterLiveStatus = `Connection failed: ${err.message}`;
+    updateRecruiterLiveStatusUI(true);
+  }
+}
+
+function updateRecruiterLiveStatusUI(isWarning = false) {
+  const statusEl = document.getElementById("live-video-status-text");
+  const placeholder = document.getElementById("live-video-placeholder");
+  const placeholderText = document.getElementById("live-video-placeholder-text");
+  const video = document.getElementById("live-recruiter-video");
+
+  if (statusEl) {
+    statusEl.textContent = state.recruiterLiveStatus || "";
+    if (isWarning) {
+      statusEl.style.background = "#dc2626";
+    } else if (state.recruiterLiveStatus === "Live Feed Active") {
+      statusEl.style.background = "#16a34a";
+    } else {
+      statusEl.style.background = "rgba(15,23,42,0.85)";
+    }
+  }
+
+  if (isWarning && placeholder && placeholderText) {
+    placeholder.style.display = "block";
+    placeholderText.textContent = state.recruiterLiveStatus;
+    if (video) video.style.display = "none";
+  }
+}
+
+function stopRecruiterLiveMonitoring() {
+  if (state.recruiterLiveWs) {
+    try {
+      if (state.recruiterLiveWs.readyState === WebSocket.OPEN) {
+        state.recruiterLiveWs.send(JSON.stringify({ type: "stop_viewing" }));
+      }
+      state.recruiterLiveWs.close();
+    } catch (e) {}
+    state.recruiterLiveWs = null;
+  }
+  if (state.recruiterLivePc) {
+    try { state.recruiterLivePc.close(); } catch (e) {}
+    state.recruiterLivePc = null;
+  }
+  const video = document.getElementById("live-recruiter-video");
+  if (video) {
+    video.srcObject = null;
+    video.style.display = "none";
+  }
 }
 
 async function loadQuestionBank(jobId) {
@@ -1615,6 +2624,21 @@ async function uploadQuestionBankPDF(file) {
   }
 }
 
+function syncAiQuestionsFromDOM() {
+  const cards = document.querySelectorAll(".ai-question-card");
+  cards.forEach((card, idx) => {
+    if (!state.aiGeneratedQuestions[idx]) return;
+    const prompt = card.querySelector(".ai-q-prompt")?.value?.trim();
+    if (prompt) state.aiGeneratedQuestions[idx].question = prompt;
+    const explanation = card.querySelector(".ai-q-explanation")?.value?.trim();
+    state.aiGeneratedQuestions[idx].explanation = explanation || null;
+    const options = Array.from(card.querySelectorAll(".ai-q-option")).map(input => input.value.trim());
+    if (options.length === 4) state.aiGeneratedQuestions[idx].options = options;
+    const checkedRadio = card.querySelector(`input[name="ai_correct_${idx}"]:checked`);
+    if (checkedRadio) state.aiGeneratedQuestions[idx].correct_index = Number(checkedRadio.value);
+  });
+}
+
 async function confirmQuestionImport(form) {
   if (!state.questionImportPreview || !state.questionBankJob) return;
   const questions = [...form.querySelectorAll("[data-import-question]")]
@@ -1648,6 +2672,21 @@ async function confirmQuestionImport(form) {
     state.busy = false;
     renderWorkspace();
   }
+}
+
+function syncAiQuestionsFromDOM() {
+  const cards = document.querySelectorAll(".ai-question-card");
+  cards.forEach((card, idx) => {
+    if (!state.aiGeneratedQuestions[idx]) return;
+    const prompt = card.querySelector(".ai-q-prompt")?.value?.trim();
+    if (prompt) state.aiGeneratedQuestions[idx].question = prompt;
+    const explanation = card.querySelector(".ai-q-explanation")?.value?.trim();
+    state.aiGeneratedQuestions[idx].explanation = explanation || null;
+    const options = Array.from(card.querySelectorAll(".ai-q-option")).map(input => input.value.trim());
+    if (options.length === 4) state.aiGeneratedQuestions[idx].options = options;
+    const checkedRadio = card.querySelector(`input[name="ai_correct_${idx}"]:checked`);
+    if (checkedRadio) state.aiGeneratedQuestions[idx].correct_index = Number(checkedRadio.value);
+  });
 }
 
 async function loadAnalytics(reportRange = state.analyticsRange, startDate = "", endDate = "") {
@@ -1827,6 +2866,33 @@ app.addEventListener("submit", async event => {
     await loadProctoring();
     return;
   }
+  if (form.id === "ai-question-generate-form") {
+    if (!state.questionBankJob) return;
+    const values = Object.fromEntries(new FormData(form));
+    const payload = {
+      technology: (values.technology || "").trim(),
+      subtopic: (values.subtopic || "").trim() || null,
+      difficulty: values.difficulty || "Mixed",
+      count: Number(values.count || 5),
+      custom_prompt: (values.custom_prompt || "").trim() || null
+    };
+    state.aiGenerating = true;
+    renderWorkspace();
+    try {
+      const result = await api(`/jobs/${encodeURIComponent(state.questionBankJob.id)}/questions/ai-generate`, {
+        method: "POST",
+        body: JSON.stringify(payload)
+      });
+      state.aiGeneratedQuestions = result.questions || [];
+      showToast(`Generated ${state.aiGeneratedQuestions.length} technical questions.`);
+    } catch (error) {
+      showToast(error.message, true);
+    } finally {
+      state.aiGenerating = false;
+      renderWorkspace();
+    }
+    return;
+  }
   if (form.id === "question-bank-import-form") {
     await uploadQuestionBankPDF(form.querySelector('[name="pdf"]').files[0]);
     return;
@@ -1845,6 +2911,12 @@ app.addEventListener("submit", async event => {
     values.skills = (values.skills || "").split(",").map(skill => skill.trim()).filter(Boolean);
     values.assessment_question_count = Number(values.assessment_question_count || 20);
     values.allow_detailed_results = formData.get("allow_detailed_results") !== null;
+    const desc = (values.description || "").trim();
+    if (desc.length < 20) {
+      showToast("Job description must contain at least 20 characters before you can post this job.", true);
+      return;
+    }
+    values.description = desc;
     try {
       await api("/jobs", { method: "POST", body: JSON.stringify(values) });
       state.modal = "";
@@ -1934,6 +3006,13 @@ app.addEventListener("submit", async event => {
 });
 
 app.addEventListener("change", async event => {
+  if (event.target.matches("[data-recording-consent]")) {
+    if (state.publicAssessment?.proctor) {
+      state.publicAssessment.proctor.recordingConsentGiven = event.target.checked;
+      renderPublicAssessment();
+    }
+    return;
+  }
   if (state.assessmentMode && event.target.matches("[data-assessment-answer]")) {
     const assessment = state.publicAssessment;
     assessment.answers[event.target.name] = Number(event.target.value);
@@ -2166,6 +3245,7 @@ app.addEventListener("click", async event => {
     state.modal = "";
     state.notificationsOpen = false;
     if (state.page === "Question bank") state.questionBankJob = null;
+    if (state.page === "Live monitoring") await loadLiveAssessments();
     if (state.page === "Find jobs" && state.user.role === "candidate") {
       state.query = ""; state.location = ""; state.jobType = ""; state.experience = ""; state.skill = ""; state.jobPage = 1;
       try {
@@ -2224,6 +3304,75 @@ app.addEventListener("click", async event => {
       state.page = "Applications";
       await loadWorkspace();
     } catch (error) { showToast(error.message, true); }
+    return;
+  }
+  if (target.dataset.action === "open-ai-question-generator") {
+    state.modal = "ai-questions";
+    state.aiGenerating = false;
+    renderWorkspace();
+    return;
+  }
+  if (target.dataset.action === "remove-ai-question") {
+    const idx = Number(target.dataset.index);
+    syncAiQuestionsFromDOM();
+    state.aiGeneratedQuestions.splice(idx, 1);
+    renderWorkspace();
+    return;
+  }
+  if (target.dataset.action === "clear-ai-questions") {
+    state.aiGeneratedQuestions = [];
+    renderWorkspace();
+    return;
+  }
+  if (target.dataset.action === "save-ai-questions") {
+    if (!state.questionBankJob || !state.aiGeneratedQuestions.length) return;
+    syncAiQuestionsFromDOM();
+    try {
+      const result = await api(`/jobs/${encodeURIComponent(state.questionBankJob.id)}/questions/batch`, {
+        method: "POST",
+        body: JSON.stringify({ questions: state.aiGeneratedQuestions })
+      });
+      state.modal = "";
+      state.aiGeneratedQuestions = [];
+      await loadQuestionBank(state.questionBankJob.id);
+      showToast(`Added ${result.count || 0} questions to the question bank.`);
+    } catch (error) {
+      showToast(error.message, true);
+    }
+    return;
+  }
+  if (target.dataset.action === "view-ai-summary") {
+    const appId = target.dataset.id;
+    state.modal = `ai-summary:${appId}`;
+    state.aiSummaryAppId = appId;
+    state.aiSummaryLoading = true;
+    state.aiSummaryData = null;
+    renderWorkspace();
+    try {
+      state.aiSummaryData = await api(`/applications/${encodeURIComponent(appId)}/ai-summary`);
+    } catch (error) {
+      showToast(error.message, true);
+      state.modal = "";
+    } finally {
+      state.aiSummaryLoading = false;
+      renderWorkspace();
+    }
+    return;
+  }
+  if (target.dataset.action === "refresh-ai-summary") {
+    const appId = target.dataset.id || state.aiSummaryAppId;
+    if (!appId) return;
+    state.aiSummaryLoading = true;
+    renderWorkspace();
+    try {
+      state.aiSummaryData = await api(`/applications/${encodeURIComponent(appId)}/ai-summary`, { method: "POST" });
+      showToast("AI screening summary refreshed.");
+    } catch (error) {
+      showToast(error.message, true);
+    } finally {
+      state.aiSummaryLoading = false;
+      renderWorkspace();
+    }
     return;
   }
   if (target.dataset.action === "manage-question-bank") {
@@ -2338,6 +3487,24 @@ app.addEventListener("click", async event => {
     } catch (error) { state.modal = ""; showToast(error.message, true); renderWorkspace(); }
     return;
   }
+  if (target.dataset.action === "make-decision") {
+    const assessmentId = target.dataset.id;
+    const decision = target.dataset.decision;
+    const confirmPrompt = confirm(`Are you sure you want to ${decision === 'Pass' ? 'Pass' : 'Fail'} this candidate? This will update the application status to Round 1 ${decision === 'Pass' ? 'Passed' : 'Failed'}.`);
+    if (!confirmPrompt) return;
+    try {
+      await api(`/assessments/${encodeURIComponent(assessmentId)}/decision`, {
+        method: "POST",
+        body: JSON.stringify({ decision, notes: "" }),
+      });
+      showToast(`Candidate marked as ${decision === 'Pass' ? 'Passed' : 'Failed'}.`);
+      state.modal = "";
+      await loadWorkspace();
+    } catch (error) {
+      showToast(error.message, true);
+    }
+    return;
+  }
   if (target.dataset.action === "apply-custom-report") {
     const start = document.querySelector("#analytics-start")?.value || "";
     const end = document.querySelector("#analytics-end")?.value || "";
@@ -2402,8 +3569,86 @@ app.addEventListener("click", async event => {
   }
   if (target.dataset.action === "close-modal") {
     if (target.classList.contains("modal-backdrop") && event.target !== target) return;
+    if (state.modal === "live-video-monitoring") {
+      stopRecruiterLiveMonitoring();
+      state.liveMonitoringTarget = null;
+    }
     state.modal = "";
     renderWorkspace();
+    return;
+  }
+  if (target.dataset.action === "refresh-live-monitoring") {
+    await loadLiveAssessments();
+    showToast("Live monitoring feeds refreshed.");
+    return;
+  }
+  if (target.dataset.action === "view-live-video") {
+    const assessmentId = target.dataset.id;
+    let targetAssessment = state.liveMonitoringAssessments?.find(item => String(item.assessment_id) === String(assessmentId));
+    if (!targetAssessment) {
+      try {
+        const liveRes = await api("/recruiter/live-assessments");
+        state.liveMonitoringAssessments = liveRes.items || [];
+        targetAssessment = state.liveMonitoringAssessments.find(item => String(item.assessment_id) === String(assessmentId));
+      } catch (e) {}
+    }
+    if (!targetAssessment) {
+      targetAssessment = {
+        assessment_id: assessmentId,
+        candidate_name: "Candidate",
+        job_title: "Technical Assessment",
+        company: "SkillSphere",
+        starts_at: new Date().toISOString(),
+      };
+    }
+    state.liveMonitoringTarget = targetAssessment;
+    state.modal = "live-video-monitoring";
+    renderWorkspace();
+    connectRecruiterLiveMonitoring(assessmentId);
+    return;
+  }
+  if (target.dataset.action === "stop-live-monitoring" || target.dataset.action === "close-live-monitoring") {
+    stopRecruiterLiveMonitoring();
+    state.modal = "";
+    state.liveMonitoringTarget = null;
+    renderWorkspace();
+    return;
+  }
+  if (target.dataset.action === "view-recording") {
+    const recordingId = target.dataset.id;
+    state.modal = `admin-recording:${recordingId}`;
+    state.adminRecordingLoading = true;
+    state.adminRecordingData = null;
+    renderWorkspace();
+    try {
+      state.adminRecordingData = await api(`/admin/recordings/${encodeURIComponent(recordingId)}/playback`);
+    } catch (err) {
+      showToast(err.message, true);
+      state.modal = "";
+    } finally {
+      state.adminRecordingLoading = false;
+      renderWorkspace();
+    }
+    return;
+  }
+  if (target.dataset.action === "admin-retention-cleanup") {
+    if (!window.confirm("Run recording retention cleanup now? Expired recordings will be safely removed.")) return;
+    try {
+      const res = await api("/admin/recordings/retention-cleanup", { method: "POST" });
+      showToast(`Cleaned up ${res.cleaned_count || 0} expired recording(s). Active retained: ${res.remaining_recordings || 0}.`);
+      await loadProctoring();
+    } catch (err) {
+      showToast(err.message, true);
+    }
+    return;
+  }
+  if (target.dataset.action === "seek-video") {
+    const seekTime = Number(target.dataset.time || 0);
+    const videoElem = document.getElementById("admin-recording-video");
+    if (videoElem) {
+      videoElem.currentTime = seekTime;
+      videoElem.play().catch(() => {});
+    }
     return;
   }
   if (target.dataset.action === "apply-job") { await applyToJob(target.dataset.id); }
@@ -2437,8 +3682,31 @@ app.addEventListener("input", event => {
 
 app.addEventListener("keydown", event => {
   if (event.target.id === "job-query" && event.key === "Enter") searchJobs();
-  if (event.key === "Escape" && state.modal) { state.modal = ""; renderWorkspace(); }
+  if (event.key === "Escape" && state.modal) {
+    if (state.modal === "live-video-monitoring") {
+      stopRecruiterLiveMonitoring();
+      state.liveMonitoringTarget = null;
+    }
+    state.modal = "";
+    renderWorkspace();
+  }
 });
+
+if (!window._liveMonitoringPollInterval) {
+  window._liveMonitoringPollInterval = setInterval(async () => {
+    if (state.user && (state.user.role === "recruiter" || state.user.role === "admin") && !state.modal && (state.page === "Live monitoring" || state.page === "Dashboard")) {
+      try {
+        const data = await api("/recruiter/live-assessments");
+        const prev = JSON.stringify(state.liveMonitoringAssessments || []);
+        const next = JSON.stringify(data.items || []);
+        if (prev !== next) {
+          state.liveMonitoringAssessments = data.items || [];
+          renderWorkspace();
+        }
+      } catch (e) {}
+    }
+  }, 6000);
+}
 
 async function start() {
   const assessmentToken = new URLSearchParams(window.location.search).get("assessment");
@@ -2462,4 +3730,8 @@ async function start() {
 
 start();
 
-window.addEventListener("pagehide", stopAssessmentProctoring);
+window.addEventListener("pagehide", () => {
+  stopCandidateLiveMonitoring();
+  stopAssessmentProctoring();
+  stopRecruiterLiveMonitoring();
+});

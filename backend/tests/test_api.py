@@ -487,7 +487,7 @@ class SkillSphereApiTests(unittest.TestCase):
                 f"/api/assessments/{token}/submit", json={"answers": answers}
             )
             self.assertEqual(submitted.status_code, 200, submitted.text)
-            self.assertIsNone(submitted.json()["score"])
+            self.assertNotIn("score", submitted.json())
             hidden_dashboard = self.client.get("/api/assessments", headers=candidate).json()["items"][0]
             hidden_application = next(
                 item for item in self.client.get("/api/applications", headers=candidate).json()["items"]
@@ -1491,21 +1491,18 @@ Answer: A
             }
         submitted = self.client.post(f"/api/assessments/{token}/submit", json={"answers": answers})
         self.assertEqual(submitted.status_code, 200, submitted.text)
-        self.assertEqual(submitted.json()["status"], "Completed")
-        self.assertEqual(submitted.json()["score"], 20)
-        self.assertEqual(submitted.json()["score_percentage"], 100)
-        self.assertEqual(submitted.json()["correct_answer_count"], 20)
-        self.assertEqual(submitted.json()["incorrect_answer_count"], 0)
-        self.assertEqual(submitted.json()["result"], "Passed")
+        self.assertEqual(submitted.json()["status"], "Pending Recruiter Decision")
+        self.assertNotIn("score", submitted.json())
+        self.assertNotIn("result", submitted.json())
         self.assertEqual(submitted.json()["assessment_round"], "Round 1")
         self.assertIsNotNone(submitted.json()["time_taken_seconds"])
         repeated = self.client.post(f"/api/assessments/{token}/submit", json={"answers": answers})
         self.assertIn(repeated.status_code, {404, 409, 410})
         recruiter_applications = self.client.get("/api/recruiter/applicants", headers=recruiter).json()["items"]
         applicant = next(item for item in recruiter_applications if item["id"] == application["id"])
-        self.assertEqual(applicant["assessment_status"], "Completed")
+        self.assertEqual(applicant["assessment_status"], "Pending Recruiter Decision")
         self.assertEqual(applicant["assessment_result"], "Passed")
-        self.assertEqual(applicant["status"], "Round 1 Passed")
+        self.assertEqual(applicant["status"], "Assessment Completed")
         self.assertEqual(applicant["assessment_score"], 20)
         self.assertIsNotNone(applicant["assessment_submitted_at"])
         review = self.client.get(
@@ -1517,19 +1514,25 @@ Answer: A
     def test_round1_fifteen_of_twenty_passes_and_processes_results_once(self):
         candidate, recruiter, application = self.apply_with_match(["Python"], ["Python"])
         token, result = self.complete_assessment(application, 15)
-        self.assertEqual(result["score_percentage"], 75)
-        self.assertEqual(result["correct_answer_count"], 15)
-        self.assertEqual(result["incorrect_answer_count"], 5)
-        self.assertEqual(result["result"], "Passed")
-        self.assertEqual(result["message"], "Congratulations, you have cleared Round 1.")
+        # Candidate submit response does not reveal marks or pass/fail
+        self.assertNotIn("score_percentage", result)
+        self.assertNotIn("correct_answer_count", result)
+        self.assertNotIn("incorrect_answer_count", result)
+        self.assertNotIn("result", result)
+        self.assertEqual(result["status"], "Pending Recruiter Decision")
+        self.assertEqual(
+            result["message"],
+            "Your assessment has been submitted successfully. The recruiter will review your results and update your application status.",
+        )
 
         with main.connect() as db:
             stored = db.execute(
-                """SELECT total_questions, correct_answer_count, incorrect_answer_count,
+                """SELECT id, total_questions, correct_answer_count, incorrect_answer_count,
                 score_percentage, result, assessment_round, submitted_at, result_processed_at,
-                time_taken_seconds FROM assessments WHERE application_id = ?""",
+                time_taken_seconds, recruiter_decision FROM assessments WHERE application_id = ?""",
                 (application["id"],),
             ).fetchone()
+            assessment_id = stored["id"]
             self.assertEqual(stored["total_questions"], 20)
             self.assertEqual(stored["correct_answer_count"], 15)
             self.assertEqual(stored["incorrect_answer_count"], 5)
@@ -1538,36 +1541,36 @@ Answer: A
             self.assertEqual(stored["assessment_round"], "Round 1")
             self.assertEqual(stored["submitted_at"], stored["result_processed_at"])
             self.assertIsNotNone(stored["time_taken_seconds"])
+            self.assertIsNone(stored["recruiter_decision"])
             current_status = db.execute(
                 "SELECT status FROM applications WHERE id = ?", (application["id"],)
             ).fetchone()["status"]
-        self.assertEqual(current_status, "Round 1 Passed")
+        self.assertEqual(current_status, "Assessment Completed")
 
-        timeline = self.client.get(
-            f"/api/applications/{application['id']}/history", headers=candidate
-        ).json()["items"]
-        statuses = [item["status"] for item in timeline]
-        self.assertEqual(statuses[-2:], ["Assessment Completed", "Round 1 Passed"])
-        self.assertIn("75% (15/20 correct)", timeline[-1]["note"])
+        # Candidate notification is neutral without marks
         candidate_notifications = self.client.get("/api/notifications", headers=candidate).json()["items"]
         recruiter_notifications = self.client.get("/api/notifications", headers=recruiter).json()["items"]
         admin = self.login("admin@skillsphere.dev")
         admin_notifications = self.client.get("/api/notifications", headers=admin).json()["items"]
-        candidate_result = next(item for item in candidate_notifications if item["type"] == "round1_result")
-        self.assertEqual(candidate_result["title"], "You passed Round 1")
+        candidate_result = next(item for item in candidate_notifications if item["type"] == "assessment_submitted")
+        self.assertEqual(candidate_result["title"], "Assessment submitted")
         self.assertIn(application["title"], candidate_result["message"])
-        self.assertIn("75%", candidate_result["message"])
+        self.assertNotIn("75%", candidate_result["message"])
         self.assertIn("recruiter will review", candidate_result["message"])
-        recruiter_result = next(
-            item for item in recruiter_notifications if item["type"] == "round1_assessment_completed"
-        )
-        self.assertIn("Alex Morgan", recruiter_result["message"])
-        self.assertIn("75% (15/20): Passed", recruiter_result["message"])
-        self.assertTrue(any(item["type"] == "round1_assessment_completed" for item in admin_notifications))
 
-        assessment_id = self.client.get(
-            "/api/assessments?result=Passed&min_score=75", headers=recruiter
-        ).json()["items"][0]["id"]
+        # Candidate assessment dashboard hides marks and result
+        candidate_assessment = self.client.get("/api/assessments", headers=candidate).json()["items"][0]
+        self.assertIsNone(candidate_assessment["result"])
+        self.assertIsNone(candidate_assessment["score"])
+        self.assertIsNone(candidate_assessment["score_percentage"])
+        self.assertIsNone(candidate_assessment["correct_answer_count"])
+        self.assertNotIn("correct_index", candidate_assessment)
+
+        # Candidate cannot access assessment review directly (403)
+        candidate_review = self.client.get(f"/api/assessment-reviews/{assessment_id}", headers=candidate)
+        self.assertEqual(candidate_review.status_code, 403)
+
+        # Unauthorized recruiter cannot view review (404)
         other_user = self.client.post(
             "/api/auth/register",
             json={"name": "Second Recruiter", "email": "second-recruiter@example.com", "password": "LongEnough9!", "role": "recruiter"},
@@ -1577,14 +1580,29 @@ Answer: A
             self.client.get(f"/api/assessment-reviews/{assessment_id}", headers=other_recruiter).status_code,
             404,
         )
-        admin_review = self.client.get(
-            f"/api/assessment-reviews/{assessment_id}", headers=admin
+
+        # Authorized recruiter sees assessment results
+        recruiter_review = self.client.get(f"/api/assessment-reviews/{assessment_id}", headers=recruiter)
+        self.assertEqual(recruiter_review.status_code, 200)
+        self.assertEqual(recruiter_review.json()["score_percentage"], 75)
+        self.assertEqual(recruiter_review.json()["result"], "Passed")
+
+        # Recruiter makes manual decision: Pass Candidate
+        decision_res = self.client.post(
+            f"/api/assessments/{assessment_id}/decision",
+            headers=recruiter,
+            json={"decision": "Pass", "notes": "Strong candidate"},
         )
-        self.assertEqual(admin_review.status_code, 200, admin_review.text)
-        candidate_assessment = self.client.get("/api/assessments", headers=candidate).json()["items"][0]
-        self.assertEqual(candidate_assessment["result"], "Passed")
-        self.assertEqual(candidate_assessment["correct_answer_count"], 15)
-        self.assertNotIn("correct_index", candidate_assessment)
+        self.assertEqual(decision_res.status_code, 200)
+        self.assertEqual(decision_res.json()["recruiter_decision"], "Passed")
+        self.assertEqual(decision_res.json()["application_status"], "Round 1 Passed")
+
+        with main.connect() as db:
+            app_status = db.execute(
+                "SELECT status FROM applications WHERE id = ?", (application["id"],)
+            ).fetchone()["status"]
+        self.assertEqual(app_status, "Round 1 Passed")
+
         moved = self.client.patch(
             f"/api/applications/{application['id']}/status",
             headers=recruiter,
@@ -1597,85 +1615,65 @@ Answer: A
             f"/api/assessments/{token}/submit", json={"answers": {}}
         )
         self.assertIn(duplicate.status_code, {404, 409, 410})
-        with main.connect() as db:
-            result_notifications = db.execute(
-                """SELECT COUNT(*) FROM notifications
-                WHERE related_application_id = ? AND type = 'round1_result'""",
-                (application["id"],),
-            ).fetchone()[0]
-            round_status_rows = db.execute(
-                """SELECT COUNT(*) FROM application_status_history
-                WHERE application_id = ? AND status = 'Round 1 Passed'""",
-                (application["id"],),
-            ).fetchone()[0]
-        self.assertEqual(result_notifications, 1)
-        self.assertEqual(round_status_rows, 1)
-        self.assertEqual(
-            self.client.get(
-                f"/api/applications/{application['id']}/history", headers=candidate
-            ).json()["items"][-1]["status"],
-            "Interview",
-        )
-
-        weekly = self.client.get("/api/admin/analytics", headers=admin).json()["weekly"]
-        self.assertGreaterEqual(weekly["round1_assessments_completed"], 1)
-        self.assertGreaterEqual(weekly["round1_passed"], 1)
-        self.assertEqual(weekly["round1_pass_fail_distribution"]["Passed"], weekly["round1_passed"])
-        self.assertTrue(any(item["job_id"] == application["job_id"] for item in weekly["round1_passed_by_job"]))
 
     def test_round1_fourteen_of_twenty_fails(self):
         candidate, recruiter, application = self.apply_with_match(["Python"], ["Python"])
         _, result = self.complete_assessment(application, 14)
-        self.assertEqual(result["score_percentage"], 70)
-        self.assertEqual(result["correct_answer_count"], 14)
-        self.assertEqual(result["incorrect_answer_count"], 6)
-        self.assertEqual(result["result"], "Failed")
-        self.assertEqual(
-            result["message"],
-            "Thank you for completing Round 1. You did not reach the required passing score.",
-        )
-        self.assertEqual(
-            self.client.get(
-                f"/api/applications/{application['id']}/history", headers=candidate
-            ).json()["items"][-1]["status"],
-            "Round 1 Failed",
-        )
-        failed_filter = self.client.get(
-            f"/api/assessments?result=Failed&min_score=70&max_score=70&status=Completed&job_id={application['job_id']}",
+        self.assertEqual(result["status"], "Pending Recruiter Decision")
+        self.assertNotIn("score_percentage", result)
+        self.assertNotIn("result", result)
+
+        with main.connect() as db:
+            stored = db.execute("SELECT id, result, score_percentage FROM assessments WHERE application_id = ?", (application["id"],)).fetchone()
+            assessment_id = stored["id"]
+            self.assertEqual(stored["result"], "Failed")
+            self.assertEqual(stored["score_percentage"], 70)
+
+        # Recruiter makes manual decision: Fail Candidate
+        decision_res = self.client.post(
+            f"/api/assessments/{assessment_id}/decision",
             headers=recruiter,
+            json={"decision": "Fail", "notes": "Did not meet passing score"},
         )
-        self.assertEqual(failed_filter.status_code, 200, failed_filter.text)
-        self.assertEqual(len(failed_filter.json()["items"]), 1)
-        self.assertEqual(failed_filter.json()["items"][0]["result"], "Failed")
-        admin = self.login("admin@skillsphere.dev")
-        weekly = self.client.get("/api/admin/analytics", headers=admin).json()["weekly"]
-        self.assertEqual(weekly["round1_failed"], 1)
-        self.assertEqual(weekly["round1_pass_fail_distribution"]["Failed"], 1)
-        self.assertTrue(any(item["job_id"] == application["job_id"] for item in weekly["round1_failed_by_job"]))
+        self.assertEqual(decision_res.status_code, 200)
+        self.assertEqual(decision_res.json()["recruiter_decision"], "Failed")
+        self.assertEqual(decision_res.json()["application_status"], "Round 1 Failed")
+
+        with main.connect() as db:
+            app_status = db.execute("SELECT status FROM applications WHERE id = ?", (application["id"],)).fetchone()["status"]
+        self.assertEqual(app_status, "Round 1 Failed")
 
     def test_round1_score_above_threshold_passes(self):
         _, _, application = self.apply_with_match(["Python"], ["Python"])
         _, result = self.complete_assessment(application, 16)
-        self.assertEqual(result["score_percentage"], 80)
-        self.assertEqual(result["result"], "Passed")
+        self.assertEqual(result["status"], "Pending Recruiter Decision")
+        with main.connect() as db:
+            stored = db.execute("SELECT score_percentage, result FROM assessments WHERE application_id = ?", (application["id"],)).fetchone()
+        self.assertEqual(stored["score_percentage"], 80)
+        self.assertEqual(stored["result"], "Passed")
 
     def test_round1_pass_threshold_is_configurable_for_new_assessments(self):
         with patch.object(main, "ROUND1_PASS_PERCENTAGE", 80):
             _, _, application = self.apply_with_match(["Python"], ["Python"])
             _, result = self.complete_assessment(application, 15)
-        self.assertEqual(result["pass_percentage"], 80)
-        self.assertEqual(result["score_percentage"], 75)
-        self.assertEqual(result["result"], "Failed")
+        self.assertEqual(result["status"], "Pending Recruiter Decision")
+        with main.connect() as db:
+            stored = db.execute("SELECT pass_percentage, score_percentage, result FROM assessments WHERE application_id = ?", (application["id"],)).fetchone()
+        self.assertEqual(stored["pass_percentage"], 80)
+        self.assertEqual(stored["score_percentage"], 75)
+        self.assertEqual(stored["result"], "Failed")
 
     def test_migration_backfills_existing_completed_assessment_results(self):
         _, _, application = self.apply_with_match(["Python"], ["Python"])
         _, result = self.complete_assessment(application, 15)
-        self.assertEqual(result["result"], "Passed")
+        with main.connect() as db:
+            stored_res = db.execute("SELECT result FROM assessments WHERE application_id = ?", (application["id"],)).fetchone()
+        self.assertEqual(stored_res["result"], "Passed")
         with main.connect() as db:
             db.execute(
                 """UPDATE assessments SET result = NULL, score_percentage = NULL,
                 correct_answer_count = NULL, incorrect_answer_count = NULL,
-                result_processed_at = NULL WHERE application_id = ?""",
+                result_processed_at = NULL, status = 'Completed', recruiter_decision = 'Passed' WHERE application_id = ?""",
                 (application["id"],),
             )
             db.execute(
@@ -1745,16 +1743,16 @@ Answer: A
             )
         timed_out = self.client.post(f"/api/assessments/{token}/submit", json={"answers": {}})
         self.assertEqual(timed_out.status_code, 200, timed_out.text)
-        self.assertEqual(timed_out.json()["status"], "Completed")
-        self.assertEqual(timed_out.json()["score"], 0)
-        self.assertEqual(timed_out.json()["result"], "Failed")
+        self.assertEqual(timed_out.json()["status"], "Pending Recruiter Decision")
+        self.assertNotIn("score", timed_out.json())
+        self.assertNotIn("result", timed_out.json())
         reused = self.client.post(f"/api/assessments/{token}/submit", json={"answers": {}})
         self.assertIn(reused.status_code, {404, 409, 410})
         with main.connect() as db:
             status, submitted_at, result = db.execute(
                 "SELECT status, submitted_at, result FROM assessments WHERE application_id = ?", (application["id"],)
             ).fetchone()
-        self.assertEqual(status, "Completed")
+        self.assertEqual(status, "Pending Recruiter Decision")
         self.assertEqual(result, "Failed")
         self.assertIsNotNone(submitted_at)
 
@@ -1991,10 +1989,15 @@ Answer: A
         submitted = self.client.post(f"/api/assessments/{token}/submit", json={"answers": answers})
         self.assertEqual(submitted.status_code, 200)
 
-        # Candidate views own review
+        # Candidate cannot access confidential assessment review (403 Forbidden)
         review_res = self.client.get(f"/api/assessment-reviews/{assessment_id}", headers=candidate)
-        self.assertEqual(review_res.status_code, 200)
-        data = review_res.json()
+        self.assertEqual(review_res.status_code, 403)
+        self.assertEqual(review_res.json()["detail"], "Assessment results are confidential and under recruiter review")
+
+        # Recruiter views candidate review and skill gap analysis
+        recruiter_res = self.client.get(f"/api/assessment-reviews/{assessment_id}", headers=recruiter)
+        self.assertEqual(recruiter_res.status_code, 200)
+        data = recruiter_res.json()
         self.assertEqual(data["id"], assessment_id)
         self.assertIn("Python", data["strengths"])
         self.assertIn("SQL", data["areas_to_improve"])
@@ -2019,7 +2022,7 @@ Answer: A
         )
         candidate_b = {"Authorization": f"Bearer {reg.json()['access_token']}"}
         forbidden = self.client.get(f"/api/assessment-reviews/{assessment_id}", headers=candidate_b)
-        self.assertEqual(forbidden.status_code, 404)
+        self.assertEqual(forbidden.status_code, 403)
 
     def test_detailed_results_setting_hides_correct_answers_from_candidate(self):
         candidate, recruiter, application = self.apply_with_match(["Python"], ["Python"])
@@ -2042,17 +2045,71 @@ Answer: A
         # Submit all wrong answers
         self.client.post(f"/api/assessments/{token}/submit", json={"answers": {q["id"]: (q["correct_index"] + 1) % 4 for q in questions}})
 
-        # Candidate view: correct_answer should be hidden (None)
-        candidate_review = self.client.get(f"/api/assessment-reviews/{assessment_id}", headers=candidate).json()
-        self.assertFalse(candidate_review["can_view_detailed_answers"])
-        for q in candidate_review["questions"]:
-            self.assertIsNone(q["correct_answer"])
+        # Candidate view: confidential (403)
+        candidate_review = self.client.get(f"/api/assessment-reviews/{assessment_id}", headers=candidate)
+        self.assertEqual(candidate_review.status_code, 403)
 
         # Recruiter view: correct_answer should always be visible
         recruiter_review = self.client.get(f"/api/assessment-reviews/{assessment_id}", headers=recruiter).json()
         self.assertTrue(recruiter_review["can_view_detailed_answers"])
         for q in recruiter_review["questions"]:
             self.assertIsNotNone(q["correct_answer"])
+
+    def test_job_description_minimum_twenty_characters_validation(self):
+        recruiter = self.login("recruiter@skillsphere.dev")
+        # Description under 20 characters rejected with exact validation message
+        short_res = self.client.post(
+            "/api/jobs",
+            headers=recruiter,
+            json={
+                "title": "Software Engineer",
+                "company": "Acme Inc",
+                "description": "Too short",
+                "location": "Remote",
+                "experience": "2 years",
+                "skills": ["Python"],
+            },
+        )
+        self.assertEqual(short_res.status_code, 422)
+        self.assertEqual(
+            short_res.json()["detail"],
+            "Job description must contain at least 20 characters before you can post this job.",
+        )
+
+        # Description with spaces padding but under 20 trimmed chars rejected
+        padded_res = self.client.post(
+            "/api/jobs",
+            headers=recruiter,
+            json={
+                "title": "Software Engineer",
+                "company": "Acme Inc",
+                "description": "      under 20      ",
+                "location": "Remote",
+                "experience": "2 years",
+                "skills": ["Python"],
+            },
+        )
+        self.assertEqual(padded_res.status_code, 422)
+        self.assertEqual(
+            padded_res.json()["detail"],
+            "Job description must contain at least 20 characters before you can post this job.",
+        )
+
+        # Description with 20 or more characters accepted
+        valid_res = self.client.post(
+            "/api/jobs",
+            headers=recruiter,
+            json={
+                "title": "Software Engineer",
+                "company": "Acme Inc",
+                "description": "This is a comprehensive description with over twenty characters.",
+                "location": "Remote",
+                "experience": "2 years",
+                "skills": ["Python"],
+            },
+        )
+        self.assertEqual(valid_res.status_code, 201)
+        self.assertEqual(valid_res.json()["title"], "Software Engineer")
 
     def test_recruiter_configurable_assessment_question_count(self):
         candidate, recruiter, application = self.apply_with_match(["Python"], ["Python"])
@@ -2116,8 +2173,8 @@ Answer: A
         c_data = cand_analytics.json()
         self.assertEqual(c_data["total_applications"], 1)
         self.assertEqual(c_data["assessments_completed"], 1)
-        self.assertEqual(c_data["average_score_percentage"], 100.0)
-        self.assertIn("Python", c_data["strengths"])
+        self.assertIsNone(c_data["average_score_percentage"])
+        self.assertEqual(c_data["strengths"], [])
 
         # Recruiter analytics
         rec_analytics = self.client.get("/api/recruiter/analytics?report_range=this_week", headers=recruiter)
@@ -2132,6 +2189,416 @@ Answer: A
         self.assertEqual(admin_analytics.status_code, 200)
         self.assertIn("conversion_funnel", admin_analytics.json()["weekly"])
         self.assertIn("weak_technologies", admin_analytics.json()["weekly"])
+
+    def test_ai_question_generator_and_batch_add(self):
+        recruiter = self.login("recruiter@skillsphere.dev")
+        candidate = self.login("candidate@skillsphere.dev")
+        job = self.client.get("/api/jobs?mine=true", headers=recruiter).json()["items"][0]
+
+        # Candidate cannot access generator
+        cand_res = self.client.post(
+            f"/api/jobs/{job['id']}/questions/ai-generate",
+            headers=candidate,
+            json={"technology": "Python", "count": 5, "difficulty": "Medium"},
+        )
+        self.assertEqual(cand_res.status_code, 403)
+
+        # Recruiter generates questions
+        gen_res = self.client.post(
+            f"/api/jobs/{job['id']}/questions/ai-generate",
+            headers=recruiter,
+            json={"technology": "Python", "count": 5, "difficulty": "Mixed", "subtopic": "Data Structures"},
+        )
+        self.assertEqual(gen_res.status_code, 200, gen_res.text)
+        data = gen_res.json()
+        self.assertEqual(data["technology"], "Python")
+        self.assertEqual(len(data["questions"]), 5)
+        for q in data["questions"]:
+            self.assertEqual(q["technology"], "Python")
+            self.assertEqual(len(q["options"]), 4)
+            self.assertIn(q["correct_index"], [0, 1, 2, 3])
+            self.assertTrue(len(q["question"]) > 5)
+            self.assertTrue(q["active"])
+
+        # Batch insert questions
+        batch_res = self.client.post(
+            f"/api/jobs/{job['id']}/questions/batch",
+            headers=recruiter,
+            json={"questions": data["questions"]},
+        )
+        self.assertEqual(batch_res.status_code, 201, batch_res.text)
+        self.assertEqual(batch_res.json()["created"], 5)
+
+        # Verify added to question bank
+        bank_res = self.client.get(f"/api/jobs/{job['id']}/questions", headers=recruiter)
+        self.assertEqual(bank_res.status_code, 200)
+        self.assertEqual(bank_res.json()["active_count"], 5)
+
+        # Unauthorized recruiter cannot batch add to this job
+        reg_res = self.client.post(
+            "/api/auth/register",
+            json={"email": "other_rec@skillsphere.dev", "password": "Demo123!", "name": "Other Recruiter", "role": "recruiter"},
+        )
+        other_recruiter = {"Authorization": f"Bearer {reg_res.json()['access_token']}"}
+        other_batch = self.client.post(
+            f"/api/jobs/{job['id']}/questions/batch",
+            headers=other_recruiter,
+            json={"questions": data["questions"]},
+        )
+        self.assertEqual(other_batch.status_code, 404)
+
+    def test_candidate_ai_screening_summary(self):
+        candidate, recruiter, application = self.apply_with_match(["Python"], ["Python"])
+        self.create_job_question_bank(application["job_id"], technology="Python", count=20)
+        sent, token = self.send_assessment(application["id"])
+        self.start_assessment_proctoring(token)
+        self.client.post(f"/api/assessments/{token}/start")
+
+        # Record a proctoring event
+        self.client.post(
+            f"/api/assessments/{token}/proctoring/events",
+            json={"event_type": "tab_hidden", "severity": "warning", "message": "Tab hidden", "duration_seconds": 2},
+        )
+
+        with main.connect() as db:
+            assessment_id = db.execute("SELECT id FROM assessments WHERE application_id = ?", (application["id"],)).fetchone()["id"]
+            questions = db.execute("SELECT id, correct_index FROM assessment_questions WHERE assessment_id = ?", (assessment_id,)).fetchall()
+        # Answer all correctly
+        self.client.post(f"/api/assessments/{token}/submit", json={"answers": {q["id"]: q["correct_index"] for q in questions}})
+
+        # Recruiter fetches AI screening summary
+        summary_res = self.client.get(f"/api/applications/{application['id']}/ai-summary", headers=recruiter)
+        self.assertEqual(summary_res.status_code, 200, summary_res.text)
+        summary = summary_res.json()
+        self.assertIn(summary["recommendation"], ["Strong Hire", "Recommended", "Borderline", "Not Recommended"])
+        self.assertTrue(len(summary["summary"]) > 20)
+        self.assertIsInstance(summary["strengths"], list)
+        self.assertIsInstance(summary["risks"], list)
+        self.assertIsInstance(summary["interview_questions"], list)
+        self.assertEqual(len(summary["interview_questions"]), 3)
+        self.assertEqual(summary["assessment_score_percentage"], 100.0)
+        self.assertEqual(summary["proctoring_warning_count"], 1)
+
+        # Refresh AI screening summary
+        refresh_res = self.client.post(f"/api/applications/{application['id']}/ai-summary", headers=recruiter)
+        self.assertEqual(refresh_res.status_code, 200, refresh_res.text)
+
+        # Admin can view
+        admin = self.login("admin@skillsphere.dev")
+        admin_res = self.client.get(f"/api/applications/{application['id']}/ai-summary", headers=admin)
+        self.assertEqual(admin_res.status_code, 200)
+
+        # Candidate is forbidden
+        cand_summary = self.client.get(f"/api/applications/{application['id']}/ai-summary", headers=candidate)
+        self.assertEqual(cand_summary.status_code, 403)
+
+        # Other recruiter is forbidden (isolated as 404)
+        reg_res2 = self.client.post(
+            "/api/auth/register",
+            json={"email": "other_rec2@skillsphere.dev", "password": "Demo123!", "name": "Other Recruiter 2", "role": "recruiter"},
+        )
+        other_rec = {"Authorization": f"Bearer {reg_res2.json()['access_token']}"}
+        other_summary = self.client.get(f"/api/applications/{application['id']}/ai-summary", headers=other_rec)
+        self.assertEqual(other_summary.status_code, 404)
+
+    def test_proctoring_recording_consent_required_before_assessment_start(self):
+        candidate, recruiter, application = self.apply_with_match(["Python"], ["Python"])
+        self.create_job_question_bank(application["job_id"])
+        _, token = self.send_assessment(application["id"])
+
+        # Attempt to start without consent or camera permission
+        res_no_consent = self.client.post(f"/api/assessments/{token}/start")
+        self.assertEqual(res_no_consent.status_code, 409)
+        self.assertIn("consent", res_no_consent.json()["detail"].lower())
+
+        # Grant proctoring and recording consent
+        proctor_start = self.client.post(
+            f"/api/assessments/{token}/proctoring/start",
+            json={
+                "consent_given": True,
+                "camera_permission_granted": True,
+                "recording_consent_given": True,
+                "recording_consent_version": "1.0",
+            },
+        )
+        self.assertEqual(proctor_start.status_code, 200)
+        self.assertTrue(proctor_start.json()["started"])
+
+        # Now start assessment succeeds
+        res_start = self.client.post(f"/api/assessments/{token}/start")
+        self.assertEqual(res_start.status_code, 200)
+        self.assertEqual(res_start.json()["status"], "Started")
+
+    def test_proctoring_recording_full_lifecycle_and_local_stream(self):
+        candidate, recruiter, application = self.apply_with_match(["Python"], ["Python"])
+        self.create_job_question_bank(application["job_id"])
+        _, token = self.send_assessment(application["id"])
+
+        # Start proctoring with consent
+        self.client.post(
+            f"/api/assessments/{token}/proctoring/start",
+            json={
+                "consent_given": True,
+                "camera_permission_granted": True,
+                "recording_consent_given": True,
+                "recording_consent_version": "1.0",
+            },
+        )
+        self.client.post(f"/api/assessments/{token}/start")
+
+        # Start recording endpoint
+        rec_start_res = self.client.post(
+            f"/api/assessments/{token}/recording/start",
+            json={"consent": True, "consent_version": "1.0"},
+        )
+        self.assertEqual(rec_start_res.status_code, 200)
+        recording_id = rec_start_res.json()["recording_id"]
+
+        # Chunk upload
+        chunk_data = b"\x1a\x45\xdf\xa3\x9f\x42\x86\x81\x01\x42\xf7\x81\x01" # sample webm header
+        chunk_res = self.client.post(
+            f"/api/assessments/{token}/recording/chunk?chunk_index=0",
+            files={"chunk": ("chunk_00000.part", chunk_data, "video/webm")},
+        )
+        self.assertEqual(chunk_res.status_code, 200)
+
+        # Candidate submits answers
+        with main.connect() as db:
+            assessment_id = db.execute("SELECT id FROM assessments WHERE application_id = ?", (application["id"],)).fetchone()["id"]
+            questions = db.execute("SELECT id, correct_index FROM assessment_questions WHERE assessment_id = ?", (assessment_id,)).fetchall()
+        sub_res = self.client.post(f"/api/assessments/{token}/submit", json={"answers": {q["id"]: q["correct_index"] for q in questions}})
+        self.assertEqual(sub_res.status_code, 200)
+
+        # Video recording completion completes asynchronously after test submission
+        complete_res = self.client.post(
+            f"/api/assessments/{token}/recording/complete?duration_seconds=45",
+            files={"video": ("webcam.webm", chunk_data + b"\x00" * 128, "video/webm")},
+        )
+        self.assertEqual(complete_res.status_code, 200)
+        self.assertEqual(complete_res.json()["recording_status"], "Uploaded")
+
+        # Admin views playback and audit log is created
+        admin = self.login("admin@skillsphere.dev")
+        playback_res = self.client.get(f"/api/admin/recordings/{recording_id}/playback", headers=admin)
+        self.assertEqual(playback_res.status_code, 200)
+        p_data = playback_res.json()
+        self.assertIn("playback_url", p_data)
+        self.assertEqual(p_data["recording_status"], "Uploaded")
+
+        # Verify audit log recorded
+        with main.connect() as db:
+            audit = db.execute("SELECT * FROM recording_access_logs WHERE recording_id = ?", (recording_id,)).fetchone()
+            self.assertIsNotNone(audit)
+
+        # Admin video stream endpoint works
+        stream_res = self.client.get(p_data["playback_url"], headers=admin)
+        self.assertEqual(stream_res.status_code, 200)
+
+        # Candidate and Recruiter forbidden from accessing playback URL
+        rec_forbidden = self.client.get(f"/api/admin/recordings/{recording_id}/playback", headers=recruiter)
+        self.assertEqual(rec_forbidden.status_code, 403)
+        cand_forbidden = self.client.get(f"/api/admin/recordings/{recording_id}/playback", headers=candidate)
+        self.assertEqual(cand_forbidden.status_code, 403)
+
+    def test_proctoring_recording_failure_resilience_and_admin_notification(self):
+        candidate, recruiter, application = self.apply_with_match(["Python"], ["Python"])
+        self.create_job_question_bank(application["job_id"])
+        _, token = self.send_assessment(application["id"])
+
+        self.client.post(
+            f"/api/assessments/{token}/proctoring/start",
+            json={"consent_given": True, "camera_permission_granted": True, "recording_consent_given": True},
+        )
+        self.client.post(f"/api/assessments/{token}/start")
+
+        # Simulate Cloudinary upload failure
+        with patch.object(main, "init_cloudinary", return_value=True):
+            with patch.object(main.cloudinary.uploader, "upload", side_effect=Exception("Cloudinary timeout")):
+                fail_res = self.client.post(
+                    f"/api/assessments/{token}/recording/complete?duration_seconds=30",
+                    files={"video": ("webcam.webm", b"some_video_data", "video/webm")},
+                )
+                self.assertEqual(fail_res.status_code, 200)
+                self.assertEqual(fail_res.json()["recording_status"], "Failed")
+
+        # Verify admin received notification of upload failure
+        with main.connect() as db:
+            admin_notif = db.execute(
+                "SELECT * FROM notifications WHERE type = 'recording_failed'",
+            ).fetchone()
+            self.assertIsNotNone(admin_notif)
+
+    def test_recording_retention_cleanup(self):
+        candidate, recruiter, application = self.apply_with_match(["Python"], ["Python"])
+        self.create_job_question_bank(application["job_id"])
+        _, token = self.send_assessment(application["id"])
+
+        self.client.post(
+            f"/api/assessments/{token}/proctoring/start",
+            json={"consent_given": True, "camera_permission_granted": True, "recording_consent_given": True},
+        )
+        self.client.post(f"/api/assessments/{token}/start")
+        self.client.post(
+            f"/api/assessments/{token}/recording/complete?duration_seconds=20",
+            files={"video": ("webcam.webm", b"video_bytes_retention", "video/webm")},
+        )
+
+        admin = self.login("admin@skillsphere.dev")
+
+        # Artificially age the recording by 60 days
+        with main.connect() as db:
+            past_date = "2020-01-01T00:00:00"
+            db.execute("UPDATE assessment_recordings SET created_at = ?", (past_date,))
+
+        # Run retention cleanup
+        cleanup_res = self.client.post("/api/admin/recordings/retention-cleanup", headers=admin)
+        self.assertEqual(cleanup_res.status_code, 200)
+        self.assertGreaterEqual(cleanup_res.json()["cleaned_count"], 1)
+
+    def test_live_assessment_monitoring_full_flow(self):
+        candidate, recruiter, application = self.apply_with_match(["Python"], ["Python"])
+        self.create_job_question_bank(application["job_id"])
+        _, token = self.send_assessment(application["id"])
+
+        # Candidate gives consent and enables camera
+        proctoring = self.start_assessment_proctoring(token)
+        self.assertTrue(proctoring["started"])
+
+        # Start assessment
+        started = self.client.post(f"/api/assessments/{token}/start")
+        self.assertEqual(started.status_code, 200)
+
+        with main.connect() as db:
+            assessment_row = db.execute("SELECT id FROM assessments WHERE application_id = ?", (application["id"],)).fetchone()
+            assessment_id = assessment_row["id"]
+
+        # 1. Recruiter checks active assessments list
+        res = self.client.get("/api/recruiter/live-assessments", headers=recruiter)
+        self.assertEqual(res.status_code, 200)
+        items = res.json()["items"]
+        self.assertTrue(any(item["assessment_id"] == assessment_id for item in items))
+        item = next(item for item in items if item["assessment_id"] == assessment_id)
+        self.assertEqual(item["status"], "Assessment In Progress")
+        self.assertEqual(item["camera_status"], "Monitoring Unavailable")
+        self.assertFalse(item["monitoring_available"])
+
+        # 2. Unauthorized recruiter cannot access candidate live monitoring
+        unauth_reg = self.client.post("/api/auth/register", json={
+            "name": "Other Recruiter",
+            "email": "other_recruiter@skillsphere.dev",
+            "password": "Password123!",
+            "role": "recruiter"
+        })
+        self.assertEqual(unauth_reg.status_code, 201)
+        unauth_headers = self.login("other_recruiter@skillsphere.dev", "Password123!")
+        unauth_token = unauth_headers["Authorization"].split(" ")[1]
+
+        unauth_list = self.client.get("/api/recruiter/live-assessments", headers=unauth_headers).json()["items"]
+        self.assertFalse(any(it["assessment_id"] == assessment_id for it in unauth_list))
+
+        unauth_status = self.client.get(f"/api/assessments/{assessment_id}/live-status", headers=unauth_headers)
+        self.assertEqual(unauth_status.status_code, 403)
+
+        # Candidate cannot access recruiter live monitoring endpoint
+        candidate_list_res = self.client.get("/api/recruiter/live-assessments", headers=candidate)
+        self.assertEqual(candidate_list_res.status_code, 403)
+
+        # 3. Unauthorized recruiter WebSocket is rejected with code 1008
+        from starlette.websockets import WebSocketDisconnect
+        with self.assertRaises((WebSocketDisconnect, Exception)):
+            with self.client.websocket_connect(f"/ws/live-monitoring/recruiter/{assessment_id}?token={unauth_token}"):
+                pass
+
+        # Candidate with invalid token is rejected
+        with self.assertRaises((WebSocketDisconnect, Exception)):
+            with self.client.websocket_connect(f"/ws/live-monitoring/candidate/invalid_token_123"):
+                pass
+
+        # 4. Candidate connects WebSocket and reports camera connected
+        recruiter_jwt = recruiter["Authorization"].split(" ")[1]
+
+        with self.client.websocket_connect(f"/ws/live-monitoring/candidate/{token}") as cand_ws:
+            cand_ws.send_json({"type": "camera_status", "connected": True})
+
+            # Check recruiter live status endpoint
+            live_status = self.client.get(f"/api/assessments/{assessment_id}/live-status", headers=recruiter).json()
+            self.assertTrue(live_status["candidate_connected"])
+            self.assertTrue(live_status["camera_connected"])
+            self.assertEqual(live_status["camera_status"], "Camera Connected")
+            self.assertTrue(live_status["monitoring_available"])
+
+            # 5. Authorized recruiter connects to live monitoring WebSocket
+            with self.client.websocket_connect(f"/ws/live-monitoring/recruiter/{assessment_id}?token={recruiter_jwt}") as rec_ws:
+                # Recruiter receives initial candidate status
+                init_msg = rec_ws.receive_json()
+                self.assertEqual(init_msg["type"], "candidate_status")
+                self.assertTrue(init_msg["connected"])
+                self.assertTrue(init_msg["camera_connected"])
+
+                # Candidate receives viewer_joined event
+                joined_msg = cand_ws.receive_json()
+                self.assertEqual(joined_msg["type"], "viewer_joined")
+
+                # Recruiter requests stream
+                rec_ws.send_json({"type": "request_stream"})
+
+                # Candidate receives request_offer
+                req_offer = cand_ws.receive_json()
+                self.assertEqual(req_offer["type"], "request_offer")
+
+                # Candidate sends WebRTC offer
+                sample_offer_sdp = {"type": "offer", "sdp": "v=0\r\no=candidate 123 2 IN IP4 127.0.0.1..."}
+                cand_ws.send_json({"type": "webrtc_offer", "sdp": sample_offer_sdp})
+
+                # Recruiter receives WebRTC offer
+                rec_offer = rec_ws.receive_json()
+                self.assertEqual(rec_offer["type"], "webrtc_offer")
+                self.assertEqual(rec_offer["sdp"], sample_offer_sdp)
+
+                # Recruiter sends WebRTC answer
+                sample_answer_sdp = {"type": "answer", "sdp": "v=0\r\no=recruiter 456 2 IN IP4 127.0.0.1..."}
+                rec_ws.send_json({"type": "webrtc_answer", "sdp": sample_answer_sdp})
+
+                # Candidate receives WebRTC answer
+                cand_answer = cand_ws.receive_json()
+                self.assertEqual(cand_answer["type"], "webrtc_answer")
+                self.assertEqual(cand_answer["sdp"], sample_answer_sdp)
+
+                # Candidate sends ICE candidate
+                sample_ice = {"candidate": "candidate:1 1 UDP 2130706431 192.168.1.1 50000 typ host"}
+                cand_ws.send_json({"type": "ice_candidate", "candidate": sample_ice})
+
+                # Recruiter receives ICE candidate
+                rec_ice = rec_ws.receive_json()
+                self.assertEqual(rec_ice["type"], "ice_candidate")
+                self.assertEqual(rec_ice["candidate"], sample_ice)
+
+                # Recruiter stops viewing
+                rec_ws.send_json({"type": "stop_viewing"})
+
+            # Candidate receives viewer_left event
+            left_msg = cand_ws.receive_json()
+            self.assertEqual(left_msg["type"], "viewer_left")
+
+            # Camera disconnection test: candidate sends camera disconnected
+            cand_ws.send_json({"type": "camera_status", "connected": False})
+
+            cam_off_status = self.client.get(f"/api/assessments/{assessment_id}/live-status", headers=recruiter).json()
+            self.assertFalse(cam_off_status["camera_connected"])
+            self.assertEqual(cam_off_status["camera_status"], "Camera Disconnected")
+            self.assertFalse(cam_off_status["monitoring_available"])
+
+            # Candidate submits assessment
+            cand_ws.send_json({"type": "assessment_submitted"})
+
+        # Candidate WebSocket is now closed; check live status
+        final_status = self.client.get(f"/api/assessments/{assessment_id}/live-status", headers=recruiter).json()
+        self.assertFalse(final_status["candidate_connected"])
+
+        # Verify no video recording or frames were saved to database for live viewing
+        with main.connect() as db:
+            video_rows = db.execute("SELECT * FROM assessment_recordings WHERE assessment_id = ?", (assessment_id,)).fetchall()
+            self.assertEqual(len(video_rows), 0)
 
 
 if __name__ == "__main__":

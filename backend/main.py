@@ -348,29 +348,147 @@ def record_application_status(
     )
 
 
+class TursoRow:
+    def __init__(self, description: Any, values: Any) -> None:
+        self._columns = [col[0] for col in description] if description else []
+        self._values = list(values)
+        self._mapping = dict(zip(self._columns, self._values))
+
+    def __getitem__(self, key: Any) -> Any:
+        if isinstance(key, int):
+            return self._values[key]
+        return self._mapping[key]
+
+    def __iter__(self) -> Any:
+        return iter(self._columns)
+
+    def keys(self) -> list[str]:
+        return self._columns
+
+    def values(self) -> list[Any]:
+        return self._values
+
+    def items(self) -> Any:
+        return self._mapping.items()
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return self._mapping.get(key, default)
+
+    def __repr__(self) -> str:
+        return f"TursoRow({self._mapping})"
+
+
+class TursoCursor:
+    def __init__(self, raw_cursor: Any) -> None:
+        self._cursor = raw_cursor
+
+    def fetchone(self) -> TursoRow | None:
+        row = self._cursor.fetchone()
+        if row is None:
+            return None
+        return TursoRow(self._cursor.description, row)
+
+    def fetchall(self) -> list[TursoRow]:
+        desc = self._cursor.description
+        rows = self._cursor.fetchall()
+        return [TursoRow(desc, r) for r in rows]
+
+    def fetchmany(self, size: int = 1) -> list[TursoRow]:
+        desc = self._cursor.description
+        rows = self._cursor.fetchmany(size)
+        return [TursoRow(desc, r) for r in rows]
+
+    @property
+    def lastrowid(self) -> Any:
+        return getattr(self._cursor, "lastrowid", None)
+
+    @property
+    def rowcount(self) -> int:
+        return getattr(self._cursor, "rowcount", 0)
+
+    @property
+    def description(self) -> Any:
+        return getattr(self._cursor, "description", None)
+
+    def __iter__(self) -> Any:
+        desc = self._cursor.description
+        for row in self._cursor:
+            yield TursoRow(desc, row)
+
+
+class TursoConnectionWrapper:
+    def __init__(self, raw_connection: Any) -> None:
+        self._conn = raw_connection
+
+    def execute(self, sql: str, params: Any = None) -> TursoCursor:
+        if params is not None:
+            raw_cur = self._conn.execute(sql, params)
+        else:
+            raw_cur = self._conn.execute(sql)
+        return TursoCursor(raw_cur)
+
+    def executemany(self, sql: str, seq_of_params: Any) -> TursoCursor:
+        raw_cur = self._conn.executemany(sql, seq_of_params)
+        return TursoCursor(raw_cur)
+
+    def executescript(self, sql_script: str) -> None:
+        if hasattr(self._conn, "executescript"):
+            self._conn.executescript(sql_script)
+            return
+        cur = self._conn.cursor()
+        if hasattr(cur, "executescript"):
+            cur.executescript(sql_script)
+            return
+        for stmt in sql_script.split(";"):
+            cleaned = stmt.strip()
+            if cleaned:
+                self._conn.execute(cleaned)
+
+    def commit(self) -> None:
+        self._conn.commit()
+
+    def rollback(self) -> None:
+        self._conn.rollback()
+
+    def sync(self) -> None:
+        if hasattr(self._conn, "sync"):
+            self._conn.sync()
+
+    def close(self) -> None:
+        self._conn.close()
+
+
+def create_turso_connection() -> Any:
+    try:
+        conn = libsql.connect(str(DB_PATH), sync_url=TURSO_DATABASE_URL, auth_token=TURSO_AUTH_TOKEN)
+        try:
+            conn.sync()
+        except Exception as se:
+            logger.warning("Turso sync warning on init: %s", se)
+        return conn
+    except Exception as e:
+        logger.warning("Turso embedded replica connect failed (%s), falling back to direct remote connection...", e)
+        return libsql.connect(TURSO_DATABASE_URL, auth_token=TURSO_AUTH_TOKEN)
+
+
 @contextmanager
-def connect() -> Iterator[sqlite3.Connection]:
+def connect() -> Iterator[Any]:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     if TURSO_DATABASE_URL and HAS_TURSO:
-        # Turso Embedded Replica: Fast local SQLite with automatic cloud synchronization
-        connection = libsql.connect(str(DB_PATH), sync_url=TURSO_DATABASE_URL, auth_token=TURSO_AUTH_TOKEN)
-        connection.row_factory = sqlite3.Row
+        raw_conn = create_turso_connection()
+        wrapped = TursoConnectionWrapper(raw_conn)
         try:
-            connection.sync()
-        except Exception as e:
-            logger.warning("Turso sync warning on connect: %s", e)
-        try:
-            yield connection
-            connection.commit()
+            yield wrapped
+            wrapped.commit()
             try:
-                connection.sync()
-            except Exception as e:
-                logger.warning("Turso sync warning on commit: %s", e)
+                wrapped.sync()
+            except Exception as se:
+                logger.warning("Turso sync warning on commit: %s", se)
         except Exception:
-            connection.rollback()
+            wrapped.rollback()
             raise
         finally:
-            connection.close()
+            wrapped.close()
     else:
         connection = sqlite3.connect(DB_PATH, timeout=10)
         connection.row_factory = sqlite3.Row
@@ -814,13 +932,6 @@ def seed_assessment_questions(db: sqlite3.Connection) -> None:
 def initialize_database() -> None:
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     QUESTION_BANK_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-    if TURSO_DATABASE_URL and HAS_TURSO:
-        try:
-            init_conn = libsql.connect(str(DB_PATH), sync_url=TURSO_DATABASE_URL, auth_token=TURSO_AUTH_TOKEN)
-            init_conn.sync()
-            init_conn.close()
-        except Exception as e:
-            logger.warning("Turso initial sync warning: %s", e)
     with connect() as db:
         db.executescript(
             """

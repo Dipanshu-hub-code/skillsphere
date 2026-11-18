@@ -17,6 +17,7 @@ from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
 from email.message import EmailMessage
 from pathlib import Path
+from collections.abc import Mapping
 from typing import Any, Iterator
 from urllib.parse import urlencode, urlparse
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -348,21 +349,27 @@ def record_application_status(
     )
 
 
-class TursoRow:
+class TursoRow(Mapping):
     def __init__(self, description: Any, values: Any) -> None:
-        self._columns = [col[0] for col in description] if description else []
-        self._values = list(values)
+        self._columns = [
+            col[0] if isinstance(col, (list, tuple)) else str(col)
+            for col in description
+        ] if description else []
+        self._values = list(values) if values is not None else []
         self._mapping = dict(zip(self._columns, self._values))
 
     def __getitem__(self, key: Any) -> Any:
-        if isinstance(key, int):
+        if isinstance(key, (int, slice)):
             return self._values[key]
         return self._mapping[key]
 
     def __iter__(self) -> Any:
         return iter(self._columns)
 
-    def keys(self) -> list[str]:
+    def __len__(self) -> int:
+        return len(self._columns)
+
+    def keys(self) -> Any:
         return self._columns
 
     def values(self) -> list[Any]:
@@ -411,9 +418,17 @@ class TursoCursor:
         return getattr(self._cursor, "description", None)
 
     def __iter__(self) -> Any:
-        desc = self._cursor.description
-        for row in self._cursor:
-            yield TursoRow(desc, row)
+        desc = self.description
+        if hasattr(self._cursor, "fetchall"):
+            rows = self._cursor.fetchall()
+            for row in rows:
+                yield TursoRow(desc, row)
+        else:
+            while True:
+                row = self._cursor.fetchone()
+                if row is None:
+                    break
+                yield TursoRow(desc, row)
 
 
 class TursoConnectionWrapper:
@@ -453,6 +468,11 @@ class TursoConnectionWrapper:
     def sync(self) -> None:
         if hasattr(self._conn, "sync"):
             self._conn.sync()
+
+    def cursor(self) -> TursoCursor:
+        if hasattr(self._conn, "cursor"):
+            return TursoCursor(self._conn.cursor())
+        return TursoCursor(self._conn)
 
     def close(self) -> None:
         self._conn.close()

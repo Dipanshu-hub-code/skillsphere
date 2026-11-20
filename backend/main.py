@@ -13,7 +13,7 @@ import smtplib
 import sqlite3
 import time
 import uuid
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
 from datetime import date, datetime, timedelta, timezone
 from email.message import EmailMessage
 from pathlib import Path
@@ -183,7 +183,12 @@ CORS_ORIGINS: list[str] = (
 # ---------------------------------------------------------------------------
 limiter = Limiter(key_func=get_remote_address, default_limits=["200/minute"])
 
-app = FastAPI(title="SkillSphere API", version="1.0.0")
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> Any:
+    initialize_database()
+    yield
+
+app = FastAPI(title="SkillSphere API", version="1.0.0", lifespan=lifespan)
 
 # CORS — must be added before routes
 app.add_middleware(
@@ -795,26 +800,29 @@ class NotificationReadBody(BaseModel):
 
 
 class InterviewBody(BaseModel):
+    model_config = {"str_strip_whitespace": True}
     application_id: int
     scheduled_at: str = Field(min_length=10, max_length=40)
-    teams_url: str = Field(min_length=1, max_length=2048, strip_whitespace=True)
+    teams_url: str = Field(min_length=1, max_length=2048)
 
 
 class InterviewInvitationBody(BaseModel):
+    model_config = {"str_strip_whitespace": True}
     scheduled_at: str = Field(min_length=10, max_length=40)
     timezone: str = Field(min_length=1, max_length=80)
     duration_minutes: int = Field(ge=5, le=480)
     meeting_platform: str = Field(pattern="^(Google Meet|Microsoft Teams|Zoom|Other)$")
-    meeting_url: str = Field(min_length=1, max_length=2048, strip_whitespace=True)
+    meeting_url: str = Field(min_length=1, max_length=2048)
     recruiter_message: str = Field(default="", max_length=2000)
 
 
 class InterviewUpdateBody(BaseModel):
+    model_config = {"str_strip_whitespace": True}
     scheduled_at: str | None = Field(default=None, min_length=10, max_length=40)
     timezone: str | None = Field(default=None, min_length=1, max_length=80)
     duration_minutes: int | None = Field(default=None, ge=5, le=480)
     meeting_platform: str | None = Field(default=None, pattern="^(Google Meet|Microsoft Teams|Zoom|Other)$")
-    meeting_url: str | None = Field(default=None, min_length=1, max_length=2048, strip_whitespace=True)
+    meeting_url: str | None = Field(default=None, min_length=1, max_length=2048)
     recruiter_message: str | None = Field(default=None, max_length=2000)
 
 
@@ -1272,6 +1280,21 @@ def initialize_database() -> None:
             CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages(session_id);
             CREATE INDEX IF NOT EXISTS idx_mock_interviews_candidate ON mock_interviews(candidate_id);
             CREATE INDEX IF NOT EXISTS idx_mock_interview_exchanges_interview ON mock_interview_exchanges(mock_interview_id);
+            CREATE INDEX IF NOT EXISTS idx_applications_candidate ON applications(candidate_id);
+            CREATE INDEX IF NOT EXISTS idx_applications_job ON applications(job_id);
+            CREATE INDEX IF NOT EXISTS idx_applications_status ON applications(status);
+            CREATE INDEX IF NOT EXISTS idx_app_history_app ON application_status_history(application_id);
+            CREATE INDEX IF NOT EXISTS idx_notifications_user_unread ON notifications(user_id, is_read);
+            CREATE INDEX IF NOT EXISTS idx_job_questions_job ON job_questions(job_id, active);
+            CREATE INDEX IF NOT EXISTS idx_technical_questions_tech ON technical_questions(technology, active);
+            CREATE INDEX IF NOT EXISTS idx_assessments_candidate ON assessments(candidate_id);
+            CREATE INDEX IF NOT EXISTS idx_assessments_job ON assessments(job_id);
+            CREATE INDEX IF NOT EXISTS idx_assessments_status ON assessments(status);
+            CREATE INDEX IF NOT EXISTS idx_assessments_token_hash ON assessments(token_hash);
+            CREATE INDEX IF NOT EXISTS idx_assessment_questions_assessment ON assessment_questions(assessment_id);
+            CREATE INDEX IF NOT EXISTS idx_assessment_events_assessment ON assessment_proctoring_events(assessment_id);
+            CREATE INDEX IF NOT EXISTS idx_interviews_application ON interviews(application_id);
+            CREATE INDEX IF NOT EXISTS idx_interviews_recruiter ON interviews(recruiter_id);
             """
         )
         user_columns = {row["name"] for row in db.execute("PRAGMA table_info(users)")}
@@ -2054,7 +2077,7 @@ def assessment_for_match(
             (existing["id"],),
         )
     else:
-        cursor = db.execute(
+        db.execute(
             """INSERT INTO assessments
             (application_id, candidate_id, job_id, technology, status, match_percentage,
              total_questions, assessment_name, assessment_round, pass_percentage,
@@ -2239,7 +2262,7 @@ def extract_resume_text(content: bytes, content_type: str) -> str:
         except HTTPException:
             raise
         except Exception as error:
-            logger.warning("pypdf text extraction failed: %s", error)
+            raise HTTPException(status_code=422, detail="This PDF is unreadable or corrupted. Please check the file and try again.") from error
 
         # Stage 2: Try pypdfium2 native textpage extraction (100% offline Chromium PDF engine)
         pdfium_text = ""
@@ -2326,7 +2349,6 @@ def extract_resume_text(content: bytes, content_type: str) -> str:
     return ""
 
 
-@app.on_event("startup")
 def startup() -> None:
     initialize_database()
 
@@ -3339,9 +3361,9 @@ def generate_questions_local(
             q_text += f" (Scenario: {custom_prompt[:60]}...)"
 
         correct_ans = f"Decoupling components through well-defined interfaces and adhering to standard {technology} conventions."
-        opt_b = f"Bypassing validation layers to maximize raw I/O throughput in high-load clusters."
-        opt_c = f"Storing mutable state globally across all shared threads without locking."
-        opt_d = f"Disabling strict type and boundary checking to suppress runtime warnings."
+        opt_b = "Bypassing validation layers to maximize raw I/O throughput in high-load clusters."
+        opt_c = "Storing mutable state globally across all shared threads without locking."
+        opt_d = "Disabling strict type and boundary checking to suppress runtime warnings."
 
         options = [correct_ans, opt_b, opt_c, opt_d]
         random.shuffle(options)
@@ -3695,8 +3717,6 @@ Proctoring Signals: {proctor_warnings} warnings logged; Flagged: {'Yes' if proct
 
 def question_import_preview(row: sqlite3.Row) -> dict[str, Any]:
     questions = json.loads(row["preview_json"] or "[]")
-    valid_questions = [item for item in questions if item["valid"]]
-    invalid_questions = [item for item in questions if not item["valid"]]
     technology_counts: dict[str, int] = {}
     difficulty_counts: dict[str, int] = {}
     for item in questions:
@@ -7619,14 +7639,13 @@ async def upload_resume(
     mime_by_suffix = {
         ".pdf": "application/pdf",
         ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        ".txt": "text/plain",
         ".jpg": "image/jpeg",
         ".jpeg": "image/jpeg",
         ".png": "image/png",
     }
     expected_type = mime_by_suffix.get(suffix)
     if not expected_type:
-        raise HTTPException(status_code=415, detail="Use a PDF, DOCX, TXT, JPG, JPEG, or PNG resume")
+        raise HTTPException(status_code=415, detail="Use a PDF, DOCX, JPG, JPEG, or PNG resume")
     if expected_type == "application/pdf" and b"%PDF-" not in content[:1024]:
         raise HTTPException(status_code=415, detail="This file does not contain a valid PDF")
     if expected_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document" and not content.startswith(b"PK\x03\x04"):
@@ -7668,7 +7687,7 @@ async def upload_resume(
     try:
         with connect() as db:
             old = db.execute("SELECT storage_path FROM resumes WHERE candidate_id = ?", (user["id"],)).fetchone()
-            cursor = db.execute(
+            db.execute(
                 """INSERT INTO resumes
                 (candidate_id, filename, storage_path, content_type, extracted_text, parsed_profile_json, processing_status, processing_error, uploaded_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)

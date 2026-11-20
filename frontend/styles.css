@@ -58,9 +58,8 @@ a { color: inherit; text-decoration: none; }
 .notification-count { position: absolute; top: -6px; right: -6px; min-width: 17px; padding: 2px 4px; border-radius: 9px; color: #fff; background: var(--red); font-size: 8px; line-height: 1.2; }
 .notification-panel { position: fixed; z-index: 15; top: 62px; right: 24px; width: min(390px,calc(100vw - 28px)); max-height: min(70vh,560px); overflow-y: auto; padding: 13px; border: 1px solid var(--line); border-radius: 15px; background: #fff; box-shadow: var(--shadow); }
 .notification-head { display: flex; justify-content: space-between; align-items: center; padding: 4px 5px 11px; border-bottom: 1px solid var(--line); }
-.notification-head strong,.notification-head small { display: block; }
-.notification-head strong { font-size: 12px; }
-.notification-head small { margin-top: 3px; color: var(--muted); font-size: 9px; }
+.notification-head strong { display: block; font-size: 12px; }
+.notification-head small { display: block; margin-top: 3px; color: var(--muted); font-size: 9px; }
 .notification-item { padding: 9px 3px; border-bottom: 1px solid #f3efed; }
 .notification-item > button { display: flex; align-items: flex-start; gap: 9px; width: 100%; padding: 0; border: 0; text-align: left; background: transparent; }
 .notification-item > button > span:last-child { display: grid; gap: 4px; }
@@ -317,9 +316,8 @@ td small { display: block; margin-top: 3px; color: var(--muted); font-size: 9px;
 .pending-assessment-banner p { margin: 3px 0 0; color: #4b5563; font-size: 11px; }
 .interview-room { padding: 0; overflow: hidden; }
 .interview-room-toolbar { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 14px 17px; border-bottom: 1px solid var(--line); }
-.interview-room-toolbar strong,.interview-room-toolbar small { display: block; }
-.interview-room-toolbar strong { font-size: 12px; }
-.interview-room-toolbar small { margin-top: 4px; color: var(--muted); font-size: 10px; }
+.interview-room-toolbar strong { display: block; font-size: 12px; }
+.interview-room-toolbar small { display: block; margin-top: 4px; color: var(--muted); font-size: 10px; }
 .editor-language { width: auto; min-width: 120px; }
 .code-editor { display: block; width: 100%; min-height: 420px; resize: vertical; padding: 20px; border: 0; outline: 0; background: #1e1e1e; color: #e7e7e7; font: 13px/1.65 Consolas, "Courier New", monospace; tab-size: 4; }
 .code-editor:focus { box-shadow: inset 0 0 0 2px #c83b42; }

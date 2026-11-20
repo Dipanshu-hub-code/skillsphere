@@ -863,7 +863,7 @@ function navItems() {
   const common = [["Dashboard", "⌂"], ["Find jobs", "⌕"], ["Applications", "▤"], ["Assessments", "✓"], ["My profile", "◉"]];
   if (state.user?.role === "recruiter") return [["Dashboard", "⌂"], ["My jobs", "▣"], ["Applicants", "♙"], ["Assessments", "✓"], ["Live monitoring", "◎"], ["Question bank", "☷"], ["Interviews", "◷"], ["Company profile", "◉"]];
   if (state.user?.role === "admin") return [["Dashboard", "⌂"], ["Users", "♙"], ["Job listings", "▣"], ["Assessments", "✓"], ["Live monitoring", "◎"], ["Question bank", "☷"], ["Interviews", "◷"]];
-  return [...common, ["Interviews", "◷"], ["AI Career Assistant", "✨"]];
+  return [...common, ["Interviews", "◷"], ["Career Assistant", "💬"]];
 }
 
 function updatePageTitle(pageName) {
@@ -874,7 +874,8 @@ function updatePageTitle(pageName) {
     "Assessments": "Assessments — SkillSphere",
     "Live monitoring": "Live Assessment Monitoring — SkillSphere",
     "My profile": "My Profile — SkillSphere",
-    "AI Career Assistant": "AI Career Assistant — SkillSphere",
+    "Career Assistant": "SkillSphere Career Assistant",
+    "AI Career Assistant": "SkillSphere Career Assistant",
     "Applicants": "Applicants — SkillSphere",
     "My jobs": "My Jobs — SkillSphere",
     "Question bank": "Question Bank — SkillSphere",
@@ -1080,10 +1081,10 @@ function candidateDashboard() {
     <section class="card" style="margin-top:16px;background:linear-gradient(135deg, #fff7ed 0%, #fff 100%);border-color:#fed7aa;">
       <div class="card-heading">
         <div>
-          <h2>✨ AI Career &amp; Interview Assistant</h2>
-          <p>Get personalized analysis on your resume, practice technical &amp; HR questions, or run an interactive mock interview.</p>
+          <h2>💬 SkillSphere Career Assistant</h2>
+          <p>Get personalized guidance on your resume, prepare for technical &amp; HR interviews, and explore career advice.</p>
         </div>
-        <button class="btn btn-primary btn-small" data-page="AI Career Assistant">Launch Assistant →</button>
+        <button class="btn btn-primary btn-small" data-page="Career Assistant">Launch Assistant →</button>
       </div>
     </section>`;
 }
@@ -1417,7 +1418,7 @@ async function loadAiSessions() {
 
 async function loadAiSessionMessages(sessionId) {
   try {
-    const data = await api(`/candidate/ai/sessions/${sessionId}`);
+    const data = await api(`/chat/history/${sessionId}`);
     state.aiActiveSessionId = sessionId;
     state.aiMessages = data.messages || [];
     renderWorkspace();
@@ -1452,17 +1453,20 @@ async function sendAiChatMessage(userMessage) {
     const payload = { message: text };
     if (state.aiActiveSessionId) payload.session_id = state.aiActiveSessionId;
 
-    const res = await api("/candidate/ai/chat", {
+    const res = await api("/chat", {
       method: "POST",
       body: JSON.stringify(payload)
     });
 
     state.aiActiveSessionId = res.session_id;
+    state.aiFollowUpSuggestions = res.suggested_follow_ups || [];
     state.aiMessages.push({
-      id: "ai-" + Date.now(),
+      id: "bot-" + Date.now(),
       sender: "assistant",
       message: res.message,
-      created_at: res.created_at
+      created_at: res.created_at,
+      intent: res.intent,
+      confidence: res.confidence
     });
     state.aiChatBusy = false;
     await loadAiSessions();
@@ -1482,6 +1486,7 @@ async function deleteAiSession(sessionId) {
     if (state.aiActiveSessionId === sessionId) {
       state.aiActiveSessionId = null;
       state.aiMessages = [];
+      state.aiFollowUpSuggestions = null;
     }
     await loadAiSessions();
     renderWorkspace();
@@ -1491,10 +1496,21 @@ async function deleteAiSession(sessionId) {
   }
 }
 
-function clearAiChat() {
+async function clearAiChat() {
+  if (!confirm("Are you sure you want to clear this conversation?")) return;
+  if (state.aiActiveSessionId) {
+    try {
+      await api(`/chat/history/${state.aiActiveSessionId}`, { method: "DELETE" });
+    } catch (e) {
+      console.warn("Could not delete chat history on server:", e);
+    }
+  }
   state.aiActiveSessionId = null;
   state.aiMessages = [];
+  state.aiFollowUpSuggestions = null;
+  await loadAiSessions();
   renderWorkspace();
+  showToast("Conversation cleared");
 }
 
 async function startMockInterview(jobRole, interviewType, difficulty) {
@@ -1590,14 +1606,17 @@ function aiAssistantPage() {
 
   return `
     ${heading(
-      "SkillSphere AI Mentor",
-      "AI Career &amp; Interview Assistant",
-      "Prepare for interviews, analyze your resume, explore career paths, and practice with realistic interactive mock interviews.",
-      `<div style="display:flex;align-items:center;gap:10px;">${resumeBadge}</div>`
+      "Career Assistant",
+      "SkillSphere Career Assistant",
+      "Prepare for interviews, analyze your resume, explore technical concepts, and receive offline career guidance.",
+      `<div style="display:flex;align-items:center;gap:10px;">
+        <span class="ai-status-online"><span class="ai-status-dot"></span> Online</span>
+        ${resumeBadge}
+      </div>`
     )}
 
     <div class="ai-assistant-page">
-      <nav class="ai-nav-tabs" aria-label="AI Assistant Views">
+      <nav class="ai-nav-tabs" aria-label="Career Assistant Views">
         <button class="ai-tab-btn ${activeTab === "chat" ? "active" : ""}" data-action="switch-ai-tab" data-tab="chat">💬 Career &amp; Resume Chat</button>
         <button class="ai-tab-btn ${activeTab === "mock" ? "active" : ""}" data-action="switch-ai-tab" data-tab="mock">🎯 Start Mock Interview</button>
         <button class="ai-tab-btn ${activeTab === "history" ? "active" : ""}" data-action="switch-ai-tab" data-tab="history">📜 Past Practice &amp; Reports</button>
@@ -1613,17 +1632,17 @@ function renderAiChatView() {
   const activeTitle = activeSession ? activeSession.session_title : "New Conversation";
   const messages = state.aiMessages || [];
 
-  const suggestedPrompts = [
-    "Explain my resume in simple language.",
-    "What are my strongest technical skills?",
-    "What weaknesses or gaps do you see in my resume?",
-    "Which skills should I improve?",
-    "How can I improve my professional summary?",
-    "What interview questions could an interviewer ask based on my projects?",
-    "How should I explain my final-year project in an interview?",
-    "How do I answer 'Tell me about yourself'?",
-    "Give me a mock technical question for Python."
+  const defaultPrompts = [
+    "Improve my resume.",
+    "Explain my technical skills.",
+    "Prepare me for an HR interview.",
+    "Help me prepare for a technical interview.",
+    "How do I prepare for placements?",
+    "How do I apply for jobs?"
   ];
+  const suggestedPrompts = (state.aiFollowUpSuggestions && state.aiFollowUpSuggestions.length > 0)
+    ? state.aiFollowUpSuggestions
+    : defaultPrompts;
 
   return `
     <div class="ai-chat-layout">
@@ -1634,7 +1653,7 @@ function renderAiChatView() {
         </div>
         <div class="ai-session-list">
           <button class="ai-session-item ${!state.aiActiveSessionId ? "active" : ""}" data-action="new-ai-session">
-            <span class="ai-session-title">✨ New Conversation</span>
+            <span class="ai-session-title">💬 New Conversation</span>
           </button>
           ${state.aiSessions.map(s => `
             <div class="ai-session-item ${state.aiActiveSessionId === s.id ? "active" : ""}" data-action="select-ai-session" data-id="${s.id}">
@@ -1648,7 +1667,10 @@ function renderAiChatView() {
       <section class="ai-chat-main">
         <header class="ai-chat-header">
           <div>
-            <h3>${esc(activeTitle)}</h3>
+            <div style="display:flex;align-items:center;gap:8px;">
+              <h3>${esc(activeTitle)}</h3>
+              <span class="ai-status-online"><span class="ai-status-dot"></span> Online</span>
+            </div>
             <small style="color:var(--muted);">${state.aiResumeLoaded ? `Using ${esc(state.aiResumeName)} as context` : "Upload a resume in My Profile for personalized insights"}</small>
           </div>
           <button class="text-button" data-action="clear-ai-chat" title="Clear messages in current chat">Clear conversation</button>
@@ -1657,15 +1679,15 @@ function renderAiChatView() {
         <div class="ai-chat-stream" id="ai-chat-stream">
           ${messages.length === 0 ? `
             <div class="ai-msg ai-msg-assistant">
-              <div class="ai-msg-avatar">✨</div>
+              <div class="ai-msg-avatar">💬</div>
               <div class="ai-msg-bubble">
-                <p><strong>Hello! I'm your SkillSphere AI Career Assistant.</strong></p>
-                <p>I can help you understand your resume, prepare for interviews, improve your skills, and answer career-related questions. What would you like help with today?</p>
+                <p><strong>Hello! Welcome to SkillSphere Career Assistant.</strong></p>
+                <p>I can help you understand your resume, prepare for interviews, improve your technical knowledge and get career guidance. What would you like to know?</p>
               </div>
             </div>
           ` : messages.map(m => `
             <div class="ai-msg ${m.sender === "candidate" ? "ai-msg-candidate" : "ai-msg-assistant"}">
-              <div class="ai-msg-avatar">${m.sender === "candidate" ? esc(initials(state.user.name)) : "✨"}</div>
+              <div class="ai-msg-avatar">${m.sender === "candidate" ? esc(initials(state.user.name)) : "💬"}</div>
               <div class="ai-msg-bubble">
                 ${formatAiMessage(m.message)}
                 <small style="display:block;margin-top:6px;font-size:10px;opacity:0.6;text-align:${m.sender === "candidate" ? "right" : "left"};">${m.created_at ? new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ""}</small>
@@ -1676,7 +1698,7 @@ function renderAiChatView() {
           ${state.aiChatBusy ? `
             <div class="ai-typing-indicator">
               <div class="ai-dot"></div><div class="ai-dot"></div><div class="ai-dot"></div>
-              <span>SkillSphere AI is typing…</span>
+              <span>SkillSphere Assistant is typing…</span>
             </div>
           ` : ""}
         </div>
@@ -2374,7 +2396,7 @@ function currentContent() {
   if (state.page === "Interviews") return interviewListPage();
   if (state.page === "Interview room") return interviewRoomPage();
   if (state.page === "My profile") return profilePage();
-  if (state.page === "AI Career Assistant") return aiAssistantPage();
+  if (state.page === "Career Assistant" || state.page === "AI Career Assistant") return aiAssistantPage();
   return candidateDashboard();
 }
 
@@ -3062,7 +3084,7 @@ async function loadWorkspace() {
       ]);
       state.resume = resume;
       state.candidateAnalytics = candidateAnalytics;
-      if (state.page === "AI Career Assistant") {
+      if (state.page === "Career Assistant" || state.page === "AI Career Assistant") {
         await loadAiSessions();
         await loadMockInterviewsHistory();
       }
@@ -3957,7 +3979,7 @@ app.addEventListener("click", async event => {
     state.notificationsOpen = false;
     if (state.page === "Question bank") state.questionBankJob = null;
     if (state.page === "Live monitoring") await loadLiveAssessments();
-    if (state.page === "AI Career Assistant" && state.user.role === "candidate") {
+    if ((state.page === "Career Assistant" || state.page === "AI Career Assistant") && state.user.role === "candidate") {
       await loadAiSessions();
       await loadMockInterviewsHistory();
     }

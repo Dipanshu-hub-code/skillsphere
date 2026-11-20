@@ -1,0 +1,1715 @@
+{
+  "categories": [
+    {
+      "id": "resume_assistance",
+      "name": "Resume Assistance",
+      "description": "Guidance on resume building, formatting, ATS optimization, and project descriptions"
+    },
+    {
+      "id": "technical_interview",
+      "name": "Technical Interview Preparation",
+      "description": "Core technical concepts, programming languages, databases, and system design"
+    },
+    {
+      "id": "hr_interview",
+      "name": "HR Interview Preparation",
+      "description": "Behavioral questions, self-introduction, STAR method, and salary discussions"
+    },
+    {
+      "id": "career_guidance",
+      "name": "Career Guidance",
+      "description": "Career paths, placement prep, portfolio building, and skill roadmaps"
+    },
+    {
+      "id": "platform_assistance",
+      "name": "SkillSphere Platform Assistance",
+      "description": "Navigating SkillSphere, applying to jobs, taking assessments, and tracking status"
+    }
+  ],
+  "entries": [
+    {
+      "id": "greeting",
+      "category": "platform_assistance",
+      "intent": "greeting",
+      "title": "Greeting & Welcome",
+      "patterns": [
+        "hello",
+        "hi",
+        "hey",
+        "good morning",
+        "good afternoon",
+        "good evening",
+        "hello assistant",
+        "hi there",
+        "greetings",
+        "hey skillsphere"
+      ],
+      "keywords": [
+        "hello",
+        "hi",
+        "hey",
+        "morning",
+        "afternoon",
+        "evening",
+        "greetings"
+      ],
+      "response": "Hello! Welcome to **SkillSphere Career Assistant**.\n\nI can help you understand your resume, prepare for technical and HR interviews, improve your skills, and guide you through the SkillSphere platform.\n\n**Here are a few things you can ask me:**\n- *\"How can I improve my resume?\"*\n- *\"What skills are mentioned in my resume?\"*\n- *\"Explain OOP concepts in Python\"*\n- *\"How should I answer 'Tell me about yourself'?\"*\n- *\"How do technical assessments work on SkillSphere?\"*\n\nWhat would you like help with today?",
+      "follow_ups": {
+        "more": "Feel free to type any specific question or click one of the suggested quick prompts below to get started immediately!",
+        "example": "For instance, ask *'Explain polymorphism with an example'* or *'How do I write about academic projects?'*."
+      },
+      "suggested_next": [
+        "Improve my resume",
+        "Explain my technical skills",
+        "Prepare me for an HR interview",
+        "Help me prepare for a technical interview"
+      ]
+    },
+    {
+      "id": "bot_capabilities",
+      "category": "platform_assistance",
+      "intent": "bot_capabilities",
+      "title": "What can you do?",
+      "patterns": [
+        "what can you do",
+        "who are you",
+        "what are your features",
+        "how can you help me",
+        "what is your purpose",
+        "help me",
+        "commands",
+        "features"
+      ],
+      "keywords": [
+        "capabilities",
+        "features",
+        "who",
+        "what",
+        "help",
+        "purpose"
+      ],
+      "response": "I am the **SkillSphere Career Assistant**, your rule-based interview and career companion.\n\nHere is how I can support your recruitment journey:\n1. **Resume Analysis**: Extract and explain skills, languages, and projects from your uploaded resume.\n2. **Resume Improvement**: Formatting advice, ATS optimization, and writing impactful bullet points.\n3. **Technical Interview Prep**: Core concepts in Python, Java, SQL, OOP, APIs, and Data Structures.\n4. **HR & Behavioral Prep**: Proven strategies using the STAR method for classic interview questions.\n5. **Career Guidance**: Roadmaps for Data Analysts, Python Developers, and campus placements.\n6. **Platform Support**: How to apply for jobs, take MCQ assessments, and track your applications.",
+      "follow_ups": {
+        "more": "I work 100% locally on SkillSphere without any external LLM dependencies, ensuring fast, deterministic, and secure career assistance."
+      },
+      "suggested_next": [
+        "Improve my resume",
+        "How do I apply for jobs?",
+        "Explain my technical skills"
+      ]
+    },
+    {
+      "id": "resume_improve_general",
+      "category": "resume_assistance",
+      "intent": "resume_improve",
+      "title": "How do I improve my resume?",
+      "patterns": [
+        "how do i improve my resume",
+        "how can i improve my resume",
+        "can you suggest improvements to my cv",
+        "what should i change in my resume",
+        "is my cv good enough",
+        "make my resume better",
+        "tips for resume",
+        "resume review tips",
+        "how to write a great resume",
+        "how to enhance my cv"
+      ],
+      "keywords": [
+        "improve",
+        "resume",
+        "cv",
+        "better",
+        "enhance",
+        "suggest",
+        "change"
+      ],
+      "response": "To make your resume stand out to recruiters and ATS scanners, follow these proven strategies:\n\n1. **Use the Action + Context + Result (XYZ) Formula**:\n   - Rather than *\"Built a web app\"*, write: *\"Developed a responsive full-stack task manager using React and FastAPI, reducing project coordination time by 30%.\"*\n2. **Keep it Concise & Well-Structured**:\n   - Freshers and candidates with under 5 years of experience should strictly use a **1-page** format.\n   - Ensure clean 10-12pt readable fonts (Arial, Calibri, Inter) with 0.5 to 1 inch margins.\n3. **Highlight Quantifiable Achievements**:\n   - Include numbers: users impacted, performance percentage gained, lines of code, or data processed.\n4. **Tailor Skills to Job Descriptions**:\n   - Match keywords directly from job postings (e.g. FastAPI, PostgreSQL, Docker) in your Technical Skills section.\n5. **Proofread Rigorously**:\n   - Check for zero typographical or grammatical errors; ensure active voice throughout.",
+      "follow_ups": {
+        "more": "Always organize your resume in this reverse-chronological order: Header/Contact Info -> Professional Summary -> Technical Skills -> Projects -> Work/Internship Experience -> Education -> Certifications.",
+        "example": "Example weak bullet: *'Worked on database queries'*. Example strong bullet: *'Optimized PostgreSQL queries with composite indexing, cutting average API response latency by 45% across 10,000 requests.'*"
+      },
+      "suggested_next": [
+        "What should I include in my professional summary?",
+        "How do I make my resume suitable for ATS systems?",
+        "How should I describe academic projects?"
+      ]
+    },
+    {
+      "id": "resume_summary_guide",
+      "category": "resume_assistance",
+      "intent": "resume_summary",
+      "title": "What should I include in my professional summary?",
+      "patterns": [
+        "what should i include in my professional summary",
+        "how to write a professional summary",
+        "resume summary guide",
+        "what to write in resume summary",
+        "objective vs summary",
+        "career objective tips",
+        "how to write resume objective",
+        "profile summary advice"
+      ],
+      "keywords": [
+        "professional",
+        "summary",
+        "objective",
+        "profile",
+        "include",
+        "write"
+      ],
+      "response": "Your **Professional Summary** is a 2 to 4 sentence elevator pitch at the top of your resume.\n\n**A high-impact summary answers 3 key questions:**\n1. **Who are you?** Your professional title and primary domain (e.g., *'Results-driven Python Backend Developer'*).\n2. **What are your core strengths?** Your key technologies and accomplishments (e.g., *'Proficient in building asynchronous REST APIs with FastAPI, PostgreSQL, and Docker'*).\n3. **What value do you bring?** How you solve business problems (e.g., *'Passionate about writing clean, scalable code and delivering robust microservices.'*).\n\n**Formula:**\n`[Title/Role] + [Years of Experience or Strong Foundations] + [Top 3-4 Technical Competencies] + [Key Value Proposition / Passion].`",
+      "follow_ups": {
+        "example": "Sample Summary for a fresher/junior:\n*'Motivated Software Engineer with hands-on expertise in Python, SQL, and FastAPI. Proven track record of building production-ready RESTful APIs and modern web applications with a focus on clean architecture and high performance. Eager to contribute to high-impact development teams.'*"
+      },
+      "suggested_next": [
+        "How should I describe my technical skills?",
+        "How do I make my resume suitable for ATS systems?"
+      ]
+    },
+    {
+      "id": "resume_technical_skills",
+      "category": "resume_assistance",
+      "intent": "resume_skills",
+      "title": "How should I describe my technical skills?",
+      "patterns": [
+        "how should i describe my technical skills",
+        "how to list skills on resume",
+        "categorize technical skills",
+        "skills section tips",
+        "how to organize skills on cv",
+        "which skills to put on resume",
+        "grouping skills on resume"
+      ],
+      "keywords": [
+        "describe",
+        "technical",
+        "skills",
+        "list",
+        "section",
+        "categorize",
+        "group"
+      ],
+      "response": "Organize your Technical Skills section into clean, logical categories rather than a single long list:\n\n**Recommended Structure:**\n- **Languages**: Python, JavaScript, TypeScript, Java, C++, SQL\n- **Frameworks & Libraries**: FastAPI, Django, React, Node.js, Express\n- **Databases & Storage**: PostgreSQL, MySQL, SQLite, Redis, MongoDB\n- **Tools & Platforms**: Git, Docker, Linux, Postman, AWS, GitHub Actions\n- **Core Competencies**: RESTful APIs, OOP, Data Structures & Algorithms, Unit Testing\n\n**Pro Tips:**\n- Only list technologies you can comfortably discuss or code in during a live interview.\n- Avoid subjective progress bars or percentages (e.g. *'Python 85%'*)\u2014let your projects demonstrate your proficiency.",
+      "follow_ups": {
+        "more": "Always put the technologies most relevant to the target job at the front of each category so recruiters spot them within 6 seconds of scanning."
+      },
+      "suggested_next": [
+        "How should I describe academic projects?",
+        "How do I make my resume suitable for ATS systems?"
+      ]
+    },
+    {
+      "id": "resume_describe_projects",
+      "category": "resume_assistance",
+      "intent": "resume_projects",
+      "title": "How should I describe academic or personal projects?",
+      "patterns": [
+        "how should i describe academic projects",
+        "how to write projects on resume",
+        "describing personal projects",
+        "final year project on cv",
+        "project description format",
+        "how to showcase projects",
+        "portfolio projects resume"
+      ],
+      "keywords": [
+        "describe",
+        "projects",
+        "academic",
+        "personal",
+        "final",
+        "year",
+        "showcase",
+        "portfolio"
+      ],
+      "response": "When describing projects, provide 2 to 3 action-oriented bullet points per project:\n\n**Structure for Each Project:**\n1. **Project Title | Tech Stack Used | [Live Demo Link or GitHub Link]**\n2. **Bullet 1 (Problem & Role)**: What the project does and the architecture you designed.\n3. **Bullet 2 (Technical Implementation)**: Specific libraries, database models, authentication, or algorithms used.\n4. **Bullet 3 (Outcome & Performance)**: Measurable result (e.g. latency, accuracy, user capacity, test coverage).\n\n**Example:**\n**SkillSphere Recruitment Portal** | *Python, FastAPI, SQLite, Vanilla JS*\n- Designed and implemented a role-based hiring platform with JWT authentication and real-time WebSockets.\n- Built asynchronous background task queues and multi-engine PDF resume text extraction.\n- Achieved 100% automated test coverage across 68 API endpoints.",
+      "follow_ups": {
+        "more": "Always include clickable links to working GitHub repositories or hosted deployments so recruiters can test your work directly."
+      },
+      "suggested_next": [
+        "How do I write about internships?",
+        "How do I make my resume suitable for ATS systems?"
+      ]
+    },
+    {
+      "id": "resume_internships",
+      "category": "resume_assistance",
+      "intent": "resume_internships",
+      "title": "How do I write about internships?",
+      "patterns": [
+        "how do i write about internships",
+        "internship experience on resume",
+        "how to describe internship",
+        "internship bullet points",
+        "writing work experience fresher",
+        "internship description tips"
+      ],
+      "keywords": [
+        "internship",
+        "write",
+        "experience",
+        "bullet",
+        "points",
+        "describe"
+      ],
+      "response": "Treat internships as real professional experience. Use this format:\n\n**Header Format:**\n`[Job Title / Intern] | [Company Name] \u2014 [City, Country or Remote] | [Month Year \u2013 Month Year]`\n\n**Bullet Points Guidance:**\n- **Focus on contributions, not just learning**: Replace *\"Learned Django\"* with *\"Developed 5 reusable REST API endpoints in Django for user profile onboarding.\"*\n- **Mention collaboration**: Mention working with senior engineers, code reviews, Agile sprints, or Git workflows.\n- **Quantify business impact**: Mention bug fixes delivered, features shipped, or percentage performance gains.",
+      "follow_ups": {
+        "example": "*\"Software Engineering Intern | Acme Labs | Jun 2025 \u2013 Aug 2025\"*\n- *\"Implemented OAuth2 token validation for the mobile client, eliminating duplicate login attempts for 5,000+ daily active users.\"*\n- *\"Collaborated in bi-weekly Agile sprints, writing Pytest test suites that increased overall codebase test coverage by 18%.\"*"
+      },
+      "suggested_next": [
+        "What common resume mistakes should I avoid?",
+        "How do I make my resume suitable for ATS systems?"
+      ]
+    },
+    {
+      "id": "resume_common_mistakes",
+      "category": "resume_assistance",
+      "intent": "resume_mistakes",
+      "title": "What common resume mistakes should I avoid?",
+      "patterns": [
+        "what common resume mistakes should i avoid",
+        "common cv mistakes",
+        "what not to do on resume",
+        "resume red flags",
+        "bad resume practices",
+        "errors in resume",
+        "why resumes get rejected"
+      ],
+      "keywords": [
+        "mistakes",
+        "avoid",
+        "red",
+        "flags",
+        "errors",
+        "rejected",
+        "wrong"
+      ],
+      "response": "Avoid these critical resume red flags that cause recruiters to pass on candidates:\n\n1. **Spelling & Grammar Errors**: Even a single typo suggests lack of attention to detail.\n2. **Skill Overload / Buzzword Stuffing**: Don't list 30 technologies if you only know how to print \"Hello World\" in half of them.\n3. **Unexplained Career Gaps**: Provide concise context (e.g. *'Upskilling in Cloud Computing'*, *'Higher Education'*).\n4. **Non-Standard Formatting**: Fancy graphics, two-column templates with tables, and complex icons break ATS parsers.\n5. **Vague Passive Phrases**: Avoid *'Responsible for...'* or *'Helped with...'*. Use active verbs like *'Engineered'*, *'Implemented'*, *'Architected'*, *'Streamlined'*.\n6. **Missing Links**: Lack of functional GitHub links or LinkedIn profiles.",
+      "follow_ups": {
+        "more": "Always export your resume as a clean, selectable-text PDF. Avoid image-only PDFs created from Photoshop or Canva."
+      },
+      "suggested_next": [
+        "How do I make my resume suitable for ATS systems?",
+        "How should I format my resume?"
+      ]
+    },
+    {
+      "id": "resume_formatting",
+      "category": "resume_assistance",
+      "intent": "resume_formatting",
+      "title": "How should I format my resume?",
+      "patterns": [
+        "how should i format my resume",
+        "resume format guidelines",
+        "single column vs two column resume",
+        "best resume layout",
+        "resume font and margins",
+        "page length for resume",
+        "chronological resume format"
+      ],
+      "keywords": [
+        "format",
+        "formatting",
+        "layout",
+        "font",
+        "margins",
+        "column",
+        "length"
+      ],
+      "response": "Follow these standard guidelines for a professional, ATS-friendly resume format:\n\n- **Layout**: Single-column reverse-chronological layout is strongly recommended for highest ATS readability.\n- **Length**: Strictly 1 page for freshers and candidates with under 5 years experience; maximum 2 pages for senior staff.\n- **Typography**: Clean, professional sans-serif fonts such as Inter, Calibri, Arial, or Roboto. Body text: 10\u201311pt; Section headings: 13\u201314pt bold.\n- **Margins**: 0.5 to 0.75 inches on all sides.\n- **File Format**: PDF format generated directly from Word, Google Docs, or LaTeX with selectable text.\n- **Consistency**: Keep date formats uniform (e.g., *'Jan 2025 \u2013 Present'* throughout).",
+      "follow_ups": {
+        "more": "Ensure headings use standard text strings: 'Work Experience', 'Education', 'Projects', and 'Technical Skills'. Avoid creative headings like 'My Journey' or 'Things I love'."
+      },
+      "suggested_next": [
+        "How do I make my resume suitable for ATS systems?",
+        "How do I improve my resume?"
+      ]
+    },
+    {
+      "id": "resume_ats_optimization",
+      "category": "resume_assistance",
+      "intent": "resume_ats",
+      "title": "How do I make my resume suitable for ATS systems?",
+      "patterns": [
+        "how do i make my resume suitable for ats systems",
+        "ats friendly resume",
+        "how to beat applicant tracking systems",
+        "ats optimization tips",
+        "resume parsing ats",
+        "how ats reads resumes",
+        "ats keywords on cv"
+      ],
+      "keywords": [
+        "ats",
+        "applicant",
+        "tracking",
+        "systems",
+        "suitable",
+        "friendly",
+        "keywords",
+        "score"
+      ],
+      "response": "An **Applicant Tracking System (ATS)** parses resumes into structured text to search for matching skills. To achieve high ATS match scores:\n\n1. **Use Exact Keywords**: If a job specifies *'FastAPI'* and *'PostgreSQL'*, make sure those exact words appear in your skills and project bullets.\n2. **Avoid Graphics, Columns & Tables**: Multi-column tables and text boxes often scramble the reading order in older ATS parsers.\n3. **Use Standard Headings**: Stick to *'Experience'*, *'Education'*, *'Skills'*, *'Projects'*.\n4. **Selectable Text**: Never upload a scanned image saved as a PDF. Select text in your PDF reader\u2014if you cannot copy text, an ATS cannot parse it.\n5. **Standard Bullet Points**: Use standard round bullet characters (`\u2022`), avoiding custom arrows or checkmarks.",
+      "follow_ups": {
+        "example": "On SkillSphere, you can see your real-time **Skill Match Percentage** for any posted job in the Jobs section, showing exactly which required skills matched your resume and which are missing!"
+      },
+      "suggested_next": [
+        "How do I improve my resume?",
+        "How should I describe my technical skills?"
+      ]
+    },
+    {
+      "id": "tech_python_whatis",
+      "category": "technical_interview",
+      "intent": "tech_python",
+      "title": "What is Python?",
+      "patterns": [
+        "what is python",
+        "explain python",
+        "features of python",
+        "python overview",
+        "why use python",
+        "tell me about python language"
+      ],
+      "keywords": [
+        "python",
+        "language",
+        "overview",
+        "features",
+        "interpreted"
+      ],
+      "response": "**Python** is a high-level, interpreted, general-purpose programming language known for its clear, readable syntax and extensive standard library.\n\n**Key Characteristics:**\n- **Dynamically Typed**: Variable types are determined at runtime without explicit declarations.\n- **Interpreted**: Code is compiled to bytecode and executed line-by-line by the Python Virtual Machine (PVM).\n- **Multi-paradigm**: Fully supports Object-Oriented, Functional, and Procedural programming.\n- **Automatic Memory Management**: Utilizes reference counting and a cyclic garbage collector.\n- **Ecosystem**: Dominant in Web Backend (FastAPI, Django), Data Science, Machine Learning, Automation, and DevOps.",
+      "follow_ups": {
+        "more": "In an interview, you can highlight Python's GIL (Global Interpreter Lock), which prevents multiple native threads from executing Python bytecodes simultaneously in CPython, explaining why multiprocessing or asyncio is preferred for CPU/IO concurrency."
+      },
+      "suggested_next": [
+        "Explain OOP concepts",
+        "What is FastAPI?",
+        "What is an API?"
+      ]
+    },
+    {
+      "id": "tech_oop_concepts",
+      "category": "technical_interview",
+      "intent": "tech_oop",
+      "title": "Explain OOP concepts.",
+      "patterns": [
+        "explain oop concepts",
+        "what is oops",
+        "four pillars of oops",
+        "object oriented programming",
+        "what is oop",
+        "explain object oriented programming concepts",
+        "principles of oop"
+      ],
+      "keywords": [
+        "oop",
+        "oops",
+        "concepts",
+        "pillars",
+        "object",
+        "oriented",
+        "principles"
+      ],
+      "response": "The **Four Core Pillars of Object-Oriented Programming (OOP)** are:\n\n1. **Encapsulation**: Bundling data (attributes) and methods that manipulate that data into a single unit (class), restricting direct access to internal components (e.g. using private `__attribute` in Python or `private` in Java).\n2. **Abstraction**: Hiding internal implementation complexity and exposing only necessary interfaces to the user (e.g. Python's `abc` module with `@abstractmethod`).\n3. **Inheritance**: Allowing a child class to inherit attributes and methods from a parent class, promoting code reuse (`class Dog(Animal): ...`).\n4. **Polymorphism**: The ability of different classes to respond to the same method call in ways specific to their type (Method Overriding & Duck Typing).",
+      "follow_ups": {
+        "example": "In Python:\n```python\nclass Animal:\n    def speak(self): pass\n\nclass Dog(Animal):\n    def speak(self): return \"Woof!\"\n\nclass Cat(Animal):\n    def speak(self): return \"Meow!\"\n\n# Polymorphism in action:\nfor pet in [Dog(), Cat()]:\n    print(pet.speak()) # Prints 'Woof!' then 'Meow!'\n```"
+      },
+      "suggested_next": [
+        "What is inheritance?",
+        "What is polymorphism?"
+      ]
+    },
+    {
+      "id": "tech_inheritance",
+      "category": "technical_interview",
+      "intent": "tech_inheritance",
+      "title": "What is inheritance?",
+      "patterns": [
+        "what is inheritance",
+        "explain inheritance",
+        "types of inheritance",
+        "inheritance in python",
+        "inheritance concept in oops",
+        "how does inheritance work"
+      ],
+      "keywords": [
+        "inheritance",
+        "parent",
+        "child",
+        "subclass",
+        "superclass",
+        "mro"
+      ],
+      "response": "**Inheritance** is an OOP mechanism where a new class (subclass/child) inherits properties and behavior (fields and methods) from an existing class (superclass/parent).\n\n**Benefits:**\n- Promotes code reusability and eliminates duplication.\n- Establishes an **\"is-a\"** relationship (e.g. *\"A Developer is an Employee\"*).\n\n**Common Types:**\n- **Single Inheritance**: Child inherits from one parent.\n- **Multiple Inheritance**: Child inherits from multiple parents (supported in Python and C++).\n- **Multilevel Inheritance**: A derived class inherits from another derived class (`Grandparent -> Parent -> Child`).\n- **Hierarchical Inheritance**: Multiple children inherit from one parent.\n\nIn Python, `super()` is used to call methods from the parent class, and the **Method Resolution Order (MRO)** determines the lookup order using the C3 linearization algorithm.",
+      "follow_ups": {
+        "example": "```python\nclass Employee:\n    def __init__(self, name, salary):\n        self.name = name\n        self.salary = salary\n\nclass Manager(Employee):\n    def __init__(self, name, salary, team_size):\n        super().__init__(name, salary)\n        self.team_size = team_size\n```"
+      },
+      "suggested_next": [
+        "What is polymorphism?",
+        "Explain OOP concepts."
+      ]
+    },
+    {
+      "id": "tech_polymorphism",
+      "category": "technical_interview",
+      "intent": "tech_polymorphism",
+      "title": "What is polymorphism?",
+      "patterns": [
+        "what is polymorphism",
+        "explain polymorphism",
+        "types of polymorphism",
+        "polymorphism in python",
+        "method overriding vs overloading",
+        "duck typing"
+      ],
+      "keywords": [
+        "polymorphism",
+        "overriding",
+        "overloading",
+        "duck",
+        "typing"
+      ],
+      "response": "**Polymorphism** (meaning *\"many forms\"*) allows entities such as methods or operators to execute differently depending on the object invoking them.\n\n**Primary Types:**\n1. **Compile-time Polymorphism (Method Overloading)**:\n   - Multiple methods with the same name but different parameter signatures.\n   - *Note*: In Python, traditional method overloading is not natively built-in; instead, default arguments (`*args`, `**kwargs`) or `@functools.singledispatch` are used.\n2. **Runtime Polymorphism (Method Overriding)**:\n   - A child class provides a specific implementation of a method already defined in its parent class.\n3. **Duck Typing** (Python principle):\n   - *\"If it walks like a duck and quacks like a duck, it's a duck.\"* Python checks for the presence of a method rather than the explicit inheritance tree.",
+      "follow_ups": {
+        "example": "Operator Polymorphism Example: `+` adds numbers (`5 + 2 = 7`), but concatenates strings (`'Py' + 'thon' = 'Python'`)."
+      },
+      "suggested_next": [
+        "Explain OOP concepts.",
+        "What is Python?"
+      ]
+    },
+    {
+      "id": "tech_sql_whatis",
+      "category": "technical_interview",
+      "intent": "tech_sql",
+      "title": "What is SQL?",
+      "patterns": [
+        "what is sql",
+        "explain sql",
+        "structured query language",
+        "what is database sql",
+        "sql overview",
+        "why sql is used"
+      ],
+      "keywords": [
+        "sql",
+        "database",
+        "relational",
+        "queries",
+        "rdbms"
+      ],
+      "response": "**SQL (Structured Query Language)** is the standard language for storing, manipulating, and querying data in Relational Database Management Systems (RDBMS) like PostgreSQL, MySQL, SQLite, and SQL Server.\n\n**Key Sublanguages in SQL:**\n- **DDL (Data Definition Language)**: `CREATE`, `ALTER`, `DROP`, `TRUNCATE` (defines schema).\n- **DML (Data Manipulation Language)**: `INSERT`, `UPDATE`, `DELETE` (modifies records).\n- **DQL (Data Query Language)**: `SELECT` (retrieves records).\n- **DCL (Data Control Language)**: `GRANT`, `REVOKE` (manages permissions).\n- **TCL (Transaction Control Language)**: `COMMIT`, `ROLLBACK`, `SAVEPOINT` (ensures ACID transactions).",
+      "follow_ups": {
+        "more": "In technical interviews, you should also be comfortable explaining **ACID properties**: Atomicity, Consistency, Isolation, and Durability."
+      },
+      "suggested_next": [
+        "Explain primary and foreign keys.",
+        "What is normalization?"
+      ]
+    },
+    {
+      "id": "tech_keys_sql",
+      "category": "technical_interview",
+      "intent": "tech_keys",
+      "title": "Explain primary and foreign keys.",
+      "patterns": [
+        "explain primary and foreign keys",
+        "what is a primary key",
+        "what is a foreign key",
+        "difference between primary and foreign key",
+        "keys in sql",
+        "database keys explained"
+      ],
+      "keywords": [
+        "primary",
+        "foreign",
+        "key",
+        "keys",
+        "unique",
+        "null",
+        "references"
+      ],
+      "response": "**Primary Key vs. Foreign Key:**\n\n1. **Primary Key (PK)**:\n   - Uniquely identifies each record in a database table.\n   - Must contain unique values and **cannot be NULL**.\n   - A table can have only one primary key (which may consist of single or composite columns).\n   - *Example*: `id INTEGER PRIMARY KEY` in a `users` table.\n\n2. **Foreign Key (FK)**:\n   - A field in one table that links to the Primary Key of another table.\n   - Enforces **referential integrity**, ensuring records in the child table reference valid rows in the parent.\n   - Can accept `NULL` values unless constrained by `NOT NULL`.\n   - *Example*: `candidate_id INTEGER REFERENCES users(id)` in an `applications` table.",
+      "follow_ups": {
+        "more": "Foreign keys can specify cascade actions on parent row deletion, such as `ON DELETE CASCADE` (deletes related child rows) or `ON DELETE SET NULL`."
+      },
+      "suggested_next": [
+        "What is normalization?",
+        "What is SQL?"
+      ]
+    },
+    {
+      "id": "tech_normalization",
+      "category": "technical_interview",
+      "intent": "tech_normalization",
+      "title": "What is database normalization?",
+      "patterns": [
+        "what is normalization",
+        "explain database normalization",
+        "normal forms in sql",
+        "1nf 2nf 3nf",
+        "why normalize database",
+        "database normalization explained"
+      ],
+      "keywords": [
+        "normalization",
+        "normal",
+        "forms",
+        "1nf",
+        "2nf",
+        "3nf",
+        "redundancy"
+      ],
+      "response": "**Normalization** is the systematic process of organizing data in a relational database to minimize data redundancy and avoid insertion, update, and deletion anomalies.\n\n**The First Three Normal Forms:**\n1. **1NF (First Normal Form)**:\n   - Each column must contain atomic (indivisible) values.\n   - No repeating groups or arrays stored in a single cell.\n2. **2NF (Second Normal Form)**:\n   - Table must be in 1NF.\n   - All non-key attributes must be fully functionally dependent on the primary key (eliminates partial dependency in composite keys).\n3. **3NF (Third Normal Form)**:\n   - Table must be in 2NF.\n   - No transitive dependencies (non-key columns must not depend on other non-key columns).",
+      "follow_ups": {
+        "more": "Denormalization is intentionally introducing redundancy (e.g. in read-heavy analytical data warehouses) to reduce expensive multi-table JOIN operations."
+      },
+      "suggested_next": [
+        "Explain primary and foreign keys.",
+        "What is SQL?"
+      ]
+    },
+    {
+      "id": "tech_machine_learning",
+      "category": "technical_interview",
+      "intent": "tech_ml",
+      "title": "What is machine learning?",
+      "patterns": [
+        "what is machine learning",
+        "explain machine learning",
+        "what is ml",
+        "machine learning definition",
+        "basics of machine learning",
+        "machine learning overview"
+      ],
+      "keywords": [
+        "machine",
+        "learning",
+        "ml",
+        "algorithms",
+        "data",
+        "predictions"
+      ],
+      "response": "**Machine Learning (ML)** is a subset of Artificial Intelligence (AI) that provides systems the ability to automatically learn and improve from experience without being explicitly programmed.\n\nInstead of writing rigid hard-coded rules, engineers feed data into statistical algorithms that learn patterns and make predictions or decisions on unseen data.\n\n**Key Steps in an ML Pipeline:**\n1. Data Collection & Preprocessing (handling missing values, normalization)\n2. Feature Engineering & Selection\n3. Model Training & Hyperparameter Tuning\n4. Evaluation (Accuracy, Precision, Recall, F1-Score, ROC-AUC)\n5. Deployment & Continuous Monitoring",
+      "follow_ups": {
+        "more": "Common ML algorithms include Linear & Logistic Regression, Decision Trees, Random Forests, Support Vector Machines (SVM), and Neural Networks."
+      },
+      "suggested_next": [
+        "Explain supervised and unsupervised learning.",
+        "How do I become a data analyst?"
+      ]
+    },
+    {
+      "id": "tech_supervised_unsupervised",
+      "category": "technical_interview",
+      "intent": "tech_supervised_learning",
+      "title": "Explain supervised and unsupervised learning.",
+      "patterns": [
+        "explain supervised and unsupervised learning",
+        "difference between supervised and unsupervised learning",
+        "supervised vs unsupervised",
+        "supervised learning examples",
+        "unsupervised learning examples"
+      ],
+      "keywords": [
+        "supervised",
+        "unsupervised",
+        "labeled",
+        "clustering",
+        "classification",
+        "regression"
+      ],
+      "response": "**Supervised vs. Unsupervised Learning:**\n\n1. **Supervised Learning**:\n   - Trained on **labeled data** (input features $X$ paired with ground-truth target $y$).\n   - **Task Types**:\n     - *Classification*: Predicting discrete categories (e.g., spam vs. not spam, sentiment analysis).\n     - *Regression*: Predicting continuous numerical values (e.g., house prices, salary estimates).\n   - *Algorithms*: Logistic Regression, Random Forest, XGBoost.\n\n2. **Unsupervised Learning**:\n   - Trained on **unlabeled data** without predefined target outputs.\n   - Discovers hidden patterns, structures, or groupings within data.\n   - **Task Types**:\n     - *Clustering*: Grouping similar items (e.g., customer segmentation via K-Means).\n     - *Dimensionality Reduction*: Compressing feature space (e.g., PCA, t-SNE).\n     - *Anomaly Detection*: Identifying outliers (fraud detection).",
+      "follow_ups": {
+        "more": "There is also **Reinforcement Learning (RL)**, where an agent learns through trial-and-error by receiving rewards or penalties in an environment."
+      },
+      "suggested_next": [
+        "What is machine learning?",
+        "How do I become a data analyst?"
+      ]
+    },
+    {
+      "id": "tech_api_whatis",
+      "category": "technical_interview",
+      "intent": "tech_api",
+      "title": "What is an API?",
+      "patterns": [
+        "what is an api",
+        "explain api",
+        "application programming interface",
+        "how apis work",
+        "what is rest api",
+        "restful api concepts"
+      ],
+      "keywords": [
+        "api",
+        "rest",
+        "endpoint",
+        "http",
+        "json",
+        "interface"
+      ],
+      "response": "An **API (Application Programming Interface)** is a set of rules and protocols that allows two software applications to communicate and exchange data with each other.\n\n**REST (Representational State Transfer) APIs** are the industry standard for web services:\n- **Stateless**: Each request from client to server must contain all necessary information; no client state is stored on the server between requests.\n- **Standard HTTP Methods**:\n  - `GET`: Retrieve a resource (e.g., `GET /api/jobs`)\n  - `POST`: Create a new resource (e.g., `POST /api/jobs`)\n  - `PUT`: Replace or update an entire resource\n  - `PATCH`: Partially update a resource (e.g., `PATCH /api/profile`)\n  - `DELETE`: Remove a resource (e.g., `DELETE /api/chat/history/{id}`)\n- **Standard Formats**: Payloads are typically transferred as JSON.",
+      "follow_ups": {
+        "example": "SkillSphere uses RESTful endpoints like `POST /api/chat` with JWT bearer authorization to communicate securely between the frontend browser and the FastAPI backend."
+      },
+      "suggested_next": [
+        "What is FastAPI?",
+        "What is the difference between frontend and backend?"
+      ]
+    },
+    {
+      "id": "tech_frontend_vs_backend",
+      "category": "technical_interview",
+      "intent": "tech_frontend_backend",
+      "title": "What is the difference between frontend and backend?",
+      "patterns": [
+        "what is the difference between frontend and backend",
+        "frontend vs backend",
+        "client side vs server side",
+        "difference between client and server",
+        "explain frontend and backend"
+      ],
+      "keywords": [
+        "frontend",
+        "backend",
+        "client",
+        "server",
+        "difference",
+        "ui"
+      ],
+      "response": "**Frontend vs. Backend:**\n\n1. **Frontend (Client-Side)**:\n   - What users see, interact with, and experience directly in their web browser or mobile app.\n   - **Focus**: User Experience (UX), responsive design, interactive forms, accessibility, rendering speed.\n   - **Core Technologies**: HTML5, CSS3, JavaScript/TypeScript, React, Vue, Tailwind CSS.\n\n2. **Backend (Server-Side)**:\n   - The behind-the-scenes logic, data processing, databases, and authentication that power the application.\n   - **Focus**: Business logic, API routing, database transactions, security, performance, scalability.\n   - **Core Technologies**: Python (FastAPI, Django), Node.js, Go, PostgreSQL, Redis, Docker.\n\n3. **Full-Stack**: Engineers capable of designing and developing both the client UI and server architectures.",
+      "follow_ups": {
+        "more": "In SkillSphere, the frontend is built with vanilla HTML/CSS/JS communicating over JSON APIs with a high-performance Python FastAPI backend."
+      },
+      "suggested_next": [
+        "What is FastAPI?",
+        "What is an API?"
+      ]
+    },
+    {
+      "id": "tech_fastapi_whatis",
+      "category": "technical_interview",
+      "intent": "tech_fastapi",
+      "title": "What is FastAPI?",
+      "patterns": [
+        "what is fastapi",
+        "explain fastapi",
+        "why use fastapi",
+        "fastapi features",
+        "fastapi vs flask",
+        "fastapi vs django"
+      ],
+      "keywords": [
+        "fastapi",
+        "python",
+        "pydantic",
+        "starlette",
+        "async",
+        "swagger"
+      ],
+      "response": "**FastAPI** is a modern, high-performance web framework for building APIs with Python 3.8+ based on standard Python type hints.\n\n**Core Advantages:**\n- **High Performance**: Built on top of **Starlette** (for async web networking) and **Pydantic** (for data validation), making it on par with NodeJS and Go in benchmark throughput.\n- **Async Native**: Full native support for Python `async` and `await` coroutines for non-blocking I/O operations.\n- **Automatic Data Validation**: Pydantic models automatically validate incoming request bodies and query parameters with clear error messages.\n- **Interactive Documentation**: Automatically generates interactive OpenAPI (Swagger UI at `/docs`) and ReDoc specifications without writing separate doc files.\n- **Dependency Injection**: Powerful `Depends()` system for authentication, authorization, and database sessions.",
+      "follow_ups": {
+        "example": "SkillSphere's backend is powered by FastAPI, featuring dependency injection for role-based authentication (`require_role(\"candidate\")`) and custom middleware."
+      },
+      "suggested_next": [
+        "What is an API?",
+        "What is Python?"
+      ]
+    },
+    {
+      "id": "hr_tell_me_about_yourself",
+      "category": "hr_interview",
+      "intent": "hr_introduction",
+      "title": "How should I introduce myself in an interview?",
+      "patterns": [
+        "how should i introduce myself",
+        "tell me about yourself",
+        "how to answer tell me about yourself",
+        "self introduction in interview",
+        "walk me through your resume",
+        "introduce yourself tips"
+      ],
+      "keywords": [
+        "introduce",
+        "myself",
+        "tell",
+        "about",
+        "yourself",
+        "introduction",
+        "walk",
+        "through"
+      ],
+      "response": "Use the **Past \u2013 Present \u2013 Future** structure to deliver a confident 90-second answer:\n\n1. **Present (Where you are now)**:\n   - *\"I am a software engineer specializing in backend development with Python, FastAPI, and relational databases. Recently, I completed my degree in Computer Science with a focus on building distributed web systems.\"*\n2. **Past (How you got here & key accomplishments)**:\n   - *\"During my academic projects and internships, I developed full-stack portals like SkillSphere, where I engineered automated candidate matching algorithms and real-time collaboration tools.\"*\n3. **Future (Why you are sitting in this interview)**:\n   - *\"I am eager to bring my problem-solving skills and passion for clean, scalable architecture to this role at your company to help scale your core backend products.\"*",
+      "follow_ups": {
+        "more": "Keep it strictly professional. Avoid personal details about family or hobbies unless explicitly asked."
+      },
+      "suggested_next": [
+        "How should I explain my strengths?",
+        "How should I answer questions about weaknesses?",
+        "How should I answer \"Why should we hire you?\""
+      ]
+    },
+    {
+      "id": "hr_strengths",
+      "category": "hr_interview",
+      "intent": "hr_strengths",
+      "title": "How should I explain my strengths?",
+      "patterns": [
+        "how should i explain my strengths",
+        "what are your strengths",
+        "how to answer strengths question",
+        "talking about strengths in interview",
+        "greatest strengths examples"
+      ],
+      "keywords": [
+        "strengths",
+        "strength",
+        "greatest",
+        "explain",
+        "strongest"
+      ],
+      "response": "When asked about your strengths, select **2\u20133 relevant qualities** and back each with **tangible evidence**:\n\n**Strategy:**\n- **Formula**: `[Specific Strength] + [Context/Story] + [Tangible Result]`.\n\n**Top Strengths to Showcase:**\n1. **Analytical Problem Solving**: *\"My greatest strength is breaking down complex problems into clean, modular solutions. For example, when faced with slow query latency, I analyzed database execution plans and implemented indexing that cut query times by 40%.\"*\n2. **Rapid Adaptability**: *\"I learn new technologies quickly. When our project required WebSocket integration, I mastered ASGI protocols within days and built an interactive collaborative code editor.\"*\n3. **Ownership & Reliability**: *\"I take end-to-end accountability for my tasks, from writing tests to monitoring production logs.\"*",
+      "follow_ups": {
+        "more": "Always choose strengths that directly match the responsibilities listed in the job description."
+      },
+      "suggested_next": [
+        "How should I answer questions about weaknesses?",
+        "How should I answer \"Why should we hire you?\""
+      ]
+    },
+    {
+      "id": "hr_weaknesses",
+      "category": "hr_interview",
+      "intent": "hr_weaknesses",
+      "title": "How should I answer questions about weaknesses?",
+      "patterns": [
+        "how should i answer questions about weaknesses",
+        "what is your greatest weakness",
+        "how to talk about weaknesses",
+        "weakness in interview",
+        "weaknesses examples",
+        "areas of improvement interview"
+      ],
+      "keywords": [
+        "weakness",
+        "weaknesses",
+        "areas",
+        "improvement",
+        "flaws"
+      ],
+      "response": "The goal of the weakness question is to assess your **self-awareness** and **commitment to growth**.\n\n**The 3-Step Strategy:**\n1. State a **genuine professional weakness** (avoid cliches like *'I'm a perfectionist'* or *'I work too hard'*).\n2. Explain the **context** where it manifested.\n3. Detail the **proactive steps** you have taken and are taking to improve.\n\n**Sample Answer:**\n*\"In the past, I sometimes hesitated to delegate tasks during group projects because I wanted to ensure everything was done a specific way. I recognized that this created a bottleneck. To improve, I started implementing clearer project roadmaps, documenting interfaces, and conducting peer reviews. This has made me a much more effective collaborator.\"*",
+      "follow_ups": {
+        "example": "Another good technical example: *\"Early on, I focused heavily on backend logic and was less confident in frontend styling. To address this, I dedicated time to learning modern CSS grid, flexbox, and responsive principles, which enabled me to build responsive user interfaces independently.\"*"
+      },
+      "suggested_next": [
+        "How should I explain my strengths?",
+        "How should I answer \"Why should we hire you?\""
+      ]
+    },
+    {
+      "id": "hr_why_hire_you",
+      "category": "hr_interview",
+      "intent": "hr_why_hire",
+      "title": "How should I answer \"Why should we hire you?\"",
+      "patterns": [
+        "how should i answer why should we hire you",
+        "why should we hire you",
+        "why do you want this job",
+        "why are you the best fit",
+        "reasons to hire you"
+      ],
+      "keywords": [
+        "why",
+        "hire",
+        "best",
+        "fit",
+        "choose",
+        "standout"
+      ],
+      "response": "Structure your answer at the intersection of **their business needs** and **your unique capabilities**:\n\n**The 3-Part Pitch:**\n1. **You have the required technical skills**: You can hit the ground running with their stack.\n2. **You bring practical problem-solving experience**: Point to projects where you delivered measurable results.\n3. **You are genuinely motivated by their mission**: You want to grow with their team rather than just collect a paycheck.\n\n**Sample Script:**\n*\"You should hire me because I offer a strong combination of technical proficiency in Python and backend web frameworks, along with a disciplined habit of writing clean, well-tested code. In my recent projects, I have demonstrated that I can take requirements from design to deployment. I am excited about your product roadmap and eager to help your team build reliable, high-performance features.\"*",
+      "follow_ups": {
+        "more": "Review the company's recent news, product launches, or tech blog beforehand to mention something specific that caught your attention."
+      },
+      "suggested_next": [
+        "How should I explain a career gap?",
+        "How should I answer salary expectation questions?"
+      ]
+    },
+    {
+      "id": "hr_career_gap",
+      "category": "hr_interview",
+      "intent": "hr_career_gap",
+      "title": "How should I explain a career gap?",
+      "patterns": [
+        "how should i explain a career gap",
+        "explaining gap in resume",
+        "gap year interview question",
+        "how to talk about employment gap",
+        "career break explanation"
+      ],
+      "keywords": [
+        "career",
+        "gap",
+        "break",
+        "employment",
+        "unemployed",
+        "explanation"
+      ],
+      "response": "When explaining a career or education gap, follow these guidelines:\n\n1. **Be Honest and Direct**: State the reason clearly without over-apologizing or being defensive.\n2. **Highlight Productive Upskilling**: Explain how you utilized that period to learn new skills, complete certifications, build personal projects, or handle personal responsibilities.\n3. **Affirm Your Readiness**: Conclude by reiterating that you are refreshed, up-to-date, and fully prepared to commit to the role.\n\n**Sample Script:**\n*\"After completing my previous role, I took a deliberate 4-month break to focus on intensive technical upskilling in modern cloud architectures and full-stack development. During this time, I built two end-to-end applications, earned my cloud certification, and contributed to open-source tools. I am now fully prepared and excited to bring these updated capabilities to your team.\"*",
+      "follow_ups": {
+        "more": "Keep the explanation concise (under 45 seconds), then steer the conversation back to your current skills and projects."
+      },
+      "suggested_next": [
+        "How should I answer salary expectation questions?",
+        "How should I introduce myself in an interview?"
+      ]
+    },
+    {
+      "id": "hr_salary_expectations",
+      "category": "hr_interview",
+      "intent": "hr_salary",
+      "title": "How should I answer salary expectation questions?",
+      "patterns": [
+        "how should i answer salary expectation questions",
+        "what are your salary expectations",
+        "talking about salary in interview",
+        "salary negotiation tips",
+        "how to discuss compensation",
+        "expected ctc answer"
+      ],
+      "keywords": [
+        "salary",
+        "expectation",
+        "expectations",
+        "compensation",
+        "ctc",
+        "negotiation",
+        "money"
+      ],
+      "response": "When addressing salary expectations, avoid stating a single fixed number too early:\n\n**Recommended Strategies:**\n1. **Research Industry Benchmarks First**: Check platforms like Glassdoor, Levels.fyi, or AmbitionBox for typical compensation ranges for the role and location.\n2. **Provide a Realistic Range**: Providing a range (e.g. *'$70,000 \u2013 $85,000'* or *'8\u201310 LPA'*) gives both parties flexibility.\n3. **Emphasize Total Value**: Mention that you are looking for the right overall opportunity including growth, mentorship, and benefits.\n\n**Sample Script:**\n*\"Based on my research into the market rates for a Software Engineer with my skills in this location, as well as the responsibilities of this position, I am targeting a compensation range between [X] and [Y]. However, the opportunity to work on your engineering challenges and grow with your team is my top priority, and I am open to discussing a mutually competitive package.\"*",
+      "follow_ups": {
+        "more": "If asked in the very first screening round before you know the full scope, you can politely deflect: *'I would love to learn more about the team's expectations and project scope before settling on a specific figure. Could you share the budgeted range for this position?'*"
+      },
+      "suggested_next": [
+        "How should I answer \"Why should we hire you?\"",
+        "How should I introduce myself in an interview?"
+      ]
+    },
+    {
+      "id": "career_data_analyst",
+      "category": "career_guidance",
+      "intent": "career_data_analyst",
+      "title": "How do I become a data analyst?",
+      "patterns": [
+        "how do i become a data analyst",
+        "data analyst roadmap",
+        "skills needed for data analyst",
+        "how to get into data analytics",
+        "career in data analysis",
+        "data analyst learning path"
+      ],
+      "keywords": [
+        "data",
+        "analyst",
+        "analytics",
+        "roadmap",
+        "become",
+        "sql",
+        "excel",
+        "bi"
+      ],
+      "response": "To launch a successful career as a **Data Analyst**, master this 4-tier skillset:\n\n1. **Data Querying & Manipulation (The Foundation)**:\n   - **SQL**: Aggregations (`GROUP BY`, `HAVING`), multi-table `JOIN`s, subqueries, and window functions (`ROW_NUMBER`, `RANK`, `LEAD/LAG`).\n   - **Advanced Excel / Google Sheets**: VLOOKUP, XLOOKUP, Pivot Tables, and statistical formulas.\n2. **Programming & Analysis**:\n   - **Python**: Pandas (data cleaning and transformation), NumPy, and Jupyter Notebooks.\n3. **Data Visualization & Business Intelligence**:\n   - **Power BI or Tableau**: Building interactive executive dashboards with drill-downs.\n   - Python plotting libraries: Seaborn and Matplotlib.\n4. **Business Acumen & Storytelling**:\n   - Understanding KPIs (Retention, CAC, Churn) and translating data into actionable business recommendations.",
+      "follow_ups": {
+        "more": "Build 2\u20133 portfolio case studies analyzing real-world datasets (e.g. from Kaggle), and host your interactive dashboards on Tableau Public or GitHub."
+      },
+      "suggested_next": [
+        "What skills are required for a Python developer?",
+        "How do I build a good GitHub portfolio?"
+      ]
+    },
+    {
+      "id": "career_python_developer",
+      "category": "career_guidance",
+      "intent": "career_python_dev",
+      "title": "What skills are required for a Python developer?",
+      "patterns": [
+        "what skills are required for a python developer",
+        "python developer roadmap",
+        "how to become a python developer",
+        "skills for python backend engineer",
+        "python developer requirements",
+        "what should a python developer know"
+      ],
+      "keywords": [
+        "python",
+        "developer",
+        "backend",
+        "roadmap",
+        "skills",
+        "required",
+        "frameworks"
+      ],
+      "response": "A competitive **Python Developer** roadmap involves:\n\n1. **Core Python Mastery**:\n   - Data structures, list comprehensions, generators, decorators, context managers, and exception handling.\n   - Concurrency models: `asyncio`, threading, and multiprocessing.\n2. **Backend Web Frameworks**:\n   - **FastAPI** (modern async microservices, OpenAPI/Swagger).\n   - **Django** (enterprise batteries-included framework) or **Flask** (lightweight).\n3. **Databases & ORMs**:\n   - Relational databases (PostgreSQL, SQLite, MySQL) and ORMs (SQLAlchemy, Tortoise).\n   - In-memory caching: Redis.\n4. **API Design & Testing**:\n   - RESTful standards, JWT authentication, and automated testing with `pytest`.\n5. **Deployment & DevOps Basics**:\n   - Docker containerization, Git version control, and Linux fundamentals.",
+      "follow_ups": {
+        "example": "On SkillSphere, you can test your Python skills against our comprehensive MCQ assessments and receive instant performance reports!"
+      },
+      "suggested_next": [
+        "What is FastAPI?",
+        "How should I prepare for campus placements?"
+      ]
+    },
+    {
+      "id": "career_skills_to_learn",
+      "category": "career_guidance",
+      "intent": "career_skills_learn",
+      "title": "Which technical skills should I learn?",
+      "patterns": [
+        "which technical skills should i learn",
+        "trending technical skills",
+        "most in demand tech skills",
+        "what skills should i add to my resume",
+        "skills to learn in 2026",
+        "best tech skills to learn"
+      ],
+      "keywords": [
+        "skills",
+        "learn",
+        "demand",
+        "trending",
+        "tech",
+        "technologies",
+        "future"
+      ],
+      "response": "Here are the most in-demand technical competencies across tech recruitment:\n\n1. **Backend & Cloud Services**:\n   - Python (FastAPI/Django), Go, or TypeScript (Node.js).\n   - Cloud fundamentals: Docker, container orchestration, AWS/GCP, CI/CD pipelines.\n2. **Data & AI Engineering**:\n   - SQL mastery, Vector databases, Pandas, and practical model fine-tuning.\n3. **Modern Frontend**:\n   - React / Next.js, TypeScript, Tailwind CSS, and state management.\n4. **Database & Systems Architecture**:\n   - PostgreSQL, Redis caching, microservices, and message queues (Kafka/RabbitMQ).\n5. **Engineering Fundamentals**:\n   - Git version control, automated unit testing (`pytest`/`jest`), and Clean Code principles.",
+      "follow_ups": {
+        "more": "Focus on T-shaped depth: develop broad awareness of the full stack, with deep expertise in one specific layer (e.g. Python backend development)."
+      },
+      "suggested_next": [
+        "What skills are required for a Python developer?",
+        "How should I prepare for campus placements?"
+      ]
+    },
+    {
+      "id": "career_placement_prep",
+      "category": "career_guidance",
+      "intent": "career_placements",
+      "title": "How should I prepare for campus placements?",
+      "patterns": [
+        "how should i prepare for campus placements",
+        "placement preparation tips",
+        "campus placement roadmap",
+        "how to crack campus placement",
+        "college placement strategy",
+        "campus drive preparation"
+      ],
+      "keywords": [
+        "placement",
+        "placements",
+        "campus",
+        "prepare",
+        "college",
+        "drive",
+        "cracking"
+      ],
+      "response": "A structured 4-pillar roadmap for cracking campus placements:\n\n1. **Round 1: Online Assessment (OA)**:\n   - **DSA Practice**: Master Arrays, Strings, HashMaps, Two Pointers, Trees, and Graphs.\n   - **Core CS Fundamentals**: Revise DBMS (SQL queries & normalization), Operating Systems (process vs thread, deadlock), and Computer Networks (OSI model, TCP vs UDP).\n   - **Aptitude & Logical Reasoning**: Practice quantitative questions 30 mins daily.\n2. **Round 2: Technical Interview**:\n   - Know every line of your resume: be ready to explain your final-year project architecture and trade-offs.\n   - Live coding: practice explaining your thoughts aloud before writing code.\n3. **Round 3: HR & Managerial Interview**:\n   - Prepare answers using the STAR method; research the hiring company thoroughly.\n4. **Mock Practice**:\n   - Use SkillSphere's practice tools and MCQ tests to build speed and accuracy under timed constraints.",
+      "follow_ups": {
+        "more": "Consistency is key: solve 2 DSA problems daily and take 1 mock test per week in the 3 months leading up to placement season."
+      },
+      "suggested_next": [
+        "How do I build a good GitHub portfolio?",
+        "How should I introduce myself in an interview?"
+      ]
+    },
+    {
+      "id": "career_github_portfolio",
+      "category": "career_guidance",
+      "intent": "career_github",
+      "title": "How do I build a good GitHub portfolio?",
+      "patterns": [
+        "how do i build a good github portfolio",
+        "github profile tips",
+        "how to showcase projects on github",
+        "what makes a good github repo",
+        "open source portfolio",
+        "github for resume"
+      ],
+      "keywords": [
+        "github",
+        "portfolio",
+        "readme",
+        "repositories",
+        "showcase",
+        "open",
+        "source"
+      ],
+      "response": "Recruiters and hiring managers check GitHub to verify that you write readable, production-grade code:\n\n**Key Elements of a Standout GitHub Profile:**\n1. **Top-Notch README.md for Every Repository**:\n   - Include a project overview, architecture diagram, demo GIF or screenshots, tech stack badges, and setup/installation commands.\n2. **Clean Commit History**:\n   - Use descriptive commit messages (e.g. *'Add JWT authentication middleware'* instead of *'update code'*).\n3. **Working Live Demo Links**:\n   - Deploy projects on free tiers (Render, Vercel, Netlify) and link them in the repository description.\n4. **Automated Testing & CI/CD**:\n   - Include a passing GitHub Actions badge showing automated tests run on every push.\n5. **Pin Your Top 3\u20134 Best Repositories**: Highlight original, full-stack, or domain-specific work rather than tutorial clones.",
+      "follow_ups": {
+        "example": "A strong repo README contains: 1) Badges & Title, 2) Features List, 3) Architecture Overview, 4) Quick Start (`pip install -r requirements.txt`), 5) API documentation, 6) License."
+      },
+      "suggested_next": [
+        "How should I describe academic projects?",
+        "How do I prepare for internships?"
+      ]
+    },
+    {
+      "id": "career_internships_prep",
+      "category": "career_guidance",
+      "intent": "career_internships",
+      "title": "How do I prepare for internships?",
+      "patterns": [
+        "how do i prepare for internships",
+        "how to get a software internship",
+        "finding developer internships",
+        "internship preparation guide",
+        "how to apply for tech internships"
+      ],
+      "keywords": [
+        "internships",
+        "internship",
+        "prepare",
+        "get",
+        "find",
+        "apply",
+        "fresher"
+      ],
+      "response": "To land a competitive software engineering internship:\n\n1. **Build 2 Quality Production Projects**: Deploy real applications solving practical problems rather than simple to-do lists.\n2. **Craft an ATS-Optimized 1-Page Resume**: Highlight your projects, technical skills, and coursework prominently.\n3. **Maintain an Active Online Presence**: Link your GitHub repositories and LinkedIn profile in your resume header.\n4. **Apply Early & Consistently**: Apply through company career portals, recruitment platforms like SkillSphere, and campus drives.\n5. **Leverage Warm Referrals**: Connect with alumni and developers on LinkedIn; share a brief note detailing your projects and ask for an internal referral.",
+      "follow_ups": {
+        "more": "When reaching out on LinkedIn, keep your message under 100 words: state your core stack, link to your deployed project, and politely ask if they are open to referring you."
+      },
+      "suggested_next": [
+        "How do I write about internships?",
+        "How do I apply for jobs?"
+      ]
+    },
+    {
+      "id": "platform_upload_resume",
+      "category": "platform_assistance",
+      "intent": "platform_upload_resume",
+      "title": "How do I upload my resume?",
+      "patterns": [
+        "how do i upload my resume",
+        "upload resume on skillsphere",
+        "where to upload cv",
+        "how to add resume",
+        "change my resume",
+        "update my resume"
+      ],
+      "keywords": [
+        "upload",
+        "resume",
+        "cv",
+        "add",
+        "change",
+        "profile",
+        "document"
+      ],
+      "response": "To upload or update your resume on SkillSphere:\n\n1. Click on **My Profile** in the left sidebar navigation.\n2. In the right-hand **Your resume** panel, click on the **'Choose a file'** button or drag-and-drop your document.\n3. We support **PDF, DOCX, JPG, JPEG, and PNG** files up to **10 MB**.\n4. SkillSphere will automatically parse your text, detect your skills, education, and experience, and compute matching scores for all open jobs!",
+      "follow_ups": {
+        "more": "You can re-upload an updated resume at any time; your skill matches will recalculate automatically across the platform."
+      },
+      "suggested_next": [
+        "How do I browse available jobs?",
+        "How do I update my profile?"
+      ]
+    },
+    {
+      "id": "platform_update_profile",
+      "category": "platform_assistance",
+      "intent": "platform_update_profile",
+      "title": "How do I update my profile?",
+      "patterns": [
+        "how do i update my profile",
+        "edit profile",
+        "change profile information",
+        "update candidate details",
+        "where is profile settings"
+      ],
+      "keywords": [
+        "update",
+        "profile",
+        "edit",
+        "details",
+        "information",
+        "name"
+      ],
+      "response": "To update your candidate profile:\n\n1. Navigate to **My Profile** in the candidate sidebar.\n2. Edit your **Full Name**, **Location**, and **Professional Bio**.\n3. Add or update your **Target Technologies** and **Experience Level**.\n4. Click **Save Profile Changes** to persist your updates.\n\nYour profile information works alongside your resume to match you with suitable open positions on SkillSphere.",
+      "follow_ups": {
+        "more": "Keeping your target technologies updated helps recruiters discover your profile during candidate searches."
+      },
+      "suggested_next": [
+        "How do I upload my resume?",
+        "How do I apply for a job?"
+      ]
+    },
+    {
+      "id": "platform_browse_jobs",
+      "category": "platform_assistance",
+      "intent": "platform_browse_jobs",
+      "title": "How do I browse available jobs?",
+      "patterns": [
+        "how do i browse available jobs",
+        "where to find jobs",
+        "search for jobs",
+        "browse openings",
+        "see open positions",
+        "find vacancies"
+      ],
+      "keywords": [
+        "browse",
+        "jobs",
+        "find",
+        "search",
+        "openings",
+        "vacancies",
+        "open"
+      ],
+      "response": "To browse available jobs on SkillSphere:\n\n1. Click on **Jobs** in the sidebar navigation.\n2. Browse the curated list of open positions posted by recruiters.\n3. Use the search bar to filter by **Job Title**, **Company**, or **Required Skills**.\n4. Each job card displays the location, job type, salary, required technologies, and your personal **Match Percentage** if you have uploaded a resume!",
+      "follow_ups": {
+        "more": "Click on any job card to view the comprehensive job description and detailed skill breakdown."
+      },
+      "suggested_next": [
+        "How do I apply for a job?",
+        "How do I track my applications?"
+      ]
+    },
+    {
+      "id": "platform_apply_job",
+      "category": "platform_assistance",
+      "intent": "platform_apply_job",
+      "title": "How do I apply for a job?",
+      "patterns": [
+        "how do i apply for a job",
+        "how to apply",
+        "apply for position",
+        "application process",
+        "how do i submit application",
+        "steps to apply"
+      ],
+      "keywords": [
+        "apply",
+        "job",
+        "application",
+        "submit",
+        "process"
+      ],
+      "response": "Applying for jobs on SkillSphere is seamless:\n\n1. Make sure you have uploaded your resume in **My Profile**.\n2. Navigate to the **Jobs** section and click on the role you are interested in.\n3. Review the required skills, job description, and your skill match score.\n4. Click the **'Apply Now'** button.\n5. Your resume and parsed profile are instantly submitted to the recruiter, and the role will appear in your **Applications** dashboard!",
+      "follow_ups": {
+        "more": "Once applied, if you meet the recruiter's threshold, you may receive an automated invitation to complete a 20-question Technical MCQ Assessment."
+      },
+      "suggested_next": [
+        "How do I track my applications?",
+        "How do technical assessments work?"
+      ]
+    },
+    {
+      "id": "platform_track_applications",
+      "category": "platform_assistance",
+      "intent": "platform_track_applications",
+      "title": "How do I track my applications?",
+      "patterns": [
+        "how do i track my applications",
+        "where to see my applications",
+        "check application status",
+        "application tracking",
+        "my applications page"
+      ],
+      "keywords": [
+        "track",
+        "applications",
+        "status",
+        "applied",
+        "history",
+        "shortlisted"
+      ],
+      "response": "To track your application progress:\n\n1. Go to the **Applications** tab in the sidebar.\n2. You will see all your active and past applications with real-time status badges:\n   - `Applied`: Application submitted and awaiting recruiter review.\n   - `Shortlisted`: The recruiter has shortlisted your profile.\n   - `Assessment Sent`: An MCQ test has been issued.\n   - `Assessment Completed`: Your test is submitted and evaluated.\n   - `Round 1 Passed` / `Failed`: Result of your technical assessment.\n   - `Interview`: An interview has been scheduled by the recruiter.\n   - `Selected`: Congratulations, you have been selected!\n3. Click on any application to see status history notes and scheduled interviews.",
+      "follow_ups": {
+        "more": "You will also receive in-app notifications whenever a recruiter updates your status or invites you to an interview."
+      },
+      "suggested_next": [
+        "How do technical assessments work?",
+        "How can I check my application status?"
+      ]
+    },
+    {
+      "id": "platform_technical_assessments",
+      "category": "platform_assistance",
+      "intent": "platform_assessments",
+      "title": "How do technical assessments work?",
+      "patterns": [
+        "how do technical assessments work",
+        "technical assessment process",
+        "how to take test",
+        "round 1 mcq test",
+        "online assessment instructions",
+        "proctoring rules test"
+      ],
+      "keywords": [
+        "technical",
+        "assessments",
+        "test",
+        "mcq",
+        "round 1",
+        "proctoring",
+        "rules"
+      ],
+      "response": "**SkillSphere Round 1 Technical Assessments:**\n\n- **Format**: 20 Multiple Choice Questions (MCQ) tailored to the required technologies for the job.\n- **Duration**: 30 minutes from the moment you click 'Start Assessment'.\n- **Passing Criteria**: Typically **75%** (15 out of 20 correct), though recruiters can configure passing thresholds.\n- **Webcam & Integrity Proctoring**:\n  - Assessments require camera access to ensure exam integrity.\n  - MediaPipe runs locally in your browser to detect face presence.\n  - Tab switches, window blurs, and missing face events are recorded as warnings.\n- **Submission**: Test submits automatically when the timer reaches 00:00 or when you click Submit.",
+      "follow_ups": {
+        "more": "Ensure you are in a well-lit room, use a desktop or laptop with a working webcam, and avoid switching browser tabs during the test."
+      },
+      "suggested_next": [
+        "How do I track my applications?",
+        "Help me prepare for a technical interview."
+      ]
+    },
+    {
+      "id": "platform_check_status",
+      "category": "platform_assistance",
+      "intent": "platform_check_status",
+      "title": "How can I check my application status?",
+      "patterns": [
+        "how can i check my application status",
+        "check my status",
+        "am i shortlisted",
+        "did i pass the test",
+        "status of my job application"
+      ],
+      "keywords": [
+        "check",
+        "status",
+        "shortlisted",
+        "passed",
+        "application",
+        "result"
+      ],
+      "response": "You can check your status anytime:\n\n1. Navigate to **Applications** in your candidate dashboard.\n2. Look at the badge next to each job title.\n3. Check your **Notifications** bell icon in the top navigation bar for real-time updates regarding test invitations or interview schedules.\n4. If an interview has been scheduled, visit the **Interviews** tab to see the meeting time, platform link, and access the collaborative live coding workspace!",
+      "follow_ups": {
+        "more": "Recruiters review applications regularly. If your status is 'Applied', your application is in the active candidate pool."
+      },
+      "suggested_next": [
+        "How do I track my applications?",
+        "How do technical assessments work?"
+      ]
+    },
+    {
+      "id": "farewell",
+      "category": "platform_assistance",
+      "intent": "farewell",
+      "title": "Farewell & Gratitude",
+      "patterns": [
+        "bye",
+        "goodbye",
+        "see you",
+        "thank you",
+        "thanks",
+        "thanks a lot",
+        "thank you so much",
+        "exit",
+        "quit"
+      ],
+      "keywords": [
+        "bye",
+        "goodbye",
+        "thanks",
+        "thank",
+        "appreciate"
+      ],
+      "response": "You're very welcome! Best of luck with your applications and interview preparation on SkillSphere.\n\nFeel free to ask whenever you need resume advice, technical review, or career guidance. Have a wonderful day!",
+      "follow_ups": {},
+      "suggested_next": [
+        "Improve my resume",
+        "Help me prepare for a technical interview"
+      ]
+    },
+    {
+      "id": "resume_certifications",
+      "category": "resume_assistance",
+      "intent": "resume_certifications",
+      "title": "How should I list certifications on my resume?",
+      "patterns": [
+        "how should i list certifications on my resume",
+        "where to put certifications on cv",
+        "how to showcase certificates",
+        "certificates on resume",
+        "certifications section tips"
+      ],
+      "keywords": [
+        "certifications",
+        "certificates",
+        "credential",
+        "license",
+        "courses"
+      ],
+      "response": "Create a dedicated **Certifications** section towards the bottom of your resume:\n\n**Format:**\n`[Certification Name] \u2014 [Issuing Organization] | [Year or Month Year]`\n\n**Best Practices:**\n- Prioritize industry-recognized credentials (e.g. AWS Certified Developer, Oracle Certified Professional, Azure Fundamentals, Google Cloud Associate).\n- Include a clickable credential verification link or license ID if available.\n- Avoid listing basic 1-hour introductory attendance certificates; focus on rigorous, evaluated credentials.",
+      "follow_ups": {
+        "more": "If a certificate directly proves a skill required in the job description (e.g., AWS or SQL), mention it in your summary and technical skills list as well."
+      },
+      "suggested_next": [
+        "How should I describe my technical skills?",
+        "How do I improve my resume?"
+      ]
+    },
+    {
+      "id": "tech_database_index",
+      "category": "technical_interview",
+      "intent": "tech_db_index",
+      "title": "What is a database index and how does it work?",
+      "patterns": [
+        "what is a database index",
+        "how do database indexes work",
+        "explain indexing in sql",
+        "b-tree index explanation",
+        "why use database indexes",
+        "clustered vs non clustered index"
+      ],
+      "keywords": [
+        "index",
+        "indexing",
+        "b-tree",
+        "database",
+        "performance",
+        "clustered",
+        "lookup"
+      ],
+      "response": "A **Database Index** is a data structure (most commonly a **B-Tree**) that improves the speed of data retrieval operations on a database table at the cost of additional storage and slower writes (`INSERT`, `UPDATE`, `DELETE`).\n\n**How it Works:**\n- Without an index, the database engine must perform a **Full Table Scan** (O(N)), inspecting every row.\n- With an index on a column, the engine traverses a balanced tree in **O(log N)** time to locate row identifiers.\n\n**Clustered vs. Non-Clustered:**\n- **Clustered Index**: Determines the physical order of rows on disk. Only one per table (typically the Primary Key).\n- **Non-Clustered Index**: Stores column values with a pointer to the physical table row. A table can have multiple non-clustered indexes.",
+      "follow_ups": {
+        "more": "Indexes are ideal for columns frequently appearing in WHERE, JOIN, and ORDER BY clauses, but over-indexing slows down high-frequency write operations."
+      },
+      "suggested_next": [
+        "Explain primary and foreign keys.",
+        "What is SQL?"
+      ]
+    },
+    {
+      "id": "tech_sql_vs_nosql",
+      "category": "technical_interview",
+      "intent": "tech_sql_nosql",
+      "title": "Explain the difference between SQL and NoSQL.",
+      "patterns": [
+        "difference between sql and nosql",
+        "sql vs nosql",
+        "relational vs non relational database",
+        "when to use sql vs nosql",
+        "mongodb vs postgresql"
+      ],
+      "keywords": [
+        "sql",
+        "nosql",
+        "relational",
+        "document",
+        "mongodb",
+        "postgresql",
+        "acid",
+        "base"
+      ],
+      "response": "**SQL vs. NoSQL Databases:**\n\n1. **SQL (Relational Databases)**:\n   - **Schema**: Rigid, predefined tabular schema (rows & columns).\n   - **Relationships**: Rich support for relations via Foreign Keys and complex JOINs.\n   - **Guarantees**: Strong **ACID** (Atomicity, Consistency, Isolation, Durability) transactions.\n   - **Scaling**: Predominantly vertically scalable.\n   - *Examples*: PostgreSQL, MySQL, SQLite, Oracle.\n\n2. **NoSQL (Non-Relational Databases)**:\n   - **Schema**: Dynamic, flexible schema (Document, Key-Value, Columnar, Graph).\n   - **Relationships**: Denormalized data models, nested documents; minimal join support.\n   - **Guarantees**: **BASE** model (Basically Available, Soft-state, Eventual consistency).\n   - **Scaling**: Designed for horizontal scaling (sharding across clusters).\n   - *Examples*: MongoDB, Redis, Cassandra, Neo4j.",
+      "follow_ups": {
+        "more": "Choose SQL when your data structure is predictable and requires financial-grade transaction consistency. Choose NoSQL for rapidly evolving schemas, massive unstructured data, or high-throughput distributed caching."
+      },
+      "suggested_next": [
+        "What is SQL?",
+        "What is a database index and how does it work?"
+      ]
+    },
+    {
+      "id": "tech_data_structures_intro",
+      "category": "technical_interview",
+      "intent": "tech_dsa_basics",
+      "title": "What are Data Structures and why are they important?",
+      "patterns": [
+        "what are data structures",
+        "why are data structures important",
+        "importance of dsa",
+        "explain data structures in programming",
+        "dsa basics overview"
+      ],
+      "keywords": [
+        "data",
+        "structures",
+        "dsa",
+        "arrays",
+        "linked",
+        "lists",
+        "complexity"
+      ],
+      "response": "**Data Structures** are specialized formats for organizing, processing, retrieving, and storing data efficiently in memory.\n\n**Why They Are Essential:**\n- **Time & Space Efficiency**: Choosing the right data structure reduces runtime complexity from minutes to milliseconds (e.g. searching a Hash Table takes O(1) compared to O(N) in an unsorted array).\n- **Algorithm Foundations**: Algorithms rely on specific data structures (e.g. Dijkstra's shortest path uses Priority Queues / Heaps; Breadth-First Search uses Queues).\n- **Technical Interview Core**: Technical evaluations at top companies test DSA to assess algorithmic thinking and problem decomposition skills.",
+      "follow_ups": {
+        "more": "Common linear structures: Arrays, Linked Lists, Stacks, Queues. Common non-linear structures: Trees, Binary Search Trees, Heaps, Graphs, and Hash Maps."
+      },
+      "suggested_next": [
+        "Explain Stack vs Queue.",
+        "How should I prepare for campus placements?"
+      ]
+    },
+    {
+      "id": "tech_stack_vs_queue",
+      "category": "technical_interview",
+      "intent": "tech_stack_queue",
+      "title": "Explain Stack vs. Queue.",
+      "patterns": [
+        "explain stack vs queue",
+        "difference between stack and queue",
+        "what is a stack",
+        "what is a queue",
+        "lifo vs fifo",
+        "stack and queue applications"
+      ],
+      "keywords": [
+        "stack",
+        "queue",
+        "lifo",
+        "fifo",
+        "push",
+        "pop",
+        "enqueue",
+        "dequeue"
+      ],
+      "response": "**Stack vs. Queue:**\n\n1. **Stack (LIFO \u2014 Last In, First Out)**:\n   - Elements are inserted and removed from the **same end** (Top).\n   - **Operations**: `push()` (insert), `pop()` (remove top), `peek()` (inspect top) \u2014 all O(1) time.\n   - **Real-World Uses**: Browser Back button history, Undo/Redo in editors, Call Stack in function execution, expression parsing/balancing parentheses.\n\n2. **Queue (FIFO \u2014 First In, First Out)**:\n   - Elements are inserted at the **rear** and removed from the **front**.\n   - **Operations**: `enqueue()` (insert rear), `dequeue()` (remove front) \u2014 all O(1) time.\n   - **Real-World Uses**: CPU task scheduling, print queues, asynchronous message brokers (RabbitMQ/Kafka), Breadth-First Search (BFS).",
+      "follow_ups": {
+        "example": "In Python:\n```python\n# Stack using list:\nstack = []\nstack.append(1); stack.append(2)\ntop = stack.pop() # returns 2\n\n# Queue using collections.deque:\nfrom collections import deque\nq = deque()\nq.append(1); q.append(2)\nfirst = q.popleft() # returns 1\n```"
+      },
+      "suggested_next": [
+        "What are Data Structures and why are they important?",
+        "Explain OOP concepts."
+      ]
+    },
+    {
+      "id": "tech_git_version_control",
+      "category": "technical_interview",
+      "intent": "tech_git",
+      "title": "What is Git and why is it used?",
+      "patterns": [
+        "what is git",
+        "explain git version control",
+        "why use git",
+        "git vs github",
+        "common git commands",
+        "git branching workflow"
+      ],
+      "keywords": [
+        "git",
+        "github",
+        "version",
+        "control",
+        "commit",
+        "branch",
+        "merge",
+        "rebase"
+      ],
+      "response": "**Git** is a distributed version control system (VCS) designed to track changes in source code over time and coordinate work among developers.\n\n**Core Concepts:**\n- **Distributed**: Every developer possesses a full local clone of the project history, enabling offline commits and fast branching.\n- **Commits**: Immutable snapshots of the project state identified by cryptographic hashes.\n- **Branching & Merging**: Lightweight pointers allowing parallel development of features without destabilizing the production `main` branch.\n- **Git vs. GitHub**: Git is the command-line version control tool; GitHub is a cloud-based hosting platform for Git repositories with issue tracking, pull requests, and CI/CD actions.",
+      "follow_ups": {
+        "example": "Essential commands: `git init`, `git add .`, `git commit -m \"msg\"`, `git checkout -b feature`, `git push origin main`."
+      },
+      "suggested_next": [
+        "How do I build a good GitHub portfolio?",
+        "What is Docker and containerization?"
+      ]
+    },
+    {
+      "id": "tech_docker_containers",
+      "category": "technical_interview",
+      "intent": "tech_docker",
+      "title": "What is Docker and containerization?",
+      "patterns": [
+        "what is docker",
+        "explain containerization",
+        "docker vs virtual machine",
+        "what is a docker container",
+        "why use docker",
+        "dockerfile concepts"
+      ],
+      "keywords": [
+        "docker",
+        "container",
+        "containerization",
+        "vm",
+        "image",
+        "dockerfile",
+        "isolation"
+      ],
+      "response": "**Docker** is an open-source platform that automates the deployment of applications inside lightweight, portable **containers**.\n\n**Key Characteristics:**\n- **Solves \"It works on my machine\"**: Bundles application code, runtime, system tools, and libraries into a single standalone container image that runs identically across development, staging, and production.\n- **Containers vs. Virtual Machines (VMs)**:\n  - VMs virtualize hardware and each runs a full guest operating system (heavy, gigabytes in size, minutes to boot).\n  - Docker containers share the host OS kernel and isolate processes in user space (lightweight, megabytes in size, seconds to boot).\n- **Dockerfile**: A declarative text file containing instructions to build a Docker image (`FROM python:3.11`, `COPY`, `RUN pip install`, `CMD`).",
+      "follow_ups": {
+        "more": "SkillSphere includes a production-ready `Dockerfile` and `docker-compose.yml` for unified local setup and containerized deployment!"
+      },
+      "suggested_next": [
+        "What is FastAPI?",
+        "What is Git and why is it used?"
+      ]
+    },
+    {
+      "id": "hr_star_method",
+      "category": "hr_interview",
+      "intent": "hr_star_method",
+      "title": "What is the STAR method for behavioral questions?",
+      "patterns": [
+        "what is the star method",
+        "explain star framework",
+        "how to answer behavioral interview questions",
+        "star method examples",
+        "situation task action result",
+        "behavioral questions technique"
+      ],
+      "keywords": [
+        "star",
+        "method",
+        "framework",
+        "situation",
+        "task",
+        "action",
+        "result",
+        "behavioral"
+      ],
+      "response": "The **STAR method** is the gold standard for answering behavioral interview questions (e.g. *'Tell me about a time you handled a conflict'*, *'Describe a time you failed'*):\n\n- **S \u2014 Situation (15%)**: Set the scene. Give brief context about the company, project, or event.\n- **T \u2014 Task (15%)**: What was the challenge, goal, or problem you needed to resolve?\n- **A \u2014 Action (50%)**: What specific actions did **YOU** take? Mention the tools, analysis, decisions, and leadership you exhibited.\n- **R \u2014 Result (20%)**: What was the measurable outcome? What did you learn? Always include positive numbers, metrics, or lessons learned.",
+      "follow_ups": {
+        "example": "*\"(S) During a critical release of our payment microservice, (T) our latency spiked by 300%. (A) I inspected the connection pool, identified unindexed queries, and applied a composite index with caching. (R) Latency dropped by 65%, and the deployment succeeded with zero downtime.\"*"
+      },
+      "suggested_next": [
+        "How should I introduce myself in an interview?",
+        "How should I explain my strengths?"
+      ]
+    },
+    {
+      "id": "hr_five_years",
+      "category": "hr_interview",
+      "intent": "hr_five_years",
+      "title": "How do I answer \"Where do you see yourself in 5 years?\"",
+      "patterns": [
+        "where do you see yourself in 5 years",
+        "where do you see yourself in five years",
+        "career goals interview question",
+        "future career plans answer",
+        "5 year goals in interview"
+      ],
+      "keywords": [
+        "five",
+        "years",
+        "future",
+        "goals",
+        "vision",
+        "grow"
+      ],
+      "response": "Interviewers ask this question to evaluate your **ambition**, **commitment**, and whether your career trajectory aligns with their team's growth:\n\n**Strategy:**\n1. **Focus on Professional Mastery**: Express desire to become a skilled, dependable technical specialist in the domain.\n2. **Demonstrate Increasing Ownership**: Mention growing into mentoring junior engineers, contributing to system architecture, or leading feature initiatives.\n3. **Connect to the Company**: Show that you envision achieving these milestones within their organization.\n\n**Sample Answer:**\n*\"In 5 years, I see myself having developed deep technical expertise as a Senior Software Engineer specializing in backend systems. In the first couple of years, my goal is to master your codebase, deliver high-quality features, and understand the business domain inside-out. As I grow, I want to take on ownership of architectural decisions and mentor incoming engineers, helping scale your products to millions of users.\"*",
+      "follow_ups": {
+        "more": "Avoid overly rigid titles like \"I want to be CTO\" or answers showing intent to switch fields (e.g. \"I plan to leave for an MBA in two years\")."
+      },
+      "suggested_next": [
+        "How should I answer \"Why should we hire you?\"",
+        "How should I introduce myself in an interview?"
+      ]
+    },
+    {
+      "id": "hr_questions_for_interviewer",
+      "category": "hr_interview",
+      "intent": "hr_questions_to_ask",
+      "title": "What questions should I ask the interviewer at the end?",
+      "patterns": [
+        "what questions should i ask the interviewer",
+        "questions to ask hiring manager",
+        "questions for the end of interview",
+        "do you have any questions for me answer",
+        "good questions to ask interviewer"
+      ],
+      "keywords": [
+        "questions",
+        "ask",
+        "interviewer",
+        "manager",
+        "end",
+        "reverse"
+      ],
+      "response": "When the interviewer asks *\"Do you have any questions for us?\"*, always ask 2\u20133 thoughtful questions to demonstrate curiosity and engagement:\n\n**Excellent Questions to Ask:**\n1. **Engineering Culture**: *\"How does the team balance shipping new features with paying down technical debt and refactoring?\"*\n2. **Team Onboarding**: *\"What would success look like for someone in this role during their first 90 days?\"*\n3. **Architecture & Challenges**: *\"What is the biggest technical hurdle or architectural transition the engineering team is currently navigating?\"*\n4. **Interviewer's Experience**: *\"What is your favorite aspect of working on this team, and what keeps you motivated here?\"*\n\n**Avoid**: Asking about salary, vacation days, or basic info easily found on the company homepage.",
+      "follow_ups": {
+        "more": "Taking brief notes when they answer shows high engagement and active listening."
+      },
+      "suggested_next": [
+        "How should I introduce myself in an interview?",
+        "What is the STAR method for behavioral questions?"
+      ]
+    },
+    {
+      "id": "platform_match_score",
+      "category": "platform_assistance",
+      "intent": "platform_match_score",
+      "title": "What is the Skill Match Percentage on SkillSphere?",
+      "patterns": [
+        "what is the skill match percentage",
+        "how is match calculated",
+        "why is my match percentage low",
+        "how to increase match percentage",
+        "skill matching algorithm skillsphere"
+      ],
+      "keywords": [
+        "match",
+        "percentage",
+        "score",
+        "calculated",
+        "matching",
+        "skills"
+      ],
+      "response": "SkillSphere's **Skill Match Percentage** is an intelligent feature that compares the required skills of an open job with the extracted skills and profile of your uploaded resume.\n\n**How it Works:**\n- When you upload your resume, SkillSphere parses your text and identifies technical skills, frameworks, and programming languages.\n- For each job posting, our matching engine calculates the ratio of matched required skills against missing skills, alongside title and experience relevance.\n- A higher match score indicates strong alignment with the job requirements and increases your likelihood of being shortlisted for the Round 1 Technical Assessment!",
+      "follow_ups": {
+        "more": "To increase your match percentage, make sure your resume explicitly lists the target technologies (e.g. FastAPI, PostgreSQL, Docker) that you know."
+      },
+      "suggested_next": [
+        "How do I upload my resume?",
+        "How do I browse available jobs?"
+      ]
+    },
+    {
+      "id": "platform_live_interviews",
+      "category": "platform_assistance",
+      "intent": "platform_live_interviews",
+      "title": "How does live interview coding work on SkillSphere?",
+      "patterns": [
+        "how does live interview coding work",
+        "interview workspace features",
+        "shared code editor in interview",
+        "how do interviews work on skillsphere",
+        "collaborative coding interview"
+      ],
+      "keywords": [
+        "interviews",
+        "coding",
+        "workspace",
+        "editor",
+        "collaborative",
+        "realtime",
+        "websocket"
+      ],
+      "response": "When a recruiter invites you for an interview on SkillSphere, you gain access to our integrated **Collaborative Interview Workspace**:\n\n**Features:**\n- **Meeting Integration**: Direct links to Microsoft Teams, Google Meet, or Zoom.\n- **Real-Time Code Editor**: A synchronized multi-language editor (Python, JavaScript, TypeScript, Java, C++) where both you and the recruiter can write and discuss code in real time via WebSockets.\n- **Status Tracking**: Keep track of upcoming scheduled sessions directly from your **Interviews** tab in the Candidate Dashboard.",
+      "follow_ups": {
+        "more": "You will receive email notifications and an in-app banner whenever an interview is scheduled or rescheduled."
+      },
+      "suggested_next": [
+        "How do I track my applications?",
+        "What questions should I ask the interviewer at the end?"
+      ]
+    }
+  ],
+  "synonyms": {
+    "cv": "resume",
+    "curriculum vitae": "resume",
+    "job": "jobs",
+    "opening": "jobs",
+    "openings": "jobs",
+    "position": "jobs",
+    "positions": "jobs",
+    "vacancy": "jobs",
+    "vacancies": "jobs",
+    "oops": "oop",
+    "object oriented": "oop",
+    "algo": "algorithms",
+    "dsa": "data structures",
+    "db": "database",
+    "rdbms": "sql",
+    "ml": "machine learning",
+    "ai": "machine learning",
+    "qa": "interview",
+    "prep": "preparation",
+    "exam": "assessment",
+    "test": "assessment",
+    "mcq": "assessment"
+  }
+}

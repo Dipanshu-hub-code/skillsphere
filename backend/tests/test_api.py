@@ -2609,6 +2609,168 @@ Answer: A
             video_rows = db.execute("SELECT * FROM assessment_recordings WHERE assessment_id = ?", (assessment_id,)).fetchall()
             self.assertEqual(len(video_rows), 0)
 
+    def test_rule_based_career_chatbot_health_and_faqs(self):
+        # Health endpoint is public and reports rule-based engine
+        health = self.client.get("/api/chat/health").json()
+        self.assertEqual(health["status"], "healthy")
+        self.assertEqual(health["engine"], "rule-based")
+        self.assertFalse(health["external_ai_required"])
+        self.assertGreaterEqual(health["total_intents"], 40)
+
+        # FAQs require candidate role
+        recruiter = self.login("recruiter@skillsphere.dev")
+        cand_headers = self.login("candidate@skillsphere.dev")
+        self.assertEqual(self.client.get("/api/chat/faqs").status_code, 401)
+        self.assertEqual(self.client.get("/api/chat/faqs", headers=recruiter).status_code, 403)
+
+        faqs = self.client.get("/api/chat/faqs", headers=cand_headers)
+        self.assertEqual(faqs.status_code, 200)
+        faq_data = faqs.json()
+        self.assertIn("categories", faq_data)
+        self.assertGreaterEqual(faq_data["total_faqs"], 40)
+
+    def test_rule_based_career_chatbot_conversation_flow(self):
+        candidate = self.login("candidate@skillsphere.dev")
+
+        # 1. Technical concept question (OOP)
+        oop_res = self.client.post(
+            "/api/chat",
+            headers=candidate,
+            json={"message": "Explain OOP concepts in simple terms"},
+        )
+        self.assertEqual(oop_res.status_code, 200)
+        oop_data = oop_res.json()
+        self.assertEqual(oop_data["intent"], "tech_oop")
+        self.assertGreaterEqual(oop_data["confidence"], 0.4)
+        self.assertIn("Encapsulation", oop_data["message"])
+        self.assertIn("Polymorphism", oop_data["message"])
+        session_id = oop_data["session_id"]
+        self.assertIsInstance(session_id, int)
+        self.assertIsInstance(oop_data["suggested_follow_ups"], list)
+
+        # 2. Context-aware follow up: "Give me an example"
+        ex_res = self.client.post(
+            "/api/chat",
+            headers=candidate,
+            json={"message": "Give me an example", "session_id": session_id},
+        )
+        self.assertEqual(ex_res.status_code, 200)
+        ex_data = ex_res.json()
+        self.assertEqual(ex_data["intent"], "tech_oop_example")
+        self.assertEqual(ex_data["session_id"], session_id)
+
+        # 3. HR Question: "How to answer tell me about yourself?"
+        hr_res = self.client.post(
+            "/api/chat",
+            headers=candidate,
+            json={"message": "How to answer tell me about yourself?", "session_id": session_id},
+        )
+        self.assertEqual(hr_res.status_code, 200)
+        hr_data = hr_res.json()
+        self.assertEqual(hr_data["intent"], "hr_introduction")
+        self.assertIn("Present", hr_data["message"])
+
+        # 4. Unknown question gracefully falls back
+        unknown_res = self.client.post(
+            "/api/chat",
+            headers=candidate,
+            json={"message": "xyzzy blorp qwerty 123456", "session_id": session_id},
+        )
+        self.assertEqual(unknown_res.status_code, 200)
+        unknown_data = unknown_res.json()
+        self.assertEqual(unknown_data["intent"], "fallback_unknown")
+        self.assertIn("popular topics", unknown_data["message"])
+
+        # 5. Backward compatibility endpoint /api/candidate/ai/chat
+        compat_res = self.client.post(
+            "/api/candidate/ai/chat",
+            headers=candidate,
+            json={"message": "How do I apply for jobs?", "session_id": session_id},
+        )
+        self.assertEqual(compat_res.status_code, 200)
+        compat_data = compat_res.json()
+        self.assertEqual(compat_data["intent"], "platform_apply_job")
+
+        # 6. Session history inspection
+        history_res = self.client.get(f"/api/chat/history/{session_id}", headers=candidate)
+        self.assertEqual(history_res.status_code, 200)
+        history_data = history_res.json()
+        self.assertEqual(history_data["session"]["id"], session_id)
+        self.assertGreaterEqual(len(history_data["messages"]), 8)
+
+        # 7. Unauthorized recruiter cannot access candidate chat history
+        recruiter = self.login("recruiter@skillsphere.dev")
+        self.assertEqual(self.client.get(f"/api/chat/history/{session_id}", headers=recruiter).status_code, 403)
+
+        # 8. Another candidate cannot access first candidate's chat history
+        user2_res = self.client.post(
+            "/api/auth/register",
+            json={"name": "Candidate Two", "email": "cand2@example.com", "password": "Password123!", "role": "candidate"},
+        ).json()
+        cand2_headers = {"Authorization": f"Bearer {user2_res['access_token']}"}
+        self.assertEqual(self.client.get(f"/api/chat/history/{session_id}", headers=cand2_headers).status_code, 404)
+
+        # 9. Clear chat history
+        del_res = self.client.delete(f"/api/chat/history/{session_id}", headers=candidate)
+        self.assertEqual(del_res.status_code, 200)
+        self.assertTrue(del_res.json()["ok"])
+
+        # History should now be empty of messages
+        empty_history = self.client.get(f"/api/chat/history/{session_id}", headers=candidate).json()
+        self.assertEqual(len(empty_history["messages"]), 0)
+
+    def test_rule_based_career_chatbot_resume_awareness(self):
+        # Register fresh candidate without resume
+        new_cand_res = self.client.post(
+            "/api/auth/register",
+            json={"name": "Resume Test Cand", "email": "resumetest@example.com", "password": "Password123!", "role": "candidate"},
+        ).json()
+        new_cand_headers = {"Authorization": f"Bearer {new_cand_res['access_token']}"}
+
+        # Ask about resume when no resume is uploaded
+        no_res = self.client.post(
+            "/api/chat",
+            headers=new_cand_headers,
+            json={"message": "What technical skills are in my resume?"},
+        )
+        self.assertEqual(no_res.status_code, 200)
+        self.assertEqual(no_res.json()["intent"], "resume_query_missing")
+        self.assertIn("my profile", no_res.json()["message"].lower())
+
+        # Now seed resume with skills and projects
+        cand_id = new_cand_res["user"]["id"]
+        with main.connect() as db:
+            db.execute(
+                """INSERT INTO resumes (candidate_id, filename, storage_path, content_type,
+                                        extracted_text, parsed_profile_json, processing_status, uploaded_at)
+                   VALUES (?, 'resume.pdf', 'dummy.pdf', 'application/pdf',
+                           'Skills: Python, FastAPI, React, PostgreSQL, Docker\nProjects: Built real-time analytics engine and distributed message queue.',
+                           '{"skills": ["Python", "FastAPI", "React", "PostgreSQL", "Docker"]}',
+                           'completed', ?)""",
+                (cand_id, main.now()),
+            )
+
+        # Ask about resume skills
+        skills_res = self.client.post(
+            "/api/chat",
+            headers=new_cand_headers,
+            json={"message": "What technical skills are in my resume?"},
+        )
+        self.assertEqual(skills_res.status_code, 200)
+        skills_msg = skills_res.json()["message"]
+        self.assertIn("Python", skills_msg)
+        self.assertIn("FastAPI", skills_msg)
+
+        # Ask about resume projects
+        proj_res = self.client.post(
+            "/api/chat",
+            headers=new_cand_headers,
+            json={"message": "Explain the projects in my resume"},
+        )
+        self.assertEqual(proj_res.status_code, 200)
+        proj_msg = proj_res.json()["message"]
+        self.assertIn("analytics", proj_msg.lower())
+
 
 if __name__ == "__main__":
     unittest.main()

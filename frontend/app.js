@@ -60,7 +60,18 @@ const state = {
   aiGenerating: false,
   aiSummaryData: null,
   aiSummaryLoading: false,
-  aiSummaryAppId: null
+  aiSummaryAppId: null,
+  aiTab: "chat",
+  aiSessions: [],
+  aiActiveSessionId: null,
+  aiMessages: [],
+  aiChatBusy: false,
+  aiResumeLoaded: false,
+  aiResumeName: "",
+  mockInterview: null,
+  mockInterviewsHistory: [],
+  mockInterviewBusy: false,
+  mockViewingHistoryItem: null
 };
 
 const esc = value => String(value ?? "").replace(/[&<>"']/g, char => ({
@@ -852,7 +863,7 @@ function navItems() {
   const common = [["Dashboard", "⌂"], ["Find jobs", "⌕"], ["Applications", "▤"], ["Assessments", "✓"], ["My profile", "◉"]];
   if (state.user?.role === "recruiter") return [["Dashboard", "⌂"], ["My jobs", "▣"], ["Applicants", "♙"], ["Assessments", "✓"], ["Live monitoring", "◎"], ["Question bank", "☷"], ["Interviews", "◷"], ["Company profile", "◉"]];
   if (state.user?.role === "admin") return [["Dashboard", "⌂"], ["Users", "♙"], ["Job listings", "▣"], ["Assessments", "✓"], ["Live monitoring", "◎"], ["Question bank", "☷"], ["Interviews", "◷"]];
-  return [...common, ["Interviews", "◷"]];
+  return [...common, ["Interviews", "◷"], ["AI Career Assistant", "✨"]];
 }
 
 function updatePageTitle(pageName) {
@@ -863,6 +874,7 @@ function updatePageTitle(pageName) {
     "Assessments": "Assessments — SkillSphere",
     "Live monitoring": "Live Assessment Monitoring — SkillSphere",
     "My profile": "My Profile — SkillSphere",
+    "AI Career Assistant": "AI Career Assistant — SkillSphere",
     "Applicants": "Applicants — SkillSphere",
     "My jobs": "My Jobs — SkillSphere",
     "Question bank": "Question Bank — SkillSphere",
@@ -1064,6 +1076,15 @@ function candidateDashboard() {
     <section class="card" style="margin-top:16px"><div class="card-heading"><div><h2>${state.resume ? "Your resume is ready" : "Take the guesswork out of your search"}</h2><p>${state.resume ? `${esc(state.resume.filename)} · ${esc(state.resume.processing_status)}` : "Upload a resume to discover which roles match your skills."}</p></div><button class="btn btn-quiet btn-small" data-page="My profile">${state.resume ? "View profile" : "Add your resume"}</button></div>
       <div class="progress-track"><div class="progress-fill" style="width:${state.resume ? "78%" : "36%"}"></div></div>
       ${state.resume?.processing_error ? `<p style="color:#aa3c40;font-size:10px;margin:9px 0 0">${esc(state.resume.processing_error)}</p>` : ""}
+    </section>
+    <section class="card" style="margin-top:16px;background:linear-gradient(135deg, #fff7ed 0%, #fff 100%);border-color:#fed7aa;">
+      <div class="card-heading">
+        <div>
+          <h2>✨ AI Career &amp; Interview Assistant</h2>
+          <p>Get personalized analysis on your resume, practice technical &amp; HR questions, or run an interactive mock interview.</p>
+        </div>
+        <button class="btn btn-primary btn-small" data-page="AI Career Assistant">Launch Assistant →</button>
+      </div>
     </section>`;
 }
 
@@ -1314,6 +1335,654 @@ function profilePage() {
       </aside>
     </div>`;
 }
+
+// =============================================================================
+// AI CAREER ASSISTANT & MOCK INTERVIEW IMPLEMENTATION
+// =============================================================================
+
+function formatAiMessage(text) {
+  if (!text) return "";
+  let escaped = esc(text);
+
+  const codeBlocks = [];
+  escaped = escaped.replace(/```(?:([a-zA-Z0-9_+-]+)?\n)?([\s\S]*?)```/g, (match, lang, code) => {
+    const idx = codeBlocks.length;
+    codeBlocks.push(`<pre><code class="${lang ? `language-${lang}` : ""}">${code.trim()}</code></pre>`);
+    return `__CODE_BLOCK_${idx}__`;
+  });
+
+  escaped = escaped.replace(/`([^`\n]+)`/g, "<code>$1</code>");
+  escaped = escaped.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  escaped = escaped.replace(/(^|[^*])\*([^*]+)\*([^*]|$)/g, "$1<em>$2</em>$3");
+
+  const lines = escaped.split("\n");
+  const resultLines = [];
+  let inList = false;
+  let listType = "ul";
+
+  for (let line of lines) {
+    const ulMatch = line.match(/^(\s*)[-*•]\s+(.*)$/);
+    const olMatch = line.match(/^(\s*)\d+\.\s+(.*)$/);
+
+    if (ulMatch) {
+      if (!inList || listType !== "ul") {
+        if (inList) resultLines.push(`</${listType}>`);
+        resultLines.push("<ul>");
+        inList = true;
+        listType = "ul";
+      }
+      resultLines.push(`<li>${ulMatch[2]}</li>`);
+    } else if (olMatch) {
+      if (!inList || listType !== "ol") {
+        if (inList) resultLines.push(`</${listType}>`);
+        resultLines.push("<ol>");
+        inList = true;
+        listType = "ol";
+      }
+      resultLines.push(`<li>${olMatch[2]}</li>`);
+    } else {
+      if (inList) {
+        resultLines.push(`</${listType}>`);
+        inList = false;
+      }
+      resultLines.push(line);
+    }
+  }
+  if (inList) resultLines.push(`</${listType}>`);
+
+  const content = resultLines.join("\n");
+  const paragraphs = content.split(/\n\s*\n/).map(p => {
+    p = p.trim();
+    if (!p) return "";
+    if (p.startsWith("<pre>") || p.startsWith("<ul>") || p.startsWith("<ol>")) return p;
+    return `<p>${p.replace(/\n/g, "<br>")}</p>`;
+  }).filter(Boolean).join("");
+
+  return paragraphs.replace(/__CODE_BLOCK_(\d+)__/g, (_, idx) => codeBlocks[Number(idx)] || "");
+}
+
+async function loadAiSessions() {
+  try {
+    const data = await api("/candidate/ai/sessions");
+    state.aiSessions = data.sessions || [];
+    state.aiResumeLoaded = !!data.has_resume;
+    state.aiResumeName = data.resume_name || "";
+    if (!state.aiActiveSessionId && state.aiSessions.length > 0) {
+      await loadAiSessionMessages(state.aiSessions[0].id);
+    }
+  } catch (error) {
+    console.warn("Could not load AI sessions:", error);
+  }
+}
+
+async function loadAiSessionMessages(sessionId) {
+  try {
+    const data = await api(`/candidate/ai/sessions/${sessionId}`);
+    state.aiActiveSessionId = sessionId;
+    state.aiMessages = data.messages || [];
+    renderWorkspace();
+    scrollAiChatToBottom();
+  } catch (error) {
+    showToast(error.message, true);
+  }
+}
+
+function scrollAiChatToBottom() {
+  setTimeout(() => {
+    const stream = document.querySelector("#ai-chat-stream");
+    if (stream) stream.scrollTop = stream.scrollHeight;
+  }, 50);
+}
+
+async function sendAiChatMessage(userMessage) {
+  const text = (userMessage || "").trim();
+  if (!text) return;
+
+  state.aiMessages.push({
+    id: "temp-" + Date.now(),
+    sender: "candidate",
+    message: text,
+    created_at: new Date().toISOString()
+  });
+  state.aiChatBusy = true;
+  renderWorkspace();
+  scrollAiChatToBottom();
+
+  try {
+    const payload = { message: text };
+    if (state.aiActiveSessionId) payload.session_id = state.aiActiveSessionId;
+
+    const res = await api("/candidate/ai/chat", {
+      method: "POST",
+      body: JSON.stringify(payload)
+    });
+
+    state.aiActiveSessionId = res.session_id;
+    state.aiMessages.push({
+      id: "ai-" + Date.now(),
+      sender: "assistant",
+      message: res.message,
+      created_at: res.created_at
+    });
+    state.aiChatBusy = false;
+    await loadAiSessions();
+    renderWorkspace();
+    scrollAiChatToBottom();
+  } catch (error) {
+    state.aiChatBusy = false;
+    showToast(error.message, true);
+    renderWorkspace();
+  }
+}
+
+async function deleteAiSession(sessionId) {
+  if (!confirm("Are you sure you want to delete this conversation?")) return;
+  try {
+    await api(`/candidate/ai/sessions/${sessionId}`, { method: "DELETE" });
+    if (state.aiActiveSessionId === sessionId) {
+      state.aiActiveSessionId = null;
+      state.aiMessages = [];
+    }
+    await loadAiSessions();
+    renderWorkspace();
+    showToast("Conversation deleted");
+  } catch (error) {
+    showToast(error.message, true);
+  }
+}
+
+function clearAiChat() {
+  state.aiActiveSessionId = null;
+  state.aiMessages = [];
+  renderWorkspace();
+}
+
+async function startMockInterview(jobRole, interviewType, difficulty) {
+  state.mockInterviewBusy = true;
+  state.mockViewingHistoryItem = null;
+  renderWorkspace();
+  try {
+    const res = await api("/candidate/ai/mock-interview/start", {
+      method: "POST",
+      body: JSON.stringify({
+        job_role: jobRole,
+        interview_type: interviewType,
+        difficulty: difficulty,
+        total_questions: 5
+      })
+    });
+    state.mockInterview = res;
+    state.mockInterviewBusy = false;
+    renderWorkspace();
+    showToast("Mock interview started! Question 1 is ready.");
+  } catch (error) {
+    state.mockInterviewBusy = false;
+    renderWorkspace();
+    showToast(error.message, true);
+  }
+}
+
+async function submitMockAnswer(answerText) {
+  if (!state.mockInterview?.interview?.id || !state.mockInterview?.current_question) return;
+  state.mockInterviewBusy = true;
+  renderWorkspace();
+  try {
+    const res = await api("/candidate/ai/mock-interview/answer", {
+      method: "POST",
+      body: JSON.stringify({
+        mock_interview_id: state.mockInterview.interview.id,
+        question_index: state.mockInterview.current_question.question_index,
+        answer: answerText
+      })
+    });
+    if (res.is_complete) {
+      state.mockInterview = {
+        ...state.mockInterview,
+        is_complete: true,
+        final_report: res.final_report,
+        last_feedback: res.feedback
+      };
+      showToast("Mock interview complete! Performance report generated 🎉");
+    } else {
+      state.mockInterview = {
+        ...state.mockInterview,
+        current_question: res.next_question,
+        last_feedback: res.feedback,
+        last_answered_index: res.question_index
+      };
+      showToast(`Answer recorded. Moving to Question ${res.next_question.question_index}.`);
+    }
+    state.mockInterviewBusy = false;
+    renderWorkspace();
+  } catch (error) {
+    state.mockInterviewBusy = false;
+    renderWorkspace();
+    showToast(error.message, true);
+  }
+}
+
+async function loadMockInterviewsHistory() {
+  try {
+    const res = await api("/candidate/ai/mock-interviews");
+    state.mockInterviewsHistory = res.items || [];
+    renderWorkspace();
+  } catch (error) {
+    console.warn("Could not load mock interviews history:", error);
+  }
+}
+
+async function viewMockHistoryDetail(id) {
+  try {
+    const res = await api(`/candidate/ai/mock-interviews/${id}`);
+    state.mockViewingHistoryItem = res;
+    state.aiTab = "mock";
+    renderWorkspace();
+  } catch (error) {
+    showToast(error.message, true);
+  }
+}
+
+function aiAssistantPage() {
+  const activeTab = state.aiTab || "chat";
+  const resumeBadge = state.aiResumeLoaded
+    ? `<span class="badge badge-green">✓ Resume Loaded (${esc(state.aiResumeName || "Active")})</span>`
+    : `<span class="badge badge-amber" style="cursor:pointer;" data-page="My profile" title="Upload a resume in My Profile for personalized insights">⚠️ No Resume Uploaded — Upload in Profile</span>`;
+
+  return `
+    ${heading(
+      "SkillSphere AI Mentor",
+      "AI Career &amp; Interview Assistant",
+      "Prepare for interviews, analyze your resume, explore career paths, and practice with realistic interactive mock interviews.",
+      `<div style="display:flex;align-items:center;gap:10px;">${resumeBadge}</div>`
+    )}
+
+    <div class="ai-assistant-page">
+      <nav class="ai-nav-tabs" aria-label="AI Assistant Views">
+        <button class="ai-tab-btn ${activeTab === "chat" ? "active" : ""}" data-action="switch-ai-tab" data-tab="chat">💬 Career &amp; Resume Chat</button>
+        <button class="ai-tab-btn ${activeTab === "mock" ? "active" : ""}" data-action="switch-ai-tab" data-tab="mock">🎯 Start Mock Interview</button>
+        <button class="ai-tab-btn ${activeTab === "history" ? "active" : ""}" data-action="switch-ai-tab" data-tab="history">📜 Past Practice &amp; Reports</button>
+      </nav>
+
+      ${activeTab === "chat" ? renderAiChatView() : activeTab === "mock" ? renderAiMockView() : renderAiHistoryView()}
+    </div>
+  `;
+}
+
+function renderAiChatView() {
+  const activeSession = state.aiSessions.find(s => s.id === state.aiActiveSessionId);
+  const activeTitle = activeSession ? activeSession.session_title : "New Conversation";
+  const messages = state.aiMessages || [];
+
+  const suggestedPrompts = [
+    "Explain my resume in simple language.",
+    "What are my strongest technical skills?",
+    "What weaknesses or gaps do you see in my resume?",
+    "Which skills should I improve?",
+    "How can I improve my professional summary?",
+    "What interview questions could an interviewer ask based on my projects?",
+    "How should I explain my final-year project in an interview?",
+    "How do I answer 'Tell me about yourself'?",
+    "Give me a mock technical question for Python."
+  ];
+
+  return `
+    <div class="ai-chat-layout">
+      <aside class="ai-sessions-sidebar">
+        <div class="ai-sidebar-head">
+          <span>Conversations</span>
+          <button class="btn btn-quiet btn-small" data-action="new-ai-session" title="Start a fresh chat">+ New</button>
+        </div>
+        <div class="ai-session-list">
+          <button class="ai-session-item ${!state.aiActiveSessionId ? "active" : ""}" data-action="new-ai-session">
+            <span class="ai-session-title">✨ New Conversation</span>
+          </button>
+          ${state.aiSessions.map(s => `
+            <div class="ai-session-item ${state.aiActiveSessionId === s.id ? "active" : ""}" data-action="select-ai-session" data-id="${s.id}">
+              <span class="ai-session-title" title="${esc(s.session_title)}">${esc(s.session_title)}</span>
+              <button class="ai-session-del-btn" data-action="delete-ai-session" data-id="${s.id}" title="Delete conversation">×</button>
+            </div>
+          `).join("")}
+        </div>
+      </aside>
+
+      <section class="ai-chat-main">
+        <header class="ai-chat-header">
+          <div>
+            <h3>${esc(activeTitle)}</h3>
+            <small style="color:var(--muted);">${state.aiResumeLoaded ? `Using ${esc(state.aiResumeName)} as context` : "Upload a resume in My Profile for personalized insights"}</small>
+          </div>
+          <button class="text-button" data-action="clear-ai-chat" title="Clear messages in current chat">Clear conversation</button>
+        </header>
+
+        <div class="ai-chat-stream" id="ai-chat-stream">
+          ${messages.length === 0 ? `
+            <div class="ai-msg ai-msg-assistant">
+              <div class="ai-msg-avatar">✨</div>
+              <div class="ai-msg-bubble">
+                <p><strong>Hello! I'm your SkillSphere AI Career Assistant.</strong></p>
+                <p>I can help you understand your resume, prepare for interviews, improve your skills, and answer career-related questions. What would you like help with today?</p>
+              </div>
+            </div>
+          ` : messages.map(m => `
+            <div class="ai-msg ${m.sender === "candidate" ? "ai-msg-candidate" : "ai-msg-assistant"}">
+              <div class="ai-msg-avatar">${m.sender === "candidate" ? esc(initials(state.user.name)) : "✨"}</div>
+              <div class="ai-msg-bubble">
+                ${formatAiMessage(m.message)}
+                <small style="display:block;margin-top:6px;font-size:10px;opacity:0.6;text-align:${m.sender === "candidate" ? "right" : "left"};">${m.created_at ? new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ""}</small>
+              </div>
+            </div>
+          `).join("")}
+
+          ${state.aiChatBusy ? `
+            <div class="ai-typing-indicator">
+              <div class="ai-dot"></div><div class="ai-dot"></div><div class="ai-dot"></div>
+              <span>SkillSphere AI is typing…</span>
+            </div>
+          ` : ""}
+        </div>
+
+        <div class="ai-prompt-chips">
+          ${suggestedPrompts.map(p => `
+            <button type="button" class="ai-chip" data-action="use-ai-prompt" data-prompt="${esc(p)}">${esc(p)}</button>
+          `).join("")}
+        </div>
+
+        <form class="ai-chat-input-box" id="ai-chat-form">
+          <textarea id="ai-chat-input" class="ai-chat-textarea" placeholder="Ask anything about your resume, interview prep, technical concepts... (Enter to send, Shift+Enter for new line)" required ${state.aiChatBusy ? "disabled" : ""}></textarea>
+          <button class="btn btn-primary" type="submit" id="ai-chat-send-btn" ${state.aiChatBusy ? "disabled" : ""}>Send →</button>
+        </form>
+      </section>
+    </div>
+  `;
+}
+
+function renderAiMockView() {
+  if (state.mockViewingHistoryItem) {
+    const item = state.mockViewingHistoryItem.interview;
+    const exchanges = state.mockViewingHistoryItem.exchanges || [];
+    const report = item.final_feedback || {};
+
+    return `
+      <div class="card" style="margin-bottom:16px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+          <button class="btn btn-quiet btn-small" data-action="close-mock-history-view">← Back to Practice</button>
+          <span class="badge badge-green">${esc(item.status)}</span>
+        </div>
+        ${renderMockFinalReport(report, item)}
+        <hr style="border:0;border-top:1px solid var(--line);margin:20px 0;" />
+        <h3>Q&amp;A Transcript</h3>
+        <div style="display:flex;flex-direction:column;gap:14px;margin-top:12px;">
+          ${exchanges.map(e => `
+            <div class="card" style="background:#faf8f6;padding:14px;">
+              <strong>Question ${e.question_index}:</strong>
+              <p style="margin:4px 0 8px;">${esc(e.question)}</p>
+              <div style="background:white;padding:10px 12px;border-radius:8px;border:1px solid var(--line);margin-bottom:8px;">
+                <strong style="font-size:11px;color:var(--muted);">Your Answer:</strong>
+                <p style="margin:2px 0 0;font-size:13px;">${esc(e.answer || "No answer recorded")}</p>
+              </div>
+              ${e.feedback_obj?.feedback ? `
+                <div class="mock-feedback-box ${e.feedback_obj.score < 7 ? "needs-work" : ""}">
+                  <strong>Evaluation (Score: ${esc(e.feedback_obj.score)}/10):</strong>
+                  <p style="margin:4px 0 0;">${esc(e.feedback_obj.feedback)}</p>
+                </div>
+              ` : ""}
+            </div>
+          `).join("")}
+        </div>
+      </div>
+    `;
+  }
+
+  const mock = state.mockInterview;
+  if (!mock) {
+    return `
+      <section class="card mock-setup-card">
+        <div class="card-heading">
+          <div>
+            <h2>🎯 Start an Interactive Mock Interview</h2>
+            <p>Practice one question at a time, receive instant feedback, and get an extensive performance evaluation.</p>
+          </div>
+        </div>
+
+        <form id="start-mock-form" class="profile-form">
+          <div class="field span-2">
+            <label>Target Role or Technology</label>
+            <input class="input" name="job_role" id="mock-role-input" list="mock-role-suggestions" placeholder="e.g. Python Developer, Full Stack Engineer, React Specialist" required value="Python Developer" />
+            <datalist id="mock-role-suggestions">
+              <option value="Python Developer"></option>
+              <option value="Frontend Developer (React / JavaScript)"></option>
+              <option value="Full Stack Software Engineer"></option>
+              <option value="Java Backend Developer"></option>
+              <option value="Node.js & FastAPI Backend Developer"></option>
+              <option value="Data Scientist & Machine Learning"></option>
+              <option value="Cloud & DevOps Engineer"></option>
+              <option value="SQL & Database Developer"></option>
+            </datalist>
+          </div>
+
+          <div class="field">
+            <label>Interview Type</label>
+            <select class="select" name="interview_type" id="mock-type-select">
+              <option value="Technical">Technical (Coding, Systems, Architecture)</option>
+              <option value="HR">HR &amp; Behavioral (STAR Method, Communication)</option>
+              <option value="Resume-Based" ${state.aiResumeLoaded ? "" : "disabled"}>Resume-Based (From your uploaded projects)${!state.aiResumeLoaded ? " — Upload resume first" : ""}</option>
+            </select>
+          </div>
+
+          <div class="field">
+            <label>Difficulty Level</label>
+            <select class="select" name="difficulty">
+              <option value="Beginner">Beginner (Fundamentals &amp; Core Concepts)</option>
+              <option value="Intermediate" selected>Intermediate (Industry Standard &amp; Problem Solving)</option>
+              <option value="Advanced">Advanced (Senior System Design &amp; Edge Cases)</option>
+            </select>
+          </div>
+
+          <div class="span-2" style="margin-top:10px;">
+            <button class="btn btn-primary" type="submit" ${state.mockInterviewBusy ? "disabled" : ""}>
+              ${state.mockInterviewBusy ? "Preparing Question 1…" : "Start Interactive Interview →"}
+            </button>
+          </div>
+        </form>
+
+        <div class="mock-disclaimer">
+          <strong>ℹ️ Practice Disclaimer:</strong> Mock interview evaluations and scores are practice guidance provided for your personal learning. They do not affect your real job applications, recruiter reviews, or technical test results.
+        </div>
+      </section>
+    `;
+  }
+
+  if (mock.is_complete || mock.interview?.status === "Completed") {
+    const report = mock.final_report || mock.interview?.final_feedback || {};
+    return `
+      <div class="card" style="max-width:820px;margin:0 auto;">
+        ${renderMockFinalReport(report, mock.interview)}
+        <div style="display:flex;gap:12px;margin-top:20px;justify-content:center;">
+          <button class="btn btn-primary" data-action="reset-mock-interview">Start Another Mock Interview</button>
+          <button class="btn btn-quiet" data-action="switch-ai-tab" data-tab="history">View Past Reports</button>
+        </div>
+      </div>
+    `;
+  }
+
+  const currQ = mock.current_question || { question_index: 1, total_questions: 5, question: "" };
+  const interviewInfo = mock.interview || {};
+  const progressPercent = Math.round((currQ.question_index / currQ.total_questions) * 100);
+
+  return `
+    <div class="card" style="max-width:760px;margin:0 auto;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+        <div style="display:flex;gap:6px;align-items:center;">
+          <span class="badge badge-red">${esc(interviewInfo.job_role || "Role")}</span>
+          <span class="badge badge-blue">${esc(interviewInfo.interview_type || "Technical")}</span>
+          <span class="badge badge-neutral">${esc(interviewInfo.difficulty || "Intermediate")}</span>
+        </div>
+        <button class="text-button danger-text" data-action="reset-mock-interview">End Interview</button>
+      </div>
+
+      <div style="display:flex;justify-content:space-between;font-size:12px;font-weight:700;color:var(--muted);margin-top:12px;">
+        <span>Question ${currQ.question_index} of ${currQ.total_questions}</span>
+        <span>${progressPercent}% Complete</span>
+      </div>
+      <div class="mock-progress-bar">
+        <div class="mock-progress-fill" style="width:${progressPercent}%"></div>
+      </div>
+
+      <div style="background:#faf8f6;border:1px solid var(--line);border-radius:12px;padding:18px;margin:16px 0;">
+        <span class="mock-q-badge" style="color:var(--red);">Question ${currQ.question_index}</span>
+        <h3 style="margin:8px 0 0;font-size:16px;line-height:1.45;">${esc(currQ.question)}</h3>
+      </div>
+
+      ${mock.last_feedback ? `
+        <div class="mock-feedback-box ${mock.last_feedback.score < 7 ? "needs-work" : ""}">
+          <div style="display:flex;justify-content:space-between;align-items:center;">
+            <strong>Feedback on Question ${mock.last_answered_index || currQ.question_index - 1}:</strong>
+            <span class="badge ${mock.last_feedback.score >= 7 ? "badge-green" : "badge-amber"}">Score: ${esc(mock.last_feedback.score)}/10</span>
+          </div>
+          <p style="margin:6px 0 0;">${esc(mock.last_feedback.feedback)}</p>
+        </div>
+      ` : ""}
+
+      <form id="mock-answer-form" style="margin-top:16px;">
+        <div class="field">
+          <label>Your Answer</label>
+          <textarea class="textarea" name="answer" rows="6" placeholder="Take your time to articulate your thoughts clearly. For technical questions, discuss approaches and tradeoffs. For HR questions, use the Situation, Task, Action, Result (STAR) structure." required minlength="5" ${state.mockInterviewBusy ? "disabled" : ""}></textarea>
+        </div>
+        <div style="display:flex;justify-content:flex-end;margin-top:12px;">
+          <button class="btn btn-primary" type="submit" ${state.mockInterviewBusy ? "disabled" : ""}>
+            ${state.mockInterviewBusy ? "Evaluating your answer…" : (currQ.question_index === currQ.total_questions ? "Submit Final Answer & Generate Report →" : "Submit Answer & Next Question →")}
+          </button>
+        </div>
+      </form>
+    </div>
+  `;
+}
+
+function renderMockFinalReport(report, interview) {
+  const score = report.overall_score ?? 75;
+  const level = report.performance_level || "Proficient";
+  const strengths = report.strengths || [];
+  const improvements = report.areas_for_improvement || [];
+  const topics = report.recommended_study_topics || [];
+  const questions = report.suggested_practice_questions || [];
+
+  return `
+    <div style="display:flex;align-items:center;gap:18px;margin-bottom:16px;">
+      <div class="mock-score-circle ${score < 70 ? "needs-work" : ""}">
+        ${score}
+      </div>
+      <div>
+        <span class="badge ${score >= 75 ? "badge-green" : "badge-amber"}" style="font-size:11px;">${esc(level)}</span>
+        <h2 style="margin:4px 0 2px;">Mock Interview Performance Report</h2>
+        <p style="margin:0;color:var(--muted);font-size:12px;">${esc(interview?.job_role || "Practice")} · ${esc(interview?.interview_type || "Technical")} · ${esc(interview?.difficulty || "Intermediate")}</p>
+      </div>
+    </div>
+
+    ${report.summary ? `<p style="font-size:13px;line-height:1.5;background:#f8fafc;padding:12px 16px;border-radius:10px;border:1px solid #e2e8f0;margin:14px 0;">${esc(report.summary)}</p>` : ""}
+
+    <div class="mock-report-grid">
+      <div class="card" style="padding:14px;background:#fcfcfc;">
+        <strong style="display:block;font-size:13px;color:var(--ink);margin-bottom:6px;">💻 Technical Knowledge</strong>
+        <p style="font-size:12px;color:#475569;margin:0;line-height:1.45;">${esc(report.technical_evaluation || "Solid grasp of foundational topics.")}</p>
+      </div>
+      <div class="card" style="padding:14px;background:#fcfcfc;">
+        <strong style="display:block;font-size:13px;color:var(--ink);margin-bottom:6px;">🗣️ Communication &amp; Structure</strong>
+        <p style="font-size:12px;color:#475569;margin:0;line-height:1.45;">${esc(report.communication_evaluation || "Clear delivery and structured reasoning.")}</p>
+      </div>
+    </div>
+
+    <div class="mock-report-grid">
+      <div class="card" style="padding:14px;background:#f0fdf4;border-color:#bbf7d0;">
+        <strong style="display:block;font-size:13px;color:#166534;margin-bottom:8px;">✓ Key Strengths</strong>
+        <ul class="mock-report-list">
+          ${strengths.map(s => `<li><span style="color:#16a34a;">✔</span> <span>${esc(s)}</span></li>`).join("")}
+        </ul>
+      </div>
+
+      <div class="card" style="padding:14px;background:#fffbeb;border-color:#fde68a;">
+        <strong style="display:block;font-size:13px;color:#92400e;margin-bottom:8px;">⚡ Areas for Improvement</strong>
+        <ul class="mock-report-list">
+          ${improvements.map(i => `<li><span style="color:#d97706;">→</span> <span>${esc(i)}</span></li>`).join("")}
+        </ul>
+      </div>
+    </div>
+
+    ${topics.length ? `
+      <div style="margin-top:14px;">
+        <strong style="font-size:12px;display:block;margin-bottom:6px;">📚 Recommended Topics to Review:</strong>
+        <div style="display:flex;flex-wrap:wrap;gap:6px;">
+          ${topics.map(t => `<span class="badge badge-neutral" style="font-size:11px;padding:4px 10px;">${esc(t)}</span>`).join("")}
+        </div>
+      </div>
+    ` : ""}
+
+    ${questions.length ? `
+      <div style="margin-top:16px;">
+        <strong style="font-size:12px;display:block;margin-bottom:6px;">💡 Suggested Follow-Up Practice Questions:</strong>
+        <ul style="margin:4px 0 0 20px;padding:0;font-size:12px;line-height:1.5;">
+          ${questions.map(q => `<li style="margin-bottom:4px;">${esc(q)}</li>`).join("")}
+        </ul>
+      </div>
+    ` : ""}
+
+    <div class="mock-disclaimer" style="margin-top:18px;">
+      <strong>Practice Disclaimer:</strong> ${esc(report.disclaimer || "Mock interview scores are practice feedback and do not affect actual job applications, recruiter decisions or technical assessment results.")}
+    </div>
+  `;
+}
+
+function renderAiHistoryView() {
+  const history = state.mockInterviewsHistory || [];
+
+  return `
+    <section class="card">
+      <div class="card-heading">
+        <div>
+          <h2>📜 Mock Interview Practice History</h2>
+          <p>Review your previous practice sessions, ratings, and feedback.</p>
+        </div>
+        <button class="btn btn-quiet btn-small" data-action="refresh-mock-history">↻ Refresh</button>
+      </div>
+
+      ${history.length === 0 ? empty("No past mock interviews", "Start a mock interview in the 'Start Mock Interview' tab to test your readiness and track your progress.", "🎯") : `
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Target Role</th>
+                <th>Type</th>
+                <th>Difficulty</th>
+                <th>Status</th>
+                <th>Overall Score</th>
+                <th>Date</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${history.map(item => {
+                const score = item.final_feedback?.overall_score;
+                return `
+                  <tr>
+                    <td><strong>${esc(item.job_role)}</strong></td>
+                    <td><span class="badge ${item.interview_type === "Technical" ? "badge-blue" : "badge-neutral"}">${esc(item.interview_type)}</span></td>
+                    <td><span class="badge badge-neutral">${esc(item.difficulty)}</span></td>
+                    <td><span class="badge ${item.status === "Completed" ? "badge-green" : "badge-amber"}">${esc(item.status)}</span></td>
+                    <td>${score !== undefined ? `<strong style="color:${score >= 75 ? "#16a34a" : "#d97706"};">${score}/100</strong>` : "—"}</td>
+                    <td><small>${dateLabel(item.created_at)}</small></td>
+                    <td>
+                      <button class="btn btn-quiet btn-small" data-action="view-mock-history" data-id="${item.id}">View Report →</button>
+                    </td>
+                  </tr>
+                `;
+              }).join("")}
+            </tbody>
+          </table>
+        </div>
+      `}
+    </section>
+  `;
+}
+
 
 function companyProfilePage() {
   const profile = state.user.profile || {};
@@ -1705,6 +2374,7 @@ function currentContent() {
   if (state.page === "Interviews") return interviewListPage();
   if (state.page === "Interview room") return interviewRoomPage();
   if (state.page === "My profile") return profilePage();
+  if (state.page === "AI Career Assistant") return aiAssistantPage();
   return candidateDashboard();
 }
 
@@ -2392,6 +3062,10 @@ async function loadWorkspace() {
       ]);
       state.resume = resume;
       state.candidateAnalytics = candidateAnalytics;
+      if (state.page === "AI Career Assistant") {
+        await loadAiSessions();
+        await loadMockInterviewsHistory();
+      }
     }
     if (state.user.role === "recruiter") {
       try {
@@ -2730,6 +3404,17 @@ async function signOut(announce = true) {
   state.resume = null;
   state.analytics = null;
   state.adminJobs = [];
+  state.aiTab = "chat";
+  state.aiSessions = [];
+  state.aiActiveSessionId = null;
+  state.aiMessages = [];
+  state.aiChatBusy = false;
+  state.aiResumeLoaded = false;
+  state.aiResumeName = "";
+  state.mockInterview = null;
+  state.mockInterviewsHistory = [];
+  state.mockInterviewBusy = false;
+  state.mockViewingHistoryItem = null;
   if (announce) showToast("You’ve signed out. See you soon!");
   renderAuth();
 }
@@ -2849,6 +3534,29 @@ async function uploadResume(file) {
 app.addEventListener("submit", async event => {
   event.preventDefault();
   const form = event.target;
+  if (form.id === "ai-chat-form") {
+    const input = form.querySelector("#ai-chat-input");
+    const msg = input ? input.value.trim() : "";
+    if (msg) {
+      input.value = "";
+      await sendAiChatMessage(msg);
+    }
+    return;
+  }
+  if (form.id === "start-mock-form") {
+    const values = Object.fromEntries(new FormData(form));
+    const role = (values.job_role || "").trim() || "Software Engineer";
+    await startMockInterview(role, values.interview_type, values.difficulty);
+    return;
+  }
+  if (form.id === "mock-answer-form") {
+    const values = Object.fromEntries(new FormData(form));
+    const ans = (values.answer || "").trim();
+    if (ans) {
+      await submitMockAnswer(ans);
+    }
+    return;
+  }
   if (form.id === "assessment-filter-form") {
     const values = Object.fromEntries(new FormData(form));
     state.assessmentFilters = {
@@ -3249,6 +3957,10 @@ app.addEventListener("click", async event => {
     state.notificationsOpen = false;
     if (state.page === "Question bank") state.questionBankJob = null;
     if (state.page === "Live monitoring") await loadLiveAssessments();
+    if (state.page === "AI Career Assistant" && state.user.role === "candidate") {
+      await loadAiSessions();
+      await loadMockInterviewsHistory();
+    }
     if (state.page === "Find jobs" && state.user.role === "candidate") {
       state.query = ""; state.location = ""; state.jobType = ""; state.experience = ""; state.skill = ""; state.jobPage = 1;
       try {
@@ -3261,6 +3973,56 @@ app.addEventListener("click", async event => {
     return;
   }
   if (target.dataset.job) { await openJob(target.dataset.job); return; }
+  if (target.dataset.action === "switch-ai-tab") {
+    state.aiTab = target.dataset.tab;
+    renderWorkspace();
+    if (state.aiTab === "chat") scrollAiChatToBottom();
+    if (state.aiTab === "history") await loadMockInterviewsHistory();
+    return;
+  }
+  if (target.dataset.action === "select-ai-session") {
+    await loadAiSessionMessages(Number(target.dataset.id));
+    return;
+  }
+  if (target.dataset.action === "new-ai-session") {
+    clearAiChat();
+    return;
+  }
+  if (target.dataset.action === "delete-ai-session") {
+    event.stopPropagation();
+    await deleteAiSession(Number(target.dataset.id));
+    return;
+  }
+  if (target.dataset.action === "clear-ai-chat") {
+    clearAiChat();
+    return;
+  }
+  if (target.dataset.action === "use-ai-prompt") {
+    const prompt = target.dataset.prompt;
+    const input = document.querySelector("#ai-chat-input");
+    if (input) input.value = prompt;
+    await sendAiChatMessage(prompt);
+    return;
+  }
+  if (target.dataset.action === "reset-mock-interview") {
+    state.mockInterview = null;
+    state.mockViewingHistoryItem = null;
+    renderWorkspace();
+    return;
+  }
+  if (target.dataset.action === "close-mock-history-view") {
+    state.mockViewingHistoryItem = null;
+    renderWorkspace();
+    return;
+  }
+  if (target.dataset.action === "view-mock-history") {
+    await viewMockHistoryDetail(Number(target.dataset.id));
+    return;
+  }
+  if (target.dataset.action === "refresh-mock-history") {
+    await loadMockInterviewsHistory();
+    return;
+  }
   if (target.dataset.action === "toggle-auth") { renderAuth(app.dataset.register !== "true"); return; }
   if (target.dataset.action === "logout") { await signOut(); return; }
   if (target.dataset.action === "filter-jobs") { await searchJobs(); return; }
@@ -3684,6 +4446,12 @@ app.addEventListener("input", event => {
 });
 
 app.addEventListener("keydown", event => {
+  if (event.target.id === "ai-chat-input" && event.key === "Enter" && !event.shiftKey) {
+    event.preventDefault();
+    const form = document.querySelector("#ai-chat-form");
+    if (form) form.requestSubmit();
+    return;
+  }
   if (event.target.id === "job-query" && event.key === "Enter") searchJobs();
   if (event.key === "Escape" && state.modal) {
     if (state.modal === "live-video-monitoring") {

@@ -86,7 +86,11 @@ async function api(path, options = {}) {
   const headers = new Headers(options.headers || {});
   if (state.token) headers.set("Authorization", `Bearer ${state.token}`);
   if (options.body && !(options.body instanceof FormData)) headers.set("Content-Type", "application/json");
-  const response = await fetch(`${API}${path}`, { ...options, headers });
+  const fetchOptions = { ...options, headers };
+  if (!fetchOptions.method || fetchOptions.method.toUpperCase() === "GET") {
+    fetchOptions.cache = "no-store";
+  }
+  const response = await fetch(`${API}${path}`, fetchOptions);
   let payload = {};
   try { payload = await response.json(); } catch { payload = {}; }
   if (!response.ok) {
@@ -3651,8 +3655,16 @@ app.addEventListener("submit", async event => {
     }
     values.description = desc;
     try {
-      await api("/jobs", { method: "POST", body: JSON.stringify(values) });
+      const createdJob = await api("/jobs", { method: "POST", body: JSON.stringify(values) });
       state.modal = "";
+      if (createdJob && createdJob.id) {
+        state.jobs = [createdJob, ...state.jobs.filter(j => String(j.id) !== String(createdJob.id))];
+        state.jobTotal = (state.jobTotal || 0) + 1;
+        if (state.user?.role === "admin" && Array.isArray(state.adminJobs)) {
+          state.adminJobs = [createdJob, ...state.adminJobs.filter(j => String(j.id) !== String(createdJob.id))];
+        }
+        renderWorkspace();
+      }
       await loadWorkspace();
       showToast("Your role is live. Here’s to finding a great fit!");
     } catch (error) { showToast(error.message, true); }
@@ -3982,6 +3994,20 @@ app.addEventListener("click", async event => {
     if ((state.page === "Career Assistant" || state.page === "AI Career Assistant") && state.user.role === "candidate") {
       await loadAiSessions();
       await loadMockInterviewsHistory();
+    }
+    if ((state.page === "My jobs" || state.page === "Dashboard") && state.user.role === "recruiter") {
+      try {
+        const result = await api("/jobs?mine=true&page_size=100");
+        state.jobs = result.items || [];
+        state.jobTotal = result.total ?? state.jobs.length;
+      } catch (error) { showToast(error.message, true); }
+    }
+    if (state.page === "Dashboard" && state.user.role === "candidate") {
+      try {
+        const result = await api("/jobs?page_size=6");
+        state.jobs = result.items || [];
+        state.jobTotal = result.total ?? state.jobs.length;
+      } catch (error) { showToast(error.message, true); }
     }
     if (state.page === "Find jobs" && state.user.role === "candidate") {
       state.query = ""; state.location = ""; state.jobType = ""; state.experience = ""; state.skill = ""; state.jobPage = 1;

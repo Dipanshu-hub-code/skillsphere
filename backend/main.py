@@ -2475,7 +2475,7 @@ def list_jobs(
     with connect() as db:
         total = db.execute(f"SELECT COUNT(*) FROM jobs j WHERE {where}", values).fetchone()[0]
         rows = db.execute(
-            f"SELECT j.* FROM jobs j WHERE {where} ORDER BY {sort_options[sort_by]}, j.id ASC LIMIT ? OFFSET ?",
+            f"SELECT j.* FROM jobs j WHERE {where} ORDER BY {sort_options[sort_by]}, j.id DESC LIMIT ? OFFSET ?",
             [*values, page_size, (page - 1) * page_size],
         ).fetchall()
     return {"items": [public_job(row) for row in rows], "total": total, "page": page, "page_size": page_size}

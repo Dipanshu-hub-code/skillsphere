@@ -440,6 +440,33 @@ class TursoCursor:
                     break
                 yield TursoRow(desc, row)
 
+    def execute(self, sql: str, params: Any = None) -> TursoCursor:
+        if params is not None:
+            raw_cur = self._cursor.execute(sql, _normalize_turso_params(params))
+        else:
+            raw_cur = self._cursor.execute(sql)
+        if raw_cur is not None and raw_cur is not self._cursor:
+            self._cursor = raw_cur
+        return self
+
+    def executemany(self, sql: str, seq_of_params: Any) -> TursoCursor:
+        raw_cur = self._cursor.executemany(sql, _normalize_turso_seq_params(seq_of_params))
+        if raw_cur is not None and raw_cur is not self._cursor:
+            self._cursor = raw_cur
+        return self
+
+
+def _normalize_turso_params(params: Any) -> Any:
+    if isinstance(params, list):
+        return tuple(params)
+    return params
+
+
+def _normalize_turso_seq_params(seq_of_params: Any) -> Any:
+    if not seq_of_params:
+        return seq_of_params
+    return [tuple(p) if isinstance(p, list) else p for p in seq_of_params]
+
 
 class TursoConnectionWrapper:
     def __init__(self, raw_connection: Any) -> None:
@@ -447,13 +474,13 @@ class TursoConnectionWrapper:
 
     def execute(self, sql: str, params: Any = None) -> TursoCursor:
         if params is not None:
-            raw_cur = self._conn.execute(sql, params)
+            raw_cur = self._conn.execute(sql, _normalize_turso_params(params))
         else:
             raw_cur = self._conn.execute(sql)
         return TursoCursor(raw_cur)
 
     def executemany(self, sql: str, seq_of_params: Any) -> TursoCursor:
-        raw_cur = self._conn.executemany(sql, seq_of_params)
+        raw_cur = self._conn.executemany(sql, _normalize_turso_seq_params(seq_of_params))
         return TursoCursor(raw_cur)
 
     def executescript(self, sql_script: str) -> None:
@@ -6634,7 +6661,7 @@ def get_recruiter_live_assessments(
             ORDER BY CASE WHEN x.status = 'Started' THEN 0 ELSE 1 END,
                      x.starts_at DESC, x.submitted_at DESC
             LIMIT 50""",
-            params,
+            tuple(params),
         ).fetchall()
 
     items = []

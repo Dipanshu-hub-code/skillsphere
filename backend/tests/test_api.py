@@ -2776,6 +2776,53 @@ Answer: A
         proj_msg = proj_res.json()["message"]
         self.assertIn("analytics", proj_msg.lower())
 
+    def test_turso_wrapper_normalizes_list_parameters(self):
+        class MockRawConn:
+            def __init__(self):
+                self.calls = []
+
+            def execute(self, sql, params=None):
+                if params is not None and not isinstance(params, tuple):
+                    raise TypeError("argument 'parameters': 'list' object cannot be converted to 'PyTuple'")
+                self.calls.append((sql, params))
+                return MockRawCursor()
+
+            def executemany(self, sql, seq):
+                for p in seq:
+                    if not isinstance(p, tuple):
+                        raise TypeError("argument 'parameters': 'list' object cannot be converted to 'PyTuple'")
+                self.calls.append((sql, seq))
+                return MockRawCursor()
+
+        class MockRawCursor:
+            def __init__(self):
+                self.description = [("col1",)]
+
+            def fetchall(self):
+                return [(1,)]
+
+            def fetchone(self):
+                return (1,)
+
+        mock_conn = MockRawConn()
+        wrapper = main.TursoConnectionWrapper(mock_conn)
+
+        # Passing list to wrapper.execute should not raise TypeError
+        cur = wrapper.execute("SELECT * FROM test WHERE a = ?", [123])
+        self.assertEqual(mock_conn.calls[-1][1], (123,))
+        rows = cur.fetchall()
+        self.assertEqual(len(rows), 1)
+
+        # Passing list of lists to wrapper.executemany
+        wrapper.executemany("INSERT INTO test VALUES (?)", [[1], [2]])
+        self.assertEqual(mock_conn.calls[-1][1], [(1,), (2,)])
+
+    def test_recruiter_live_assessments_endpoint(self):
+        recruiter = self.login("recruiter@skillsphere.dev")
+        res = self.client.get("/api/recruiter/live-assessments", headers=recruiter)
+        self.assertEqual(res.status_code, 200)
+        self.assertIn("items", res.json())
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -468,11 +468,26 @@ def _normalize_turso_seq_params(seq_of_params: Any) -> Any:
     return [tuple(p) if isinstance(p, list) else p for p in seq_of_params]
 
 
+def is_db_integrity_or_duplicate_error(e: Exception) -> bool:
+    if isinstance(e, sqlite3.IntegrityError):
+        return True
+    err_str = str(e).lower()
+    return "unique" in err_str or "constraint" in err_str or "integrity" in err_str
+
+
 class TursoConnectionWrapper:
     def __init__(self, raw_connection: Any) -> None:
         self._conn = raw_connection
 
     def execute(self, sql: str, params: Any = None) -> TursoCursor:
+        cleaned_sql = sql.strip().upper()
+        if cleaned_sql in ("BEGIN", "BEGIN IMMEDIATE", "BEGIN TRANSACTION"):
+            try:
+                raw_cur = self._conn.execute(sql)
+                return TursoCursor(raw_cur)
+            except Exception as e:
+                logger.debug("Turso ignoring explicit transaction start: %s", e)
+                return TursoCursor(None)
         if params is not None:
             raw_cur = self._conn.execute(sql, _normalize_turso_params(params))
         else:
@@ -2518,6 +2533,41 @@ def get_job(job_id: int, user: dict[str, Any] = Depends(current_user)) -> dict[s
     return public_job(row)
 
 
+@app.delete("/api/jobs/{job_id}")
+def delete_job(
+    job_id: int,
+    user: dict[str, Any] = Depends(require_role("recruiter", "admin")),
+) -> dict[str, Any]:
+    with connect() as db:
+        job = owned_job(db, job_id, user)
+        # Clean up all related tables to maintain relational integrity
+        app_rows = db.execute("SELECT id FROM applications WHERE job_id = ?", (job_id,)).fetchall()
+        app_ids = [r["id"] for r in app_rows]
+        if app_ids:
+            placeholders = ",".join("?" for _ in app_ids)
+            db.execute(f"DELETE FROM status_history WHERE application_id IN ({placeholders})", tuple(app_ids))
+            db.execute(f"DELETE FROM interviews WHERE application_id IN ({placeholders})", tuple(app_ids))
+            db.execute(f"DELETE FROM candidate_ai_summaries WHERE application_id IN ({placeholders})", tuple(app_ids))
+            db.execute(f"DELETE FROM internal_notes WHERE application_id IN ({placeholders})", tuple(app_ids))
+
+            assess_rows = db.execute(f"SELECT id FROM assessments WHERE application_id IN ({placeholders})", tuple(app_ids)).fetchall()
+            assess_ids = [r["id"] for r in assess_rows]
+            if assess_ids:
+                a_placeholders = ",".join("?" for _ in assess_ids)
+                db.execute(f"DELETE FROM assessment_questions WHERE assessment_id IN ({a_placeholders})", tuple(assess_ids))
+                db.execute(f"DELETE FROM assessment_proctoring_events WHERE assessment_id IN ({a_placeholders})", tuple(assess_ids))
+                db.execute(f"DELETE FROM assessment_sessions WHERE assessment_id IN ({a_placeholders})", tuple(assess_ids))
+                db.execute(f"DELETE FROM assessment_recordings WHERE assessment_id IN ({a_placeholders})", tuple(assess_ids))
+            db.execute(f"DELETE FROM assessments WHERE application_id IN ({placeholders})", tuple(app_ids))
+            db.execute("DELETE FROM applications WHERE job_id = ?", (job_id,))
+
+        db.execute("DELETE FROM job_questions WHERE job_id = ?", (job_id,))
+        db.execute("DELETE FROM question_bank_imports WHERE job_id = ?", (job_id,))
+        db.execute("DELETE FROM assessments WHERE job_id = ?", (job_id,))
+        db.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
+    return {"deleted": True, "job_id": job_id, "detail": "Job posting and related records removed successfully"}
+
+
 @app.post("/api/jobs", status_code=201)
 def create_job(body: JobBody, user: dict[str, Any] = Depends(require_role("recruiter", "admin"))) -> dict[str, Any]:
     if len((body.description or "").strip()) < 20:
@@ -3738,6 +3788,7 @@ def create_job_question(
     technology, question, options, correct_index, difficulty, active, explanation, learning_resource_url, subtopic = validated_question(body)
     with connect() as db:
         job = owned_job(db, job_id, user)
+        rec_id = job["recruiter_id"] if "recruiter_id" in job.keys() and job["recruiter_id"] else user["id"]
         try:
             cursor = db.execute(
                 """INSERT INTO job_questions
@@ -3745,16 +3796,21 @@ def create_job_question(
                  difficulty, active, source_type, explanation, learning_resource_url, subtopic, created_at, updated_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual', ?, ?, ?, ?, ?)""",
                 (
-                    job_id, job["recruiter_id"], job["recruiter_id"], technology, question, json.dumps(options),
+                    job_id, rec_id, rec_id, technology, question, json.dumps(options),
                     correct_index, difficulty, active, explanation, learning_resource_url, subtopic, now(), now(),
                 ),
             )
-        except sqlite3.IntegrityError as error:
-            raise HTTPException(status_code=409, detail="That question already exists for this job") from error
+        except Exception as error:
+            if is_db_integrity_or_duplicate_error(error):
+                raise HTTPException(status_code=409, detail="That question already exists for this job") from error
+            raise
         row = db.execute("SELECT * FROM job_questions WHERE id = ?", (cursor.lastrowid,)).fetchone()
         summary = job_question_summary(db, job_id)
     if summary["ready"]:
-        auto_send_ready_assessments(job_id)
+        try:
+            auto_send_ready_assessments(job_id)
+        except Exception as e:
+            logger.error("Auto-send ready assessments failed for job %s: %s", job_id, e)
     return {**dict(row), "options": options, "options_json": None, "summary": summary}
 
 
@@ -3777,14 +3833,19 @@ def update_job_question(
                 (technology, question, json.dumps(options), correct_index, difficulty, active,
                  explanation, learning_resource_url, subtopic, now(), question_id, job_id),
             )
-        except sqlite3.IntegrityError as error:
-            raise HTTPException(status_code=409, detail="That question already exists for this job") from error
+        except Exception as error:
+            if is_db_integrity_or_duplicate_error(error):
+                raise HTTPException(status_code=409, detail="That question already exists for this job") from error
+            raise
         if not result.rowcount:
             raise HTTPException(status_code=404, detail="Question not found for this job")
         row = db.execute("SELECT * FROM job_questions WHERE id = ?", (question_id,)).fetchone()
         summary = job_question_summary(db, job_id)
     if summary["ready"]:
-        auto_send_ready_assessments(job_id)
+        try:
+            auto_send_ready_assessments(job_id)
+        except Exception as e:
+            logger.error("Auto-send ready assessments failed for job %s: %s", job_id, e)
     return {**dict(row), "options": options, "options_json": None}
 
 
@@ -3835,10 +3896,14 @@ def batch_create_job_questions(
 ) -> dict[str, Any]:
     with connect() as db:
         job = owned_job(db, job_id, user)
+        rec_id = job["recruiter_id"] if "recruiter_id" in job.keys() and job["recruiter_id"] else user["id"]
         created_ids = []
         now_iso = now()
         for q in body.questions:
-            technology, question, options, correct_index, difficulty, active, explanation, learning_resource_url, subtopic = validated_question(q)
+            try:
+                technology, question, options, correct_index, difficulty, active, explanation, learning_resource_url, subtopic = validated_question(q)
+            except HTTPException:
+                continue
             try:
                 cursor = db.execute(
                     """INSERT INTO job_questions
@@ -3846,17 +3911,21 @@ def batch_create_job_questions(
                      difficulty, active, source_type, explanation, learning_resource_url, subtopic, created_at, updated_at)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual', ?, ?, ?, ?, ?)""",
                     (
-                        job_id, job["recruiter_id"], job["recruiter_id"], technology, question, json.dumps(options),
+                        job_id, rec_id, rec_id, technology, question, json.dumps(options),
                         correct_index, difficulty, active, explanation, learning_resource_url, subtopic, now_iso, now_iso,
                     ),
                 )
-                created_ids.append(cursor.lastrowid)
-            except sqlite3.IntegrityError:
-                pass
+                if cursor and getattr(cursor, "lastrowid", None):
+                    created_ids.append(cursor.lastrowid)
+            except Exception as e:
+                logger.warning("Could not insert job question for job %s: %s", job_id, e)
         summary = job_question_summary(db, job_id)
     if summary["ready"]:
-        auto_send_ready_assessments(job_id)
-    return {"created": len(created_ids), "summary": summary}
+        try:
+            auto_send_ready_assessments(job_id)
+        except Exception as e:
+            logger.error("Auto-send ready assessments failed for job %s: %s", job_id, e)
+    return {"created": len(created_ids), "count": len(created_ids), "summary": summary}
 
 
 @app.get("/api/jobs/{job_id}/question-bank-summary")

@@ -952,6 +952,29 @@ function jobRow(job, actionLabel = "View role") {
   return `<article class="job-row"><div class="company-mark">${esc(initials(job.company))}</div><div><h3>${esc(job.title)}</h3><p>${esc(job.company)} · ${esc(job.location)}</p><div class="job-meta"><span>${esc(job.job_type || "Full-time")}</span><span>${esc(job.experience || "All levels")}</span>${job.salary ? `<span>${esc(job.salary)}</span>` : ""}</div></div><button class="btn btn-quiet btn-small" ${action}>${actionLabel}</button></article>`;
 }
 
+function recruiterJobRow(job) {
+  return `<article class="job-row">
+    <div class="company-mark">${esc(initials(job.company))}</div>
+    <div style="flex:1">
+      <div style="display:flex;align-items:center;gap:8px;">
+        <h3 style="margin:0;cursor:pointer;" data-job="${esc(job.id)}">${esc(job.title)}</h3>
+        <span class="badge ${job.status === "Open" ? "badge-green" : "badge-gray"}">${esc(job.status || "Open")}</span>
+      </div>
+      <p style="margin:2px 0 6px;">${esc(job.company)} · ${esc(job.location)}</p>
+      <div class="job-meta">
+        <span>${esc(job.job_type || "Full-time")}</span>
+        <span>${esc(job.experience || "All levels")}</span>
+        ${job.salary ? `<span>${esc(job.salary)}</span>` : ""}
+      </div>
+    </div>
+    <div style="display:flex;gap:8px;align-items:center;">
+      <button class="btn btn-quiet btn-small" data-page="Applicants">Applicants</button>
+      <button class="btn btn-quiet btn-small" data-action="manage-question-bank" data-id="${esc(job.id)}">Question Bank</button>
+      <button class="btn btn-danger btn-small" data-action="delete-job" data-id="${esc(job.id)}" data-title="${esc(job.title)}" style="color:#dc2626;border-color:#fca5a5;background:transparent;cursor:pointer;">Delete</button>
+    </div>
+  </article>`;
+}
+
 function applicationRows(applications) {
   if (!applications.length) return empty("No applications yet", "Your next opportunity is only a search away.", "↗");
   return applications.slice(0, 5).map(item => `<div class="application-row"><div><strong>${esc(item.title)}</strong><small>${esc(item.company)} · Applied ${dateLabel(item.applied_at)}</small></div><span class="badge ${["Accepted", "Selected"].includes(item.status) ? "badge-green" : item.status === "Rejected" ? "" : "badge-red"}">${esc(item.status)}</span></div>`).join("");
@@ -2201,7 +2224,7 @@ function recruiterDashboard() {
           <div><h2>Your open roles</h2><p>Manage the opportunities you’ve shared</p></div>
           <button class="text-button" data-page="My jobs">Manage →</button>
         </div>
-        <div class="job-list">${ownJobs.slice(0, 4).map(job => jobRow(job, "Applicants")).join("") || empty("No roles posted", "Create your first role to meet great candidates.")}</div>
+        <div class="job-list">${ownJobs.slice(0, 4).map(job => recruiterJobRow(job)).join("") || empty("No roles posted", "Create your first role to meet great candidates.")}</div>
       </article>
       <article class="card">
         <div class="card-heading"><div><h2>Recent applicants</h2><p>A pulse check on your team’s pipeline</p></div></div>
@@ -2213,7 +2236,7 @@ function recruiterDashboard() {
 function recruiterJobsPage() {
   return `${heading("Manage your openings", "My jobs", "Create, update, and keep track of the roles you’ve posted.", `<button class="btn btn-primary" data-action="new-job">＋ Post a role</button>`)}
     <section class="card"><div class="card-heading"><div><h2>Published roles</h2><p>${state.jobs.length} open opportunit${state.jobs.length === 1 ? "y" : "ies"}</p></div></div>
-    <div class="job-list">${state.jobs.length ? state.jobs.map(job => jobRow(job, "Applicants")).join("") : empty("Nothing posted yet", "Post a role and find the right person for your team.")}</div></section>`;
+    <div class="job-list">${state.jobs.length ? state.jobs.map(job => recruiterJobRow(job)).join("") : empty("Nothing posted yet", "Post a role and find the right person for your team.")}</div></section>`;
 }
 
 function applicantsPage() {
@@ -2425,6 +2448,7 @@ function renderModal() {
       <p style="color:#706966;font-size:12px;line-height:1.75">${esc(job.description)}</p><div class="skills">${(job.skills || []).map(skill => `<span class="skill">${esc(skill)}</span>`).join("")}</div>
       ${state.user.role === "candidate" ? `<div class="match-score"><div><strong>Ready to apply?</strong><p>${state.resume ? "Your resume is on file and ready to share." : "Upload a resume from your profile before applying."}</p></div><button class="btn btn-primary btn-small" data-action="apply-job" data-id="${esc(job.id)}">Apply now →</button></div>` : ""}
       ${state.user.role === "candidate" ? `<div class="match-score"><div><strong>See how your skills line up</strong><p>Compare your resume with this role’s requirements.</p></div><button class="btn btn-quiet btn-small" data-action="check-match" data-id="${esc(job.id)}">Check match</button></div>${state.match?.job_id === job.id ? `<div class="resume-panel"><div class="card-heading"><div><h2>Skills match</h2><p>${esc(state.match.recommendation)}</p></div><div class="score-ring">${esc(state.match.match_percentage)}%</div></div><strong style="font-size:10px">Matched skills</strong><div class="skills">${state.match.matched_skills.map(skill => `<span class="skill" style="background:#e9f7f0;color:#308366">${esc(skill)}</span>`).join("") || `<span class="skill">No exact matches found</span>`}</div><strong style="display:block;margin-top:12px;font-size:10px">Skills to explore</strong><div class="skills">${state.match.missing_skills.map(skill => `<span class="skill">${esc(skill)}</span>`).join("") || `<span class="skill">You match every listed skill</span>`}</div></div>` : ""}` : ""}
+      ${["recruiter", "admin"].includes(state.user.role) ? `<div style="margin-top:20px;padding-top:12px;border-top:1px solid #e2e8f0;display:flex;justify-content:space-between;align-items:center;"><button class="btn btn-quiet btn-small" data-action="manage-question-bank" data-id="${esc(job.id)}">Question Bank</button><button class="btn btn-danger btn-small" data-action="delete-job" data-id="${esc(job.id)}" data-title="${esc(job.title)}" style="color:#dc2626;border-color:#fca5a5;background:transparent;cursor:pointer;">Delete job posting</button></div>` : ""}
     </section></div>`;
   }
   if (state.modal?.startsWith("interview:")) {
@@ -3372,21 +3396,6 @@ async function confirmQuestionImport(form) {
   }
 }
 
-function syncAiQuestionsFromDOM() {
-  const cards = document.querySelectorAll(".ai-question-card");
-  cards.forEach((card, idx) => {
-    if (!state.aiGeneratedQuestions[idx]) return;
-    const prompt = card.querySelector(".ai-q-prompt")?.value?.trim();
-    if (prompt) state.aiGeneratedQuestions[idx].question = prompt;
-    const explanation = card.querySelector(".ai-q-explanation")?.value?.trim();
-    state.aiGeneratedQuestions[idx].explanation = explanation || "";
-    const options = Array.from(card.querySelectorAll(".ai-q-option")).map(input => input.value.trim());
-    if (options.length === 4) state.aiGeneratedQuestions[idx].options = options;
-    const checkedRadio = card.querySelector(`input[name="ai_correct_${idx}"]:checked`);
-    if (checkedRadio) state.aiGeneratedQuestions[idx].correct_index = Number(checkedRadio.value);
-  });
-}
-
 async function loadAnalytics(reportRange = state.analyticsRange, startDate = "", endDate = "") {
   const params = new URLSearchParams({ report_range: reportRange });
   if (reportRange === "custom") {
@@ -4148,7 +4157,27 @@ app.addEventListener("click", async event => {
       state.modal = "";
       state.aiGeneratedQuestions = [];
       await loadQuestionBank(state.questionBankJob.id);
-      showToast(`Added ${result.count || 0} questions to the question bank.`);
+      showToast(`Added ${result.count ?? result.created ?? 0} questions to the question bank.`);
+    } catch (error) {
+      showToast(error.message, true);
+    }
+    return;
+  }
+  if (target.dataset.action === "delete-job") {
+    const jobId = target.dataset.id;
+    const title = target.dataset.title || "this job";
+    if (!jobId) return;
+    if (!confirm(`Are you sure you want to remove the job posting for "${title}"? This will permanently delete the role and associated applications.`)) {
+      return;
+    }
+    try {
+      await api(`/jobs/${encodeURIComponent(jobId)}`, { method: "DELETE" });
+      state.jobs = state.jobs.filter(j => String(j.id) !== String(jobId));
+      if (state.adminJobs) state.adminJobs = state.adminJobs.filter(j => String(j.id) !== String(jobId));
+      if (state.modal?.startsWith(`job:${jobId}`)) state.modal = "";
+      showToast("Job posting removed successfully.");
+      await loadWorkspace();
+      renderWorkspace();
     } catch (error) {
       showToast(error.message, true);
     }

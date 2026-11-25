@@ -2242,6 +2242,17 @@ Answer: A
         )
         self.assertEqual(batch_res.status_code, 201, batch_res.text)
         self.assertEqual(batch_res.json()["created"], 5)
+        self.assertEqual(batch_res.json()["count"], 5)
+
+        # Re-saving duplicate questions must not fail with 500 error
+        dup_res = self.client.post(
+            f"/api/jobs/{job['id']}/questions/batch",
+            headers=recruiter,
+            json={"questions": data["questions"]},
+        )
+        self.assertEqual(dup_res.status_code, 201, dup_res.text)
+        self.assertEqual(dup_res.json()["created"], 0)
+        self.assertEqual(dup_res.json()["count"], 0)
 
         # Verify added to question bank
         bank_res = self.client.get(f"/api/jobs/{job['id']}/questions", headers=recruiter)
@@ -2260,6 +2271,74 @@ Answer: A
             json={"questions": data["questions"]},
         )
         self.assertEqual(other_batch.status_code, 404)
+
+    def test_delete_job_posting_by_recruiter(self):
+        recruiter = self.login("recruiter@skillsphere.dev")
+        candidate = self.login("candidate@skillsphere.dev")
+        admin = self.login("admin@skillsphere.dev")
+
+        # Create a new job
+        created = self.client.post(
+            "/api/jobs",
+            headers=recruiter,
+            json={
+                "title": "Site Reliability Engineer",
+                "company": "Cloud Corp",
+                "description": "Looking for an SRE with strong Linux, Kubernetes, and Python automation skills.",
+                "location": "Remote",
+                "experience": "4+ years",
+                "job_type": "Full-time",
+                "salary": "$130,000",
+                "skills": ["Python", "Kubernetes", "Linux"],
+                "assessment_question_count": 5,
+                "allow_detailed_results": True,
+            },
+        )
+        self.assertEqual(created.status_code, 201, created.text)
+        job_id = created.json()["id"]
+
+        # Candidate cannot delete job
+        cand_del = self.client.delete(f"/api/jobs/{job_id}", headers=candidate)
+        self.assertEqual(cand_del.status_code, 403)
+
+        # Other recruiter cannot delete job
+        reg_res = self.client.post(
+            "/api/auth/register",
+            json={"email": "sre_other_rec@skillsphere.dev", "password": "Demo123!", "name": "Other Recruiter", "role": "recruiter"},
+        )
+        other_recruiter = {"Authorization": f"Bearer {reg_res.json()['access_token']}"}
+        other_del = self.client.delete(f"/api/jobs/{job_id}", headers=other_recruiter)
+        self.assertEqual(other_del.status_code, 404)
+
+        # Owner recruiter deletes job successfully
+        del_res = self.client.delete(f"/api/jobs/{job_id}", headers=recruiter)
+        self.assertEqual(del_res.status_code, 200, del_res.text)
+        self.assertTrue(del_res.json()["deleted"])
+
+        # Job is now 404
+        get_res = self.client.get(f"/api/jobs/{job_id}", headers=recruiter)
+        self.assertEqual(get_res.status_code, 404)
+
+        # Admin can also delete jobs
+        admin_job = self.client.post(
+            "/api/jobs",
+            headers=recruiter,
+            json={
+                "title": "Data Analyst Role",
+                "company": "Data Corp",
+                "description": "Looking for a data analyst with strong SQL, Python, and Tableau experience.",
+                "location": "Remote",
+                "experience": "2+ years",
+                "job_type": "Full-time",
+                "salary": "$90,000",
+                "skills": ["Python", "SQL"],
+                "assessment_question_count": 5,
+                "allow_detailed_results": True,
+            },
+        ).json()
+        admin_del = self.client.delete(f"/api/jobs/{admin_job['id']}", headers=admin)
+        self.assertEqual(admin_del.status_code, 200, admin_del.text)
+        self.assertTrue(admin_del.json()["deleted"])
 
     def test_candidate_ai_screening_summary(self):
         candidate, recruiter, application = self.apply_with_match(["Python"], ["Python"])

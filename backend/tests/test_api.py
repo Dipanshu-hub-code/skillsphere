@@ -329,6 +329,11 @@ class SkillSphereApiTests(unittest.TestCase):
             files={"file": ("resume.png", b"\x89PNG\r\n\x1a\nnot an image", "image/png")},
         )
         self.assertEqual(corrupt_image.status_code, 422)
+        disguised_eps = self.client.post(
+            "/api/resume/upload", headers=candidate,
+            files={"file": ("resume.jpg", b"%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 100 100\nshowpage", "image/jpeg")},
+        )
+        self.assertEqual(disguised_eps.status_code, 415)
         too_large = self.client.post(
             "/api/resume/upload", headers=candidate,
             files={"file": ("resume.pdf", b"%PDF-" + b"x" * (10 * 1024 * 1024 + 1), "application/pdf")},

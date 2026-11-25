@@ -2342,8 +2342,9 @@ def extract_resume_text(content: bytes, content_type: str) -> str:
         from PIL import Image
         import io
 
+        expected_format = "JPEG" if content_type == "image/jpeg" else "PNG"
         try:
-            image = Image.open(io.BytesIO(content))
+            image = Image.open(io.BytesIO(content), formats=[expected_format])
             image.verify()
         except Exception as error:
             raise HTTPException(status_code=422, detail="This image is unreadable or corrupted. Please check the file and try again.") from error
@@ -2356,7 +2357,7 @@ def extract_resume_text(content: bytes, content_type: str) -> str:
         # Stage 2: Try local Tesseract OCR (if installed)
         try:
             import pytesseract
-            image = Image.open(io.BytesIO(content)).convert("RGB")
+            image = Image.open(io.BytesIO(content), formats=[expected_format]).convert("RGB")
             ocr_res = pytesseract.image_to_string(image).strip()
             if ocr_res and len(ocr_res) >= 15:
                 return ocr_res

@@ -1,7 +1,7 @@
 FROM python:3.11-slim
 
 # Install system dependencies including Tesseract OCR for scanned PDF/resume parsing
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
     tesseract-ocr \
     tesseract-ocr-eng \
     libgl1 \

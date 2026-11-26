@@ -9291,10 +9291,7 @@ async def interview_websocket(websocket: WebSocket, interview_id: int, token: st
                 return
             user = public_user(row)
             interview = interview_details(db, interview_id, user)
-            can_enter, _ = compute_waiting_room_state(dict(interview), user["role"])
-            if not can_enter and not interview_manager.participants(interview_id):
-                await websocket.close(code=1008)
-                return
+            can_enter, mins_until = compute_waiting_room_state(dict(interview), user["role"])
             ts = now()
             db.execute(
                 "INSERT INTO interview_participants (interview_id, user_id, role, joined_at, status) VALUES (?, ?, ?, ?, 'Joined')",
@@ -9317,6 +9314,8 @@ async def interview_websocket(websocket: WebSocket, interview_id: int, token: st
             "language": interview["language"] or "python",
             "code_submitted": bool(interview["code_submitted"]) if "code_submitted" in interview.keys() else False,
             "last_execution": last_exec,
+            "waiting_room": not can_enter,
+            "minutes_until_open": mins_until,
             "participants": interview_manager.participants(interview_id),
         })
         await interview_manager.broadcast(

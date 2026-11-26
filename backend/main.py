@@ -3699,19 +3699,22 @@ def issue_verification_challenge(
     except Exception as exc:
         logger.warning("Could not send verification email: %s", exc)
         delivery = "Failed"
-    _record_email_log(
-        db,
-        notification_id=None,
-        user_id=user_id,
-        recipient_email=email.lower(),
-        category="verification",
-        subject=subject,
-        body_text=content,
-        status=delivery,
-        attempts=1,
-        sent_at=ts if delivery in {"Sent", "Development"} else None,
-        last_error="" if delivery != "Failed" else "Failed to send verification email",
-    )
+    try:
+        _record_email_log(
+            db,
+            notification_id=None,
+            user_id=user_id,
+            recipient_email=email.lower(),
+            category="verification",
+            subject=subject,
+            body_text=content,
+            status=delivery,
+            attempts=1,
+            sent_at=ts if delivery in {"Sent", "Development"} else None,
+            last_error="" if delivery != "Failed" else "Failed to send verification email",
+        )
+    except Exception as log_exc:
+        logger.warning("Could not record verification email log: %s", log_exc)
     return raw_token, otp
 
 
@@ -3726,16 +3729,33 @@ def register(request: Request, body: RegisterBody) -> dict[str, Any]:
         raise HTTPException(status_code=422, detail="Enter a valid email address")
     try:
         with connect() as db:
+            existing = db.execute("SELECT id FROM users WHERE email = ?", (email,)).fetchone()
+            if existing:
+                raise HTTPException(status_code=409, detail="An account with this email already exists")
             cursor = db.execute(
                 "INSERT INTO users (name, email, password_hash, role, email_verified, created_at) VALUES (?, ?, ?, ?, 0, ?)",
                 (body.name.strip(), email, password_hash(body.password), role, now()),
             )
             user_id = cursor.lastrowid
-            row = db.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+            row = (
+                db.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+                if user_id
+                else db.execute("SELECT * FROM users WHERE email = ?", (email,)).fetchone()
+            )
+            if not row:
+                raise HTTPException(status_code=500, detail="Could not create account")
+            user_id = row["id"]
             raw_token, otp = issue_verification_challenge(db, user_id, body.name.strip(), email)
             log_audit(db, user_id, role, "ACCOUNT_REGISTERED", "user", user_id)
+    except HTTPException:
+        raise
     except sqlite3.IntegrityError as error:
         raise HTTPException(status_code=409, detail="An account with this email already exists") from error
+    except Exception as error:
+        if "unique" in str(error).lower() or "constraint" in str(error).lower():
+            raise HTTPException(status_code=409, detail="An account with this email already exists") from error
+        logger.exception("Registration failed for %s", email)
+        raise HTTPException(status_code=500, detail="Registration failed. Please try again.") from error
     user = public_user(row)
     resp: dict[str, Any] = {
         "verification_required": True,

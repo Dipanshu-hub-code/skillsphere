@@ -662,12 +662,12 @@ def send_email_message(recipient: str, subject: str, body_text: str) -> str:
         try:
             port = int(os.environ.get("SKILLSPHERE_SMTP_PORT", "587"))
             if port == 465:
-                with smtplib.SMTP_SSL(smtp_host, port, timeout=20) as server:
+                with smtplib.SMTP_SSL(smtp_host, port, timeout=8) as server:
                     if username:
                         server.login(username, password)
                     server.send_message(email)
             else:
-                with smtplib.SMTP(smtp_host, port, timeout=20) as server:
+                with smtplib.SMTP(smtp_host, port, timeout=8) as server:
                     server.ehlo()
                     server.starttls()
                     server.ehlo()
@@ -3663,10 +3663,9 @@ def health() -> dict[str, Any]:
     return {"status": status, "database": "ok" if db_ok else "unavailable", "version": "1.0.0"}
 
 
-def issue_verification_challenge(
+def create_verification_challenge(
     db: sqlite3.Connection,
     user_id: int,
-    name: str,
     email: str,
 ) -> tuple[str, str]:
     db.execute(
@@ -3685,6 +3684,16 @@ def issue_verification_challenge(
         VALUES (?, ?, ?, 0, 0, ?, ?, ?)""",
         (user_id, token_hash, otp_hash, email.lower(), expires_at, ts),
     )
+    return raw_token, otp
+
+
+def deliver_verification_email(
+    user_id: int,
+    name: str,
+    email: str,
+    raw_token: str,
+    otp: str,
+) -> str:
     verify_link = f"{PUBLIC_BASE_URL}/?{urlencode({'verify_email': raw_token})}"
     subject = "SkillSphere: Verify your email address"
     content = (
@@ -3699,22 +3708,35 @@ def issue_verification_challenge(
     except Exception as exc:
         logger.warning("Could not send verification email: %s", exc)
         delivery = "Failed"
+    ts = now()
     try:
-        _record_email_log(
-            db,
-            notification_id=None,
-            user_id=user_id,
-            recipient_email=email.lower(),
-            category="verification",
-            subject=subject,
-            body_text=content,
-            status=delivery,
-            attempts=1,
-            sent_at=ts if delivery in {"Sent", "Development"} else None,
-            last_error="" if delivery != "Failed" else "Failed to send verification email",
-        )
+        with connect() as db:
+            _record_email_log(
+                db,
+                notification_id=None,
+                user_id=user_id,
+                recipient_email=email.lower(),
+                category="verification",
+                subject=subject,
+                body_text=content,
+                status=delivery,
+                attempts=1,
+                sent_at=ts if delivery in {"Sent", "Development"} else None,
+                last_error="" if delivery != "Failed" else "Failed to send verification email",
+            )
     except Exception as log_exc:
         logger.warning("Could not record verification email log: %s", log_exc)
+    return delivery
+
+
+def issue_verification_challenge(
+    db: sqlite3.Connection,
+    user_id: int,
+    name: str,
+    email: str,
+) -> tuple[str, str]:
+    raw_token, otp = create_verification_challenge(db, user_id, email)
+    deliver_verification_email(user_id, name, email, raw_token, otp)
     return raw_token, otp
 
 
@@ -3745,7 +3767,7 @@ def register(request: Request, body: RegisterBody) -> dict[str, Any]:
             if not row:
                 raise HTTPException(status_code=500, detail="Could not create account")
             user_id = row["id"]
-            raw_token, otp = issue_verification_challenge(db, user_id, body.name.strip(), email)
+            raw_token, otp = create_verification_challenge(db, user_id, email)
             log_audit(db, user_id, role, "ACCOUNT_REGISTERED", "user", user_id)
     except HTTPException:
         raise
@@ -3756,13 +3778,21 @@ def register(request: Request, body: RegisterBody) -> dict[str, Any]:
             raise HTTPException(status_code=409, detail="An account with this email already exists") from error
         logger.exception("Registration failed for %s", email)
         raise HTTPException(status_code=500, detail="Registration failed. Please try again.") from error
+
+    delivery = deliver_verification_email(user_id, body.name.strip(), email, raw_token, otp)
     user = public_user(row)
+    message = (
+        "Account created. Please check your email for your verification link or 6-digit code."
+        if delivery != "Failed"
+        else "Account created, but we could not deliver the verification email right now. Please check email settings or click Resend."
+    )
     resp: dict[str, Any] = {
         "verification_required": True,
         "access_token": None,
         "token_type": "bearer",
+        "email_delivery": delivery,
         "user": user,
-        "message": "Account created. Please check your email for your verification link or 6-digit code.",
+        "message": message,
     }
     if not IS_PRODUCTION and not (os.environ.get("RESEND_API_KEY", "").strip() or os.environ.get("SENDGRID_API_KEY", "").strip() or os.environ.get("SKILLSPHERE_SMTP_HOST", "").strip()):
         resp["dev_token"] = raw_token

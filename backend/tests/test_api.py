@@ -3642,6 +3642,266 @@ Answer: A
         self.assertEqual(bad_res.status_code, 400)
         self.assertIn("valid registered email", bad_res.json()["detail"])
 
+    def test_multi_topic_8_7_5_assessment_and_below_20_rejection(self):
+        recruiter = self.login("recruiter@skillsphere.dev")
+        candidate = self.login("candidate@skillsphere.dev")
+
+        # Job with 8 + 6 = 14 questions (< 20) must be rejected with clear count message
+        job_small = self.client.post(
+            "/api/jobs",
+            headers=recruiter,
+            json={
+                "title": "Insufficient Pool Role",
+                "company": "SkillSphere",
+                "description": "Role with only 14 questions.",
+                "location": "Remote",
+                "experience": "2 years",
+                "job_type": "Full-time",
+                "salary": "$100k",
+                "skills": ["TopicA", "TopicB"],
+                "assessment_question_count": 20,
+            },
+        ).json()
+        self.create_job_question_bank(job_small["id"], "TopicA", 8)
+        self.create_job_question_bank(job_small["id"], "TopicB", 6)
+
+        with main.connect() as db:
+            cand_row = db.execute("SELECT id FROM users WHERE email = 'candidate@skillsphere.dev'").fetchone()
+            db.execute(
+                """INSERT INTO resumes (candidate_id, filename, storage_path, content_type, extracted_text, parsed_profile_json, processing_status, uploaded_at)
+                VALUES (?, 'cv.pdf', 'cv.pdf', 'application/pdf', 'TopicA TopicB', ?, 'completed', ?)
+                ON CONFLICT(candidate_id) DO UPDATE SET parsed_profile_json = excluded.parsed_profile_json""",
+                (cand_row["id"], json.dumps({"skills": ["TopicA", "TopicB"]}), main.now()),
+            )
+        app_small = self.client.post(f"/api/jobs/{job_small['id']}/apply", headers=candidate).json()
+        reject_res = self.client.post(f"/api/applications/{app_small['id']}/assessment/send", headers=recruiter)
+        self.assertEqual(reject_res.status_code, 409)
+        self.assertIn("Currently available: 14", reject_res.json()["detail"])
+
+        # Job with 8 + 7 + 5 = 20 questions across 3 topics must succeed and sample from all 3
+        job_ok = self.client.post(
+            "/api/jobs",
+            headers=recruiter,
+            json={
+                "title": "Multi Topic Role",
+                "company": "SkillSphere",
+                "description": "Role with 8 + 7 + 5 = 20 questions.",
+                "location": "Remote",
+                "experience": "2 years",
+                "job_type": "Full-time",
+                "salary": "$110k",
+                "skills": ["TopicA", "TopicB", "TopicC"],
+                "assessment_question_count": 20,
+            },
+        ).json()
+        self.create_job_question_bank(job_ok["id"], "TopicA", 8)
+        self.create_job_question_bank(job_ok["id"], "TopicB", 7)
+        self.create_job_question_bank(job_ok["id"], "TopicC", 5)
+
+        app_ok = self.client.post(f"/api/jobs/{job_ok['id']}/apply", headers=candidate).json()
+        with patch.dict(os.environ, {"SKILLSPHERE_SMTP_HOST": ""}):
+            send_res = self.client.post(f"/api/applications/{app_ok['id']}/assessment/send", headers=recruiter)
+        self.assertEqual(send_res.status_code, 200, send_res.text)
+        data = send_res.json()
+        self.assertEqual(data["status"], "Sent")
+        dist = data["topic_distribution"]
+        self.assertEqual(dist, {"TopicA": 8, "TopicB": 7, "TopicC": 5})
+        self.assertEqual(len(set(data["selected_question_ids"])), 20)
+
+    def test_ai_generate_20_questions_dedup_malformed_and_retries(self):
+        recruiter = self.login("recruiter@skillsphere.dev")
+        job = self.client.post(
+            "/api/jobs",
+            headers=recruiter,
+            json={
+                "title": "FastAPI Backend Role",
+                "company": "SkillSphere",
+                "description": "Build FastAPI services with full test coverage.",
+                "location": "Remote",
+                "experience": "2 years",
+                "job_type": "Full-time",
+                "salary": "$120k",
+                "skills": ["FastAPI"],
+            },
+        ).json()
+
+        # 1. Local/fallback generation for custom technology ("FastAPI") must produce 20 unique valid questions
+        gen_20 = self.client.post(
+            f"/api/jobs/{job['id']}/questions/ai-generate",
+            headers=recruiter,
+            json={"technology": "FastAPI", "count": 20, "difficulty": "Mixed"},
+        )
+        self.assertEqual(gen_20.status_code, 200, gen_20.text)
+        gdata = gen_20.json()
+        self.assertEqual(gdata["count"], 20)
+        self.assertEqual(len(gdata["questions"]), 20)
+        unique_prompts = {q["question"].strip().casefold() for q in gdata["questions"]}
+        self.assertEqual(len(unique_prompts), 20)
+
+        save_20 = self.client.post(
+            f"/api/jobs/{job['id']}/questions/batch",
+            headers=recruiter,
+            json={"questions": gdata["questions"]},
+        )
+        self.assertEqual(save_20.status_code, 201, save_20.text)
+        self.assertEqual(save_20.json()["created"], 20)
+        self.assertTrue(save_20.json()["summary"]["ready"])
+
+        # 2. Simulate LLM returning fewer items, duplicates, malformed items, and a transient failure
+        call_responses = [
+            # Attempt 1: 4 valid + 1 duplicate + 1 malformed (only 2 options)
+            {
+                "questions": [
+                    {"technology": "GraphQL", "difficulty": "Easy", "question": "GraphQL valid question 1?", "options": ["A", "B", "C", "D"], "correct_index": 0, "explanation": "ok"},
+                    {"technology": "GraphQL", "difficulty": "Easy", "question": "GraphQL valid question 1?", "options": ["A", "B", "C", "D"], "correct_index": 0, "explanation": "dup"},
+                    {"technology": "GraphQL", "difficulty": "Easy", "question": "Malformed short", "options": ["Only", "Two"], "correct_index": 0},
+                    {"technology": "GraphQL", "difficulty": "Medium", "question": "GraphQL valid question 2?", "options": ["A", "B", "C", "D"], "correct_index": 1, "explanation": "ok"},
+                    {"technology": "GraphQL", "difficulty": "Hard", "question": "GraphQL valid question 3?", "options": ["A", "B", "C", "D"], "correct_index": 2, "explanation": "ok"},
+                    {"technology": "GraphQL", "difficulty": "Medium", "question": "GraphQL valid question 4?", "options": ["A", "B", "C", "D"], "correct_index": 3, "explanation": "ok"},
+                ]
+            },
+            # Attempt 2: transient error
+            RuntimeError("LLM timeout"),
+            # Attempt 3: 2 more valid questions, remainder filled by local generator
+            {
+                "questions": [
+                    {"technology": "GraphQL", "difficulty": "Medium", "question": "GraphQL valid question 5?", "options": ["A", "B", "C", "D"], "correct_index": 0, "explanation": "ok"},
+                    {"technology": "GraphQL", "difficulty": "Hard", "question": "GraphQL valid question 6?", "options": ["A", "B", "C", "D"], "correct_index": 1, "explanation": "ok"},
+                ]
+            },
+        ]
+        with patch.object(main, "call_llm_json", side_effect=call_responses):
+            retry_res = self.client.post(
+                f"/api/jobs/{job['id']}/questions/ai-generate",
+                headers=recruiter,
+                json={"technology": "GraphQL", "count": 20, "difficulty": "Mixed"},
+            )
+        self.assertEqual(retry_res.status_code, 200, retry_res.text)
+        rdata = retry_res.json()
+        self.assertEqual(rdata["count"], 20)
+        self.assertEqual(rdata["stats"]["retry_count"], 2)
+        self.assertGreaterEqual(rdata["stats"]["rejected_or_duplicate_count"], 2)
+        self.assertEqual(len({q["question"].strip().casefold() for q in rdata["questions"]}), 20)
+
+    def test_built_in_live_video_and_coding_interview_room(self):
+        candidate, recruiter, application = self.apply_with_match(["Python"], ["Python"])
+        outsider = self.register_and_login("Outsider", "outsider_live@example.com", "Password123!", "candidate")
+        other_rec = self.register_and_login("Other Rec", "other_rec_live@example.com", "Password123!", "recruiter")
+
+        # 1. Schedule built-in SkillSphere Live interview with coding problem
+        sched_time = (datetime.now(timezone.utc) + timedelta(minutes=5)).strftime("%Y-%m-%dT%H:%M")
+        sched_res = self.client.post(
+            f"/api/applications/{application['id']}/interviews",
+            headers=recruiter,
+            json={
+                "scheduled_at": sched_time,
+                "timezone": "UTC",
+                "duration_minutes": 45,
+                "meeting_platform": "SkillSphere Live",
+                "problem_title": "Sum of Even Numbers",
+                "problem_prompt": "Write a function that prints the sum of even numbers from 1 to 10.",
+                "problem_starter_code": "print(sum(i for i in range(1, 11) if i % 2 == 0))",
+                "early_entry_minutes": 15,
+            },
+        )
+        self.assertEqual(sched_res.status_code, 201, sched_res.text)
+        interview = sched_res.json()
+        self.assertEqual(interview["meeting_platform"], "SkillSphere Live")
+        self.assertTrue(interview["room_token"])
+        self.assertIn(f"interview_room={interview['room_token']}", interview["meeting_url"])
+        self.assertTrue(interview["ice_servers"])
+        self.assertTrue(interview["can_enter_room"])
+
+        # 2. Room authorization: authorized candidate & recruiter allowed; outsiders denied
+        cand_room = self.client.get(f"/api/interviews/room/{interview['room_token']}", headers=candidate)
+        self.assertEqual(cand_room.status_code, 200)
+        rec_room = self.client.get(f"/api/interviews/room/{interview['room_token']}", headers=recruiter)
+        self.assertEqual(rec_room.status_code, 200)
+        self.assertEqual(self.client.get(f"/api/interviews/room/{interview['room_token']}", headers=outsider).status_code, 404)
+        self.assertEqual(self.client.get(f"/api/interviews/room/{interview['room_token']}", headers=other_rec).status_code, 404)
+
+        # 3. Read-only interviewer enforcement: recruiter cannot edit/run/submit candidate code
+        self.assertEqual(
+            self.client.put(
+                f"/api/interviews/{interview['id']}/workspace",
+                headers=recruiter,
+                json={"code": "print('hijack')", "language": "python"},
+            ).status_code,
+            403,
+        )
+        self.assertEqual(
+            self.client.post(
+                f"/api/interviews/{interview['id']}/code/run",
+                headers=recruiter,
+                json={"code": "print(1)", "language": "python"},
+            ).status_code,
+            403,
+        )
+
+        # 4. Sandboxed server-side execution: Python, SQL, blocked network import, and timeout
+        py_run = self.client.post(
+            f"/api/interviews/{interview['id']}/code/run",
+            headers=candidate,
+            json={"code": "print(sum(i for i in range(1, 11) if i % 2 == 0))", "language": "python"},
+        )
+        self.assertEqual(py_run.status_code, 200, py_run.text)
+        self.assertEqual(py_run.json()["exit_code"], 0)
+        self.assertEqual(py_run.json()["stdout"].strip(), "30")
+
+        sql_run = self.client.post(
+            f"/api/interviews/{interview['id']}/code/run",
+            headers=candidate,
+            json={"code": "SELECT COUNT(*) AS total FROM employees WHERE department = 'Engineering';", "language": "sql"},
+        )
+        self.assertEqual(sql_run.status_code, 200, sql_run.text)
+        self.assertEqual(sql_run.json()["exit_code"], 0)
+        self.assertIn("2", sql_run.json()["stdout"])
+
+        blocked_net = self.client.post(
+            f"/api/interviews/{interview['id']}/code/run",
+            headers=candidate,
+            json={"code": "import socket\nprint('net')", "language": "python"},
+        )
+        self.assertEqual(blocked_net.status_code, 200)
+        self.assertNotEqual(blocked_net.json()["exit_code"], 0)
+        self.assertIn("disabled in sandbox", blocked_net.json()["stderr"])
+
+        # Timeout test (using execute_interview_code directly with a tight sleep or loop)
+        with patch("subprocess.run", side_effect=__import__("subprocess").TimeoutExpired(cmd="python", timeout=5)):
+            timeout_res = self.client.post(
+                f"/api/interviews/{interview['id']}/code/run",
+                headers=candidate,
+                json={"code": "while True: pass", "language": "python"},
+            )
+        self.assertEqual(timeout_res.status_code, 200)
+        self.assertTrue(timeout_res.json()["timed_out"])
+        self.assertEqual(timeout_res.json()["exit_code"], 124)
+
+        # 5. WebSocket real-time WebRTC signaling & live code sync
+        cand_tok = candidate["Authorization"].split(" ")[1]
+        rec_tok = recruiter["Authorization"].split(" ")[1]
+        with self.client.websocket_connect(f"/ws/interviews/{interview['id']}?token={rec_tok}") as ws_rec:
+            rec_sync = ws_rec.receive_json()
+            self.assertEqual(rec_sync["type"], "sync")
+        with self.client.websocket_connect(f"/ws/interviews/{interview['id']}?token={cand_tok}") as ws_cand:
+            cand_sync = ws_cand.receive_json()
+            self.assertEqual(cand_sync["type"], "sync")
+            ws_cand.send_json({"type": "code_change", "code": "print(42)", "language": "python"})
+            ws_cand.send_json({"type": "webrtc_offer", "sdp": {"type": "offer", "sdp": "v=0..."}})
+            ws_cand.send_json({"type": "typing"})
+
+        # 6. Final submission persists and recovers on refresh
+        sub_res = self.client.post(
+            f"/api/interviews/{interview['id']}/code/submit",
+            headers=candidate,
+            json={"code": "print(42)", "language": "python"},
+        )
+        self.assertEqual(sub_res.status_code, 200, sub_res.text)
+        self.assertTrue(sub_res.json()["ok"])
+        refreshed = self.client.get(f"/api/interviews/{interview['id']}", headers=recruiter).json()
+        self.assertTrue(refreshed["code_submitted"])
+        self.assertEqual(refreshed["submitted_code"], "print(42)")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -834,14 +834,11 @@ function renderVerificationCard() {
   const banner = state.verificationBanner
     ? `<div style="margin-bottom:12px;padding:10px 12px;border-radius:8px;font-size:12px;background:${state.verificationBanner.error ? "#fef2f2" : "#ecfdf5"};border:1px solid ${state.verificationBanner.error ? "#fecaca" : "#a7f3d0"};color:${state.verificationBanner.error ? "#991b1b" : "#065f46"};">${esc(state.verificationBanner.text)}</div>`
     : "";
-  const devHint = pv.devOtp
-    ? `<div style="margin-bottom:12px;padding:8px 10px;border-radius:8px;font-size:11px;background:#f8fafc;border:1px solid #e2e8f0;color:#334155;">Dev verification code: <strong>${esc(pv.devOtp)}</strong></div>`
-    : "";
   return `
     <span class="eyebrow">Verify your email</span>
     <h2>Check your inbox</h2>
     <p>We sent a single-use verification link and 6-digit code to <strong>${esc(pv.email || "")}</strong>.</p>
-    ${banner}${devHint}
+    ${banner}
     <form class="auth-form" id="verify-otp-form">
       <div class="field">
         <label for="verify-otp">6-digit verification code</label>
@@ -1015,7 +1012,7 @@ function renderAuth(register = false) {
           <div><h2>Ready to make your next hire or career move?</h2><p>Create a verified SkillSphere account in under a minute.</p></div>
           <div style="display:flex;gap:10px;flex-wrap:wrap;">
             <button type="button" class="btn btn-quiet" data-action="public-signin">Sign in</button>
-            <button type="button" class="btn btn-primary" style="background:#fff;color:#312e81;" data-action="public-register">Create free account →</button>
+            <button type="button" class="btn btn-primary" style="background:#fff;color:var(--accent-dark);" data-action="public-register">Create free account →</button>
           </div>
         </div>
       </section>
@@ -1248,7 +1245,7 @@ function candidateDashboard() {
   const assessments = state.assessments || [];
   const pendingAssessments = assessments.filter(item => ["Sent", "Started"].includes(item.assessment_status));
 
-  return `${heading("Your career, in motion", `Good to see you, ${esc(state.user.name.split(" ")[0])} <span style="color:#c83b42">✳</span>`, "A little progress today can open a big door tomorrow.", `<button class="btn btn-primary" data-page="Find jobs">Find your next role&nbsp; →</button>`)}
+  return `${heading("Your career, in motion", `Good to see you, ${esc(state.user.name.split(" ")[0])} <span style="color:var(--accent)">✳</span>`, "A little progress today can open a big door tomorrow.", `<button class="btn btn-primary" data-page="Find jobs">Find your next role&nbsp; →</button>`)}
     <section class="grid stats-grid">
       ${stat("Active applications", analytics.active_applications ?? candidateApps.filter(item => !["Rejected", "Withdrawn", "Accepted", "Selected"].includes(item.status)).length, "Your opportunities in progress", "↗")}
       ${stat("Technical tests", assessments.length, pendingAssessments.length ? `${pendingAssessments.length} pending action` : "Assigned evaluations", "✓")}
@@ -1293,7 +1290,7 @@ function candidateDashboard() {
 function jobCard(job) {
   const skills = (job.skills || []).slice(0, 4).map(skill => `<span class="skill">${esc(skill)}</span>`).join("");
   const isSaved = state.savedJobIds && (state.savedJobIds.has(String(job.id)) || state.savedJobIds.has(Number(job.id)));
-  return `<article class="job-card"><div class="job-card-top"><div><h3>${esc(job.title)}</h3><p>${esc(job.company)} · ${esc(job.location)}</p></div><div style="display:flex;align-items:center;gap:6px;"><button type="button" class="icon-button" data-action="toggle-save-job" data-id="${esc(job.id)}" title="${isSaved ? 'Remove from saved' : 'Save role'}" style="color:${isSaved ? '#c83b42' : '#a8a29e'};font-size:16px;">${isSaved ? '★' : '☆'}</button><span class="company-mark">${esc(initials(job.company))}</span></div></div><div class="job-meta"><span>${esc(job.job_type || "Full-time")}</span><span>${esc(job.experience || "All levels")}</span><span>${esc(dateLabel(job.created_at))}</span></div><div class="skills">${skills}</div><div class="job-card-bottom"><span class="salary">${esc(job.salary || "Salary not listed")}</span><button class="btn btn-primary btn-small" data-job="${esc(job.id)}">View details →</button></div></article>`;
+  return `<article class="job-card"><div class="job-card-top"><div><h3>${esc(job.title)}</h3><p>${esc(job.company)} · ${esc(job.location)}</p></div><div style="display:flex;align-items:center;gap:6px;"><button type="button" class="icon-button" data-action="toggle-save-job" data-id="${esc(job.id)}" title="${isSaved ? 'Remove from saved' : 'Save role'}" style="color:${isSaved ? 'var(--accent)' : '#94a3b8'};font-size:16px;">${isSaved ? '★' : '☆'}</button><span class="company-mark">${esc(initials(job.company))}</span></div></div><div class="job-meta"><span>${esc(job.job_type || "Full-time")}</span><span>${esc(job.experience || "All levels")}</span><span>${esc(dateLabel(job.created_at))}</span></div><div class="skills">${skills}</div><div class="job-card-bottom"><span class="salary">${esc(job.salary || "Salary not listed")}</span><button class="btn btn-primary btn-small" data-job="${esc(job.id)}">View details →</button></div></article>`;
 }
 
 function jobsPage() {
@@ -1301,7 +1298,7 @@ function jobsPage() {
   const recommended = state.recommendedJobsList || [];
   return `${heading("Discover what's next", "Find your next <span style='color:var(--accent)'>great fit.</span>", "Explore open roles and focus on the ones that feel right.", action)}
     ${state.user.role === "candidate" && recommended.length ? `
-      <section class="card" style="margin-bottom:18px;background:linear-gradient(135deg, #eef2ff 0%, #fff 100%);border-color:#c7d2fe;">
+      <section class="card" style="margin-bottom:18px;background:linear-gradient(135deg, var(--accent-soft) 0%, #fff 100%);border-color:var(--accent-border);">
         <div class="card-heading"><div><h2>Recommended For You <span class="badge badge-blue">AI Match</span></h2><p>Roles matching skills detected in your profile &amp; resume</p></div><span class="badge badge-green">${recommended.length} matches</span></div>
         <div class="job-grid">${recommended.slice(0, 3).map(jobCard).join("")}</div>
       </section>
@@ -2485,9 +2482,13 @@ function applicantsPage() {
           : ["Completed", "Pending Recruiter Decision"].includes(assessmentStatus)
             ? (item.status.startsWith("Round 1 ") ? `<span class="badge ${item.status === 'Round 1 Passed' ? 'badge-green' : 'badge-red'}">${esc(item.status)}</span>` : `<span class="badge badge-amber">Pending Decision</span>`)
             : `<button class="btn btn-primary btn-small" data-action="send-assessment" data-id="${esc(item.id)}" title="Send Round 1 assessment invitation to this candidate">Send Round 1 Assessment</button>`;
+      const distEntries = Object.entries(item.topic_distribution || {});
+      const topicLabel = distEntries.length
+        ? distEntries.map(([t, c]) => `${t} (${c})`).join(", ")
+        : (item.assessment_topic || "—");
       const topic = assessmentStatus === "Manual Topic Required"
         ? `<input class="status-select assessment-topic" list="assessment-topics" data-assessment-topic="${esc(item.id)}" aria-label="Choose assessment topic for ${esc(item.candidate_name)}" placeholder="Choose topic" />`
-        : esc(item.assessment_topic || "—");
+        : esc(topicLabel);
       const currentInterview = item.interview;
       const canSchedule = !["Rejected", "Withdrawn", "Accepted", "Selected"].includes(item.status);
       const interviewAction = !canSchedule ? ""
@@ -2502,24 +2503,118 @@ function applicantsPage() {
 function interviewListPage() {
   const rows = state.interviews;
   const canManage = ["recruiter", "admin"].includes(state.user.role);
-  return `${heading("Meet face to face", "Interviews", "Review interview invitations and join scheduled meetings.", state.user.role === "recruiter" ? `<button class="btn btn-primary" data-page="Applicants">＋ Schedule interview</button>` : "")}
-    <section class="interview-list">${rows.map(item => `<article class="card interview-card">
-      <div><span class="eyebrow">${esc(item.company)}</span><h2>${esc(item.title)}</h2><p>${canManage ? `Candidate: ${esc(item.candidate_name)}` : `Interviewer: ${esc(item.recruiter_name)}`}</p><p>${dateTimeLabel(item.scheduled_at)} · ${canManage ? esc(item.timezone) : `Your local time (${esc(localTimeZone())})`} · ${esc(item.duration_minutes)} minutes</p><p><span class="badge ${item.status === "Cancelled" ? "badge-red" : item.status === "Completed" ? "badge-green" : "badge-amber"}">${canManage ? esc(item.status) : interviewDisplayStatus(item)}</span> · ${esc(item.meeting_platform)}</p>${item.recruiter_message ? `<p>${esc(item.recruiter_message)}</p>` : ""}${canManage ? `<p>Invitation viewed: ${item.candidate_viewed_at ? dateTimeLabel(item.candidate_viewed_at) : "Not yet"}</p>` : ""}</div>
-      <div class="interview-actions">${interviewDisplayStatus(item) === "Interview Scheduled" && /^https:\/\//i.test(item.meeting_url || "") ? `<a class="btn btn-primary btn-small" href="${esc(item.meeting_url)}" target="_blank" rel="noopener noreferrer">Join Interview ↗</a>` : ""}${canManage ? `<button class="btn btn-quiet btn-small" data-action="open-candidate-dossier" data-id="${esc(item.id)}">Candidate Dossier</button><button class="btn btn-quiet btn-small" data-action="open-scorecard" data-id="${esc(item.id)}">Scorecard</button>` : ""}${state.user.role !== "admin" ? `<button class="btn btn-quiet btn-small" data-action="open-interview" data-id="${esc(item.id)}">Open coding room</button>` : ""}${canManage && ["Scheduled", "Rescheduled"].includes(item.status) ? `<button class="btn btn-quiet btn-small" data-action="edit-interview" data-id="${esc(item.id)}">Reschedule Interview</button><button class="text-button" data-action="cancel-interview" data-id="${esc(item.id)}">Cancel</button><button class="text-button" data-action="complete-interview" data-id="${esc(item.id)}">Mark completed</button>` : ""}</div>
-    </article>`).join("") || empty("No interviews scheduled", canManage ? "Choose an applicant and schedule an interview to get started." : "Your recruiter will share interview details here.", "◷")}</section>`;
+  return `${heading("Meet face to face", "Interviews", "Join built-in live video & coding interviews directly inside SkillSphere.", state.user.role === "recruiter" ? `<button class="btn btn-primary" data-page="Applicants">＋ Schedule interview</button>` : "")}
+    <section class="interview-list">${rows.map(item => {
+      const isActive = ["Scheduled", "Rescheduled"].includes(item.status);
+      const isBuiltIn = !item.meeting_platform || item.meeting_platform === "SkillSphere Live";
+      const liveBtnLabel = canManage ? "Start Live Interview →" : "Join Live Interview →";
+      return `<article class="card interview-card">
+      <div><span class="eyebrow">${esc(item.company)}</span><h2>${esc(item.title)}</h2><p>${canManage ? `Candidate: ${esc(item.candidate_name)}` : `Interviewer: ${esc(item.recruiter_name)}`}</p><p>${dateTimeLabel(item.scheduled_at)} · ${canManage ? esc(item.timezone) : `Your local time (${esc(localTimeZone())})`} · ${esc(item.duration_minutes)} minutes</p><p><span class="badge ${item.status === "Cancelled" ? "badge-red" : item.status === "Completed" ? "badge-green" : "badge-amber"}">${canManage ? esc(item.status) : interviewDisplayStatus(item)}</span> · ${esc(item.meeting_platform || "SkillSphere Live")}${item.code_submitted ? ` · <span class="badge badge-green">Code Submitted</span>` : ""}</p>${item.problem_title ? `<p><strong>Coding Problem:</strong> ${esc(item.problem_title)}</p>` : ""}${item.recruiter_message ? `<p>${esc(item.recruiter_message)}</p>` : ""}${canManage ? `<p>Invitation viewed: ${item.candidate_viewed_at ? dateTimeLabel(item.candidate_viewed_at) : "Not yet"}</p>` : ""}</div>
+      <div class="interview-actions">${isActive && state.user.role !== "admin" ? `<button class="btn btn-primary btn-small" data-action="open-interview" data-id="${esc(item.id)}">${liveBtnLabel}</button>` : ""}${!isBuiltIn && interviewDisplayStatus(item) === "Interview Scheduled" && /^https:\/\//i.test(item.meeting_url || "") ? `<a class="btn btn-quiet btn-small" href="${esc(item.meeting_url)}" target="_blank" rel="noopener noreferrer">External link ↗</a>` : ""}${canManage ? `<button class="btn btn-quiet btn-small" data-action="open-candidate-dossier" data-id="${esc(item.id)}">Candidate Dossier</button><button class="btn btn-quiet btn-small" data-action="open-scorecard" data-id="${esc(item.id)}">Scorecard</button>` : ""}${!isActive && state.user.role !== "admin" ? `<button class="btn btn-quiet btn-small" data-action="open-interview" data-id="${esc(item.id)}">Review workspace</button>` : ""}${canManage && isActive ? `<button class="btn btn-quiet btn-small" data-action="edit-interview" data-id="${esc(item.id)}">Reschedule Interview</button><button class="text-button" data-action="cancel-interview" data-id="${esc(item.id)}">Cancel</button><button class="text-button" data-action="complete-interview" data-id="${esc(item.id)}">Mark completed</button>` : ""}</div>
+    </article>`;
+    }).join("") || empty("No interviews scheduled", canManage ? "Choose an applicant and schedule an interview to get started." : "Your recruiter will share interview details here.", "◷")}</section>`;
 }
 
 function interviewRoomPage() {
   const interview = state.currentInterview;
   if (!interview) return `<div class="loading"><span class="spinner"></span></div>`;
-  const editable = ["candidate", "recruiter"].includes(state.user.role);
-  return `${heading("Shared interview workspace", `${esc(interview.candidate_name)} · ${esc(interview.title)}`, `${new Date(interview.scheduled_at).toLocaleString()} · Changes sync to the interviewer while you work.`)}
-    <section class="card interview-room">
-      <div class="interview-room-toolbar"><div><strong>Live code editor</strong><small>Saved privately to this interview on SkillSphere</small></div>
-      <div class="interview-actions">${/^https:\/\//i.test(interview.meeting_url || "") && !["Cancelled", "Completed"].includes(interview.status) ? `<a class="btn btn-quiet btn-small" href="${esc(interview.meeting_url)}" target="_blank" rel="noopener noreferrer">Join Interview ↗</a>` : ""}<label class="sr-only" for="editor-language">Language</label><select class="select editor-language" id="editor-language" ${editable ? "" : "disabled"}>${["python", "javascript", "typescript", "java", "cpp"].map(language => `<option value="${language}" ${interview.language === language ? "selected" : ""}>${language}</option>`).join("")}</select></div></div>
-      <textarea class="code-editor" id="interview-code" spellcheck="false" aria-label="Shared interview code editor" ${editable ? "" : "readonly"}>${esc(interview.code)}</textarea>
-      <div class="editor-footer"><span id="editor-sync-status">Saved</span><span>Code execution is disabled</span></div>
-    </section>`;
+  const isCandidate = state.user.role === "candidate";
+  const isRecruiter = state.user.role === "recruiter";
+  const isClosed = ["Cancelled", "Completed"].includes(interview.status);
+
+  if (!state.interviewJoined && !isClosed) {
+    const dev = state.interviewDevices || { cameras: [], mics: [], speakers: [], permissionState: "checking", error: "" };
+    const waiting = !interview.can_enter_room;
+    return `${heading("Pre-join device check", `${esc(interview.title)} · ${esc(interview.company)}`, `${dateTimeLabel(interview.scheduled_at)} · ${esc(interview.duration_minutes)} minutes`)}
+      <section class="card prejoin-card">
+        <div>
+          <div class="prejoin-preview">${state.prejoinHasVideo ? `<video id="prejoin-video" autoplay muted playsinline></video>` : `<span>Camera preview unavailable — check permissions or join audio-only</span>`}</div>
+          <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;">
+            <button type="button" class="btn btn-quiet btn-small" data-action="recheck-devices">↻ Test camera &amp; mic</button>
+            <span class="badge ${dev.permissionState === "granted" ? "badge-green" : dev.permissionState === "denied" ? "badge-red" : "badge-amber"}">${dev.permissionState === "granted" ? "Devices ready" : dev.permissionState === "denied" ? "Permission denied" : "Checking devices…"}</span>
+          </div>
+          ${dev.error ? `<small style="display:block;margin-top:6px;color:var(--danger);">${esc(dev.error)}</small>` : ""}
+        </div>
+        <div style="display:grid;gap:12px;">
+          <div>
+            <strong>${isCandidate ? `Interviewer: ${esc(interview.recruiter_name)}` : `Candidate: ${esc(interview.candidate_name)}`}</strong>
+            <p style="margin:4px 0 0;color:var(--muted);font-size:12px;">${waiting ? `Waiting room: live room opens ${interview.early_entry_minutes || 15} min before start (~${interview.minutes_until_open} min remaining).` : "Ready to join the built-in live video & coding room."}</p>
+          </div>
+          <div class="field"><label for="select-camera">Camera</label><select class="select" id="select-camera" data-device-kind="videoinput">${dev.cameras.length ? dev.cameras.map(d => `<option value="${esc(d.deviceId)}" ${state.selectedCameraId === d.deviceId ? "selected" : ""}>${esc(d.label || "Camera")}</option>`).join("") : `<option value="">No camera detected</option>`}</select></div>
+          <div class="field"><label for="select-mic">Microphone</label><select class="select" id="select-mic" data-device-kind="audioinput">${dev.mics.length ? dev.mics.map(d => `<option value="${esc(d.deviceId)}" ${state.selectedMicId === d.deviceId ? "selected" : ""}>${esc(d.label || "Microphone")}</option>`).join("") : `<option value="">No microphone detected</option>`}</select></div>
+          <div class="field"><label for="select-speaker">Speaker</label><select class="select" id="select-speaker" data-device-kind="audiooutput">${dev.speakers.length ? dev.speakers.map(d => `<option value="${esc(d.deviceId)}">${esc(d.label || "Default Speaker")}</option>`).join("") : `<option value="">System Default</option>`}</select></div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;">
+            <button type="button" class="btn btn-primary" data-action="join-live-room" ${waiting ? "disabled" : ""}>${isRecruiter ? "Start Live Interview →" : "Join Live Interview →"}</button>
+            <button type="button" class="btn btn-quiet" data-action="leave-live-room">Back to Interviews</button>
+          </div>
+        </div>
+      </section>`;
+  }
+
+  const codeText = interview.code || "";
+  const lineCount = Math.max(12, codeText.split("\n").length);
+  const lineNumbers = Array.from({ length: lineCount }, (_, i) => i + 1).join("\n");
+  const exec = state.interviewExecution || interview.last_execution || {};
+  const peer = (state.interviewParticipants || []).find(p => String(p.user_id) !== String(state.user.id));
+
+  return `${heading("Live Interview Room", `${esc(interview.candidate_name)} · ${esc(interview.title)}`, `${dateTimeLabel(interview.scheduled_at)} · ${isCandidate ? "Candidate coding workspace" : "Interviewer live read-only view"}`)}
+    <div class="live-room-layout${state.interviewFocusCode ? " focus-code" : ""}">
+      <aside class="live-video-panel">
+        <div class="video-grid">
+          <div class="video-tile local">
+            <video id="local-video" autoplay muted playsinline></video>
+            <div class="video-tile-overlay">
+              <span class="video-name-pill">You (${esc(state.user.name)})</span>
+              <span class="badge ${state.micMuted ? "badge-red" : "badge-green"}">${state.micMuted ? "Muted" : "Mic On"}</span>
+            </div>
+          </div>
+          <div class="video-tile remote">
+            <video id="remote-video" autoplay playsinline></video>
+            ${!state.remoteStreamActive ? `<span style="position:absolute;font-size:12px;padding:0 14px;text-align:center;">${peer ? `Connecting video with ${esc(peer.name)}…` : `Waiting for ${isCandidate ? esc(interview.recruiter_name) : esc(interview.candidate_name)} to join…`}</span>` : ""}
+            <div class="video-tile-overlay">
+              <span class="video-name-pill">${peer ? esc(peer.name) : (isCandidate ? esc(interview.recruiter_name) : esc(interview.candidate_name))}</span>
+              <span class="badge ${state.rtcStatus === "connected" ? "badge-green" : "badge-amber"}">${esc(state.rtcStatus || "Waiting")}</span>
+            </div>
+          </div>
+        </div>
+        <div class="video-controls">
+          <button type="button" class="btn btn-quiet btn-small" data-action="toggle-mic">${state.micMuted ? "🔇 Unmute" : "🎙 Mute"}</button>
+          <button type="button" class="btn btn-quiet btn-small" data-action="toggle-cam">${state.camOff ? "📷 Cam On" : "📹 Cam Off"}</button>
+          <button type="button" class="btn btn-quiet btn-small" data-action="toggle-focus-code">${state.interviewFocusCode ? "Show Sidebar" : "Focus Code"}</button>
+          ${isRecruiter && !isClosed ? `<button type="button" class="btn btn-quiet btn-small" data-action="open-scorecard" data-id="${esc(interview.id)}">Scorecard</button><button type="button" class="btn btn-primary btn-small" data-action="complete-interview" data-id="${esc(interview.id)}">Complete Interview</button>` : ""}
+          <button type="button" class="btn btn-danger btn-small" data-action="leave-live-room">Leave</button>
+        </div>
+      </aside>
+
+      <section class="card interview-room">
+        ${interview.problem_title || interview.problem_prompt ? `<div class="problem-panel"><h3>${esc(interview.problem_title || "Coding Challenge")}</h3>${interview.problem_prompt ? `<p>${esc(interview.problem_prompt)}</p>` : ""}</div>` : ""}
+        <div class="interview-room-toolbar">
+          <div>
+            <strong>${isCandidate ? "Live code editor" : "Candidate code (Read-only live view)"}</strong>
+            <small id="editor-activity">${state.candidateTyping ? "Candidate is typing…" : (interview.code_submitted ? "Solution Submitted ✓" : "Synced in real time")}</small>
+          </div>
+          <div class="interview-actions">
+            <label class="sr-only" for="editor-language">Language</label>
+            <select class="select editor-language" id="editor-language" ${isCandidate && !isClosed ? "" : "disabled"}>${["python", "javascript", "sql", "java", "cpp", "typescript"].map(language => `<option value="${language}" ${interview.language === language ? "selected" : ""}>${language}</option>`).join("")}</select>
+            ${isCandidate && !isClosed ? `<button type="button" class="btn btn-quiet btn-small" data-action="run-interview-code" ${state.codeRunning ? "disabled" : ""}>${state.codeRunning ? "Running…" : "▶ Run Code"}</button><button type="button" class="btn btn-primary btn-small" data-action="submit-interview-code" ${state.codeSubmitting ? "disabled" : ""}>${state.codeSubmitting ? "Submitting…" : "✓ Submit"}</button>` : ""}
+          </div>
+        </div>
+        <div class="editor-shell">
+          <pre class="code-gutter" id="code-gutter" aria-hidden="true">${lineNumbers}</pre>
+          <textarea class="code-editor" id="interview-code" spellcheck="false" aria-label="Interview code editor" ${isCandidate && !isClosed ? "" : "readonly"}>${esc(codeText)}</textarea>
+        </div>
+        <div class="code-console" id="code-console">
+          <div style="display:flex;justify-content:space-between;align-items:center;">
+            <strong>Execution Output</strong>
+            <small style="color:#94a3b8;">${exec.duration_ms != null ? `Exit ${exec.exit_code ?? 0} · ${exec.duration_ms}ms` : "Run code to see output"}</small>
+          </div>
+          ${exec.stdout ? `<pre>${esc(exec.stdout)}</pre>` : ""}
+          ${exec.stderr ? `<pre class="err">${esc(exec.stderr)}</pre>` : ""}
+          ${!exec.stdout && !exec.stderr ? `<pre style="color:#64748b;">No output yet.</pre>` : ""}
+        </div>
+        <div class="editor-footer"><span id="editor-sync-status">Saved</span><span>Sandboxed server execution · 5s timeout</span></div>
+      </section>
+    </div>`;
 }
 
 function proctoringEventTimeline(events) {
@@ -2721,8 +2816,11 @@ function renderModal() {
         <div class="field span-2"><label for="interview-time">Interview date and start time</label><input class="input" id="interview-time" type="datetime-local" name="scheduled_at" min="${currentLocalDateTimeInput()}" value="${dateTimeValue}" required /></div>
         <div class="field"><label for="interview-timezone">Time zone</label><input class="input" id="interview-timezone" name="timezone" value="${esc(interview?.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC")}" maxlength="80" required /></div>
         <div class="field"><label for="interview-duration">Duration (minutes)</label><input class="input" id="interview-duration" type="number" name="duration_minutes" min="5" max="480" step="5" value="${esc(interview?.duration_minutes || 60)}" required /></div>
-        <div class="field"><label for="interview-platform">Meeting platform</label><select class="select" id="interview-platform" name="meeting_platform">${["Google Meet", "Microsoft Teams", "Zoom", "Other"].map(platform => `<option ${platform === (interview?.meeting_platform || "Google Meet") ? "selected" : ""}>${platform}</option>`).join("")}</select></div>
-        <div class="field"><label for="interview-url">Secure meeting URL (HTTPS)</label><input class="input" id="interview-url" type="url" name="meeting_url" value="${esc(interview?.meeting_url || "")}" placeholder="https://..." required /></div>
+        <div class="field"><label for="interview-platform">Meeting platform</label><select class="select" id="interview-platform" name="meeting_platform">${["SkillSphere Live", "Google Meet", "Microsoft Teams", "Zoom", "Other"].map(platform => `<option ${platform === (interview?.meeting_platform || "SkillSphere Live") ? "selected" : ""}>${platform}</option>`).join("")}</select></div>
+        <div class="field"><label for="interview-early-entry">Waiting room early entry (min)</label><input class="input" id="interview-early-entry" type="number" name="early_entry_minutes" min="0" max="120" value="${esc(interview?.early_entry_minutes ?? 15)}" /></div>
+        <div class="field span-2" id="external-url-wrap" style="display:${(interview?.meeting_platform || "SkillSphere Live") === "SkillSphere Live" ? "none" : "grid"}"><label for="interview-url">External meeting URL (HTTPS)</label><input class="input" id="interview-url" type="url" name="meeting_url" value="${esc(interview?.meeting_url || "")}" placeholder="https://..." /></div>
+        <div class="field span-2"><label for="interview-problem-title">Coding problem title (optional)</label><input class="input" id="interview-problem-title" name="problem_title" value="${esc(interview?.problem_title || "")}" placeholder="e.g. Two Sum or Rate Limiter" maxlength="200" /></div>
+        <div class="field span-2"><label for="interview-problem-prompt">Coding problem prompt (optional)</label><textarea class="textarea" id="interview-problem-prompt" name="problem_prompt" maxlength="8000" placeholder="Describe the problem, constraints, and expected output...">${esc(interview?.problem_prompt || "")}</textarea></div>
         <div class="field span-2"><label for="interview-message">Recruiter instructions (optional)</label><textarea class="textarea" id="interview-message" name="recruiter_message" maxlength="2000">${esc(interview?.recruiter_message || "")}</textarea></div>
         <div class="span-2"><button class="btn btn-primary" type="submit">${interview ? "Save interview changes" : "Send interview invitation"}</button></div>
       </form></section></div>`;
@@ -2995,10 +3093,17 @@ function renderModal() {
             <textarea class="textarea" name="custom_prompt" rows="2" placeholder="e.g. Focus on practical debugging scenarios, common production mistakes, and clean code principles." ${isGenerating ? "disabled" : ""}></textarea>
           </div>
         </div>
-        <div style="display:flex;justify-content:flex-end;gap:10px;align-items:center">
-          <button class="btn btn-primary" type="submit" ${isGenerating ? "disabled" : ""}>
-            ${isGenerating ? `<span class="spinner" style="width:14px;height:14px;border-width:2px;display:inline-block"></span> Generating questions…` : `✨ Generate Questions →`}
-          </button>
+        <div style="display:flex;justify-content:space-between;gap:10px;align-items:center;flex-wrap:wrap;">
+          <div>
+            ${state.aiProgress ? `<small style="color:var(--accent-dark);font-weight:600;">${esc(state.aiProgress)}</small>` : ""}
+            ${state.aiError ? `<small style="color:var(--danger);font-weight:600;">${esc(state.aiError)}</small>` : ""}
+          </div>
+          <div style="display:flex;gap:8px;align-items:center;">
+            ${state.aiError ? `<button class="btn btn-quiet btn-small" type="button" data-action="retry-ai-generate">Retry</button>` : ""}
+            <button class="btn btn-primary" type="submit" ${isGenerating ? "disabled" : ""}>
+              ${isGenerating ? `<span class="spinner" style="width:14px;height:14px;border-width:2px;display:inline-block"></span> Generating questions…` : `✨ Generate Questions →`}
+            </button>
+          </div>
         </div>
       </form>
 
@@ -3294,7 +3399,7 @@ function renderModal() {
 
         <div style="display:flex;justify-content:space-between;align-items:center;margin-top:16px;padding-top:14px;border-top:1px solid var(--line);">
           <div style="display:flex;gap:12px;align-items:center;">
-            <div style="width:36px;height:36px;border-radius:50%;background:#e0e7ff;color:#4338ca;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:14px;">
+            <div style="width:36px;height:36px;border-radius:50%;background:var(--accent-soft);color:var(--accent-dark);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:14px;">
               ${esc((target.candidate_name || "C").charAt(0).toUpperCase())}
             </div>
             <div>
@@ -3785,7 +3890,6 @@ async function authenticate(email, password, register, name, role) {
     if (result.verification_required || !result.access_token) {
       state.pendingVerification = {
         email: result.user?.email || email,
-        devOtp: result.dev_otp || "",
         changingEmail: false,
       };
       state.verificationBanner = { text: result.message || "Please verify your email address to continue.", error: false };
@@ -4043,14 +4147,17 @@ app.addEventListener("submit", async event => {
   if (form.id === "ai-question-generate-form") {
     if (!state.questionBankJob) return;
     const values = Object.fromEntries(new FormData(form));
+    const reqCount = Number(values.count || 5);
     const payload = {
       technology: (values.technology || "").trim(),
       subtopic: (values.subtopic || "").trim(),
       difficulty: values.difficulty || "Mixed",
-      count: Number(values.count || 5),
+      count: reqCount,
       custom_prompt: (values.custom_prompt || "").trim()
     };
     state.aiGenerating = true;
+    state.aiError = "";
+    state.aiProgress = `Generating ${reqCount} unique questions…`;
     renderWorkspace();
     try {
       const result = await api(`/jobs/${encodeURIComponent(state.questionBankJob.id)}/questions/ai-generate`, {
@@ -4058,9 +4165,18 @@ app.addEventListener("submit", async event => {
         body: JSON.stringify(payload)
       });
       state.aiGeneratedQuestions = result.questions || [];
-      showToast(`Generated ${state.aiGeneratedQuestions.length} technical questions.`);
+      if (state.aiGeneratedQuestions.length < reqCount) {
+        state.aiError = `Only ${state.aiGeneratedQuestions.length} of ${reqCount} unique questions could be generated. You can retry or save the generated set.`;
+        state.aiProgress = `Generated ${state.aiGeneratedQuestions.length} of ${reqCount} questions.`;
+        showToast(state.aiError, true);
+      } else {
+        state.aiProgress = `Generated ${state.aiGeneratedQuestions.length} of ${reqCount} unique questions. Click Save All to store them.`;
+        showToast(`Generated ${state.aiGeneratedQuestions.length} unique technical questions.`);
+      }
     } catch (error) {
-      showToast(error.message, true);
+      state.aiError = error.message || "Could not generate questions.";
+      state.aiProgress = "";
+      showToast(state.aiError, true);
     } finally {
       state.aiGenerating = false;
       renderWorkspace();
@@ -4124,7 +4240,6 @@ app.addEventListener("submit", async event => {
       state.busy = false;
       state.pendingVerification = {
         email: res.email || new_email,
-        devOtp: res.dev_otp || "",
         changingEmail: false,
       };
       state.verificationBanner = { text: res.message || "Verification email updated.", error: false };
@@ -4238,7 +4353,10 @@ app.addEventListener("submit", async event => {
           timezone: values.timezone.trim(),
           duration_minutes: Number(values.duration_minutes),
           meeting_platform: values.meeting_platform,
-          meeting_url: values.meeting_url.trim(),
+          meeting_url: values.meeting_platform === "SkillSphere Live" ? "" : (values.meeting_url || "").trim(),
+          early_entry_minutes: Number(values.early_entry_minutes ?? 15),
+          problem_title: (values.problem_title || "").trim(),
+          problem_prompt: (values.problem_prompt || "").trim(),
           recruiter_message: values.recruiter_message.trim()
         })
       });
@@ -4276,6 +4394,16 @@ app.addEventListener("input", event => {
 });
 
 app.addEventListener("change", async event => {
+  if (event.target.id === "interview-platform") {
+    const wrap = document.querySelector("#external-url-wrap");
+    if (wrap) wrap.style.display = event.target.value === "SkillSphere Live" ? "none" : "grid";
+  }
+  if (event.target.dataset.deviceKind) {
+    if (event.target.dataset.deviceKind === "videoinput") state.selectedCameraId = event.target.value;
+    if (event.target.dataset.deviceKind === "audioinput") state.selectedMicId = event.target.value;
+    await checkPrejoinDevices();
+    return;
+  }
   if (event.target.matches("[data-recording-consent]")) {
     if (state.publicAssessment?.proctor) {
       state.publicAssessment.proctor.recordingConsentGiven = event.target.checked;
@@ -4363,11 +4491,136 @@ app.addEventListener("change", async event => {
     window.SkillSphereFeatures.setAssistantLanguage(event.target.value);
   }
   if (event.target.id === "editor-language") {
-    state.editorDirty = true;
+    updateCodeGutter(event.target.value);
+  if (state.interviewSocket?.readyState === WebSocket.OPEN) {
+    try { state.interviewSocket.send(JSON.stringify({ type: "typing" })); } catch {}
+  }
+  state.editorDirty = true;
     clearTimeout(state.editorSaveTimer);
     await saveInterviewWorkspace();
   }
 });
+
+async function checkPrejoinDevices() {
+  const info = { cameras: [], mics: [], speakers: [], permissionState: "checking", error: "" };
+  state.interviewDevices = info;
+  state.prejoinHasVideo = false;
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    info.permissionState = "denied";
+    info.error = "Browser camera/microphone API is unavailable (HTTPS or localhost required).";
+    renderWorkspace();
+    return;
+  }
+  try {
+    if (state.localStream) {
+      state.localStream.getTracks().forEach(t => t.stop());
+      state.localStream = null;
+    }
+    const constraints = {
+      video: state.selectedCameraId ? { deviceId: { exact: state.selectedCameraId } } : true,
+      audio: state.selectedMicId ? { deviceId: { exact: state.selectedMicId } } : true,
+    };
+    let stream = null;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia(constraints);
+      state.prejoinHasVideo = stream.getVideoTracks().length > 0;
+    } catch {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+      state.prejoinHasVideo = false;
+      info.error = "Camera unavailable — audio-only mode ready.";
+    }
+    state.localStream = stream;
+    info.permissionState = "granted";
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    info.cameras = devices.filter(d => d.kind === "videoinput");
+    info.mics = devices.filter(d => d.kind === "audioinput");
+    info.speakers = devices.filter(d => d.kind === "audiooutput");
+  } catch (err) {
+    info.permissionState = "denied";
+    info.error = err?.message || "Camera/microphone permission denied. You can still join with text/code.";
+  }
+  renderWorkspace();
+  const preview = document.querySelector("#prejoin-video");
+  if (preview && state.localStream) {
+    preview.srcObject = state.localStream;
+  }
+}
+
+function attachInterviewVideoStreams() {
+  const localEl = document.querySelector("#local-video");
+  if (localEl && state.localStream && localEl.srcObject !== state.localStream) {
+    localEl.srcObject = state.localStream;
+  }
+  const remoteEl = document.querySelector("#remote-video");
+  if (remoteEl && state.remoteStream && remoteEl.srcObject !== state.remoteStream) {
+    remoteEl.srcObject = state.remoteStream;
+  }
+}
+
+function createRtcPeerConnection(interviewId) {
+  if (state.rtcPeer) {
+    try { state.rtcPeer.close(); } catch {}
+    state.rtcPeer = null;
+  }
+  const iceServers = state.currentInterview?.ice_servers || [{ urls: ["stun:stun.l.google.com:19302"] }];
+  const pc = new RTCPeerConnection({ iceServers });
+  state.rtcPeer = pc;
+  state.rtcStatus = "connecting";
+
+  if (state.localStream) {
+    state.localStream.getTracks().forEach(track => pc.addTrack(track, state.localStream));
+  }
+
+  pc.ontrack = event => {
+    const [stream] = event.streams;
+    if (stream) {
+      state.remoteStream = stream;
+      state.remoteStreamActive = true;
+      state.rtcStatus = "connected";
+      attachInterviewVideoStreams();
+      const remoteBadge = document.querySelector(".video-tile.remote .badge");
+      if (remoteBadge) {
+        remoteBadge.className = "badge badge-green";
+        remoteBadge.textContent = "connected";
+      }
+    }
+  };
+
+  pc.onicecandidate = event => {
+    if (event.candidate && state.interviewSocket?.readyState === WebSocket.OPEN) {
+      state.interviewSocket.send(JSON.stringify({ type: "webrtc_ice", candidate: event.candidate }));
+    }
+  };
+
+  pc.onconnectionstatechange = () => {
+    state.rtcStatus = pc.connectionState || "connecting";
+    if (pc.connectionState === "disconnected" || pc.connectionState === "failed") {
+      state.remoteStreamActive = false;
+      showToast("Video connection interrupted — attempting to reconnect…", true);
+    }
+    const badge = document.querySelector(".video-tile.remote .badge");
+    if (badge) {
+      badge.className = `badge ${pc.connectionState === "connected" ? "badge-green" : "badge-amber"}`;
+      badge.textContent = pc.connectionState;
+    }
+  };
+
+  return pc;
+}
+
+async function initiateRtcOffer(interviewId) {
+  if (!window.RTCPeerConnection) return;
+  const pc = createRtcPeerConnection(interviewId);
+  try {
+    const offer = await pc.createOffer({ offerToReceiveAudio: true, offerToReceiveVideo: true });
+    await pc.setLocalDescription(offer);
+    if (state.interviewSocket?.readyState === WebSocket.OPEN) {
+      state.interviewSocket.send(JSON.stringify({ type: "webrtc_offer", sdp: pc.localDescription }));
+    }
+  } catch (err) {
+    console.warn("WebRTC offer failed:", err);
+  }
+}
 
 function connectInterviewWebSocket(interviewId) {
   disconnectInterviewWebSocket();
@@ -4381,30 +4634,90 @@ function connectInterviewWebSocket(interviewId) {
       if (status) status.textContent = "Live · Real-time";
       clearInterval(state.interviewPoll);
       state.interviewPoll = null;
+      attachInterviewVideoStreams();
     });
-    socket.addEventListener("message", event => {
+    socket.addEventListener("message", async event => {
       try {
         const msg = JSON.parse(event.data);
         if (msg.type === "sync" || msg.type === "code_change") {
           const editor = document.querySelector("#interview-code");
           const language = document.querySelector("#editor-language");
           if (!state.editorDirty && editor) {
-            if (msg.code !== undefined && editor.value !== msg.code) editor.value = msg.code;
+            if (msg.code !== undefined && editor.value !== msg.code) {
+              editor.value = msg.code;
+              updateCodeGutter(msg.code);
+            }
             if (msg.language && language && language.value !== msg.language) language.value = msg.language;
             const status = document.querySelector("#editor-sync-status");
             if (status) status.textContent = "Live · Synced";
           }
+          if (msg.participants) state.interviewParticipants = msg.participants;
+          if (msg.last_execution) state.interviewExecution = msg.last_execution;
+          if (msg.type === "sync" && msg.participants?.length > 1 && state.user.role === "recruiter") {
+            await initiateRtcOffer(interviewId);
+          }
+        } else if (msg.type === "participant_joined") {
+          state.interviewParticipants = msg.participants || [];
+          showToast(`${msg.user?.name || "Participant"} joined the interview room.`);
+          if (state.user.role === "recruiter") {
+            await initiateRtcOffer(interviewId);
+          }
+          renderWorkspace();
+          attachInterviewVideoStreams();
+        } else if (msg.type === "participant_left") {
+          state.interviewParticipants = msg.participants || [];
+          state.remoteStreamActive = false;
+          state.remoteStream = null;
+          state.rtcStatus = "waiting";
+          showToast(`${msg.user?.name || "Participant"} left the room.`, true);
+          renderWorkspace();
+          attachInterviewVideoStreams();
+        } else if (msg.type === "typing") {
+          const act = document.querySelector("#editor-activity");
+          if (act) act.textContent = "Candidate is typing…";
+          clearTimeout(state.typingClearTimer);
+          state.typingClearTimer = setTimeout(() => {
+            const el = document.querySelector("#editor-activity");
+            if (el) el.textContent = state.currentInterview?.code_submitted ? "Solution Submitted ✓" : "Synced in real time";
+          }, 1500);
+        } else if (msg.type === "code_execution") {
+          state.interviewExecution = msg.execution || {};
+          renderWorkspace();
+          attachInterviewVideoStreams();
+        } else if (msg.type === "code_submitted") {
+          state.interviewExecution = msg.execution || {};
+          if (state.currentInterview) {
+            state.currentInterview.code_submitted = true;
+            state.currentInterview.code = msg.code;
+          }
+          showToast("Candidate submitted their final coding solution.");
+          renderWorkspace();
+          attachInterviewVideoStreams();
+        } else if (msg.type === "webrtc_offer" && msg.sdp && window.RTCPeerConnection) {
+          const pc = createRtcPeerConnection(interviewId);
+          await pc.setRemoteDescription(new RTCSessionDescription(msg.sdp));
+          const answer = await pc.createAnswer();
+          await pc.setLocalDescription(answer);
+          socket.send(JSON.stringify({ type: "webrtc_answer", sdp: pc.localDescription }));
+        } else if (msg.type === "webrtc_answer" && msg.sdp && state.rtcPeer) {
+          await state.rtcPeer.setRemoteDescription(new RTCSessionDescription(msg.sdp));
+        } else if (msg.type === "webrtc_ice" && msg.candidate && state.rtcPeer) {
+          await state.rtcPeer.addIceCandidate(new RTCIceCandidate(msg.candidate));
         }
       } catch {}
     });
     socket.addEventListener("close", () => {
-      if (state.page === "Interview room" && !state.interviewPoll) {
-        state.interviewPoll = setInterval(refreshInterviewWorkspace, 2000);
+      if (state.page === "Interview room" && state.interviewJoined && !state.interviewPoll) {
+        state.interviewPoll = setInterval(() => {
+          if (state.page === "Interview room" && state.interviewJoined) {
+            connectInterviewWebSocket(interviewId);
+          }
+        }, 3000);
       }
     });
     socket.addEventListener("error", () => {
       if (state.page === "Interview room" && !state.interviewPoll) {
-        state.interviewPoll = setInterval(refreshInterviewWorkspace, 2000);
+        state.interviewPoll = setInterval(refreshInterviewWorkspace, 2500);
       }
     });
   } catch {
@@ -4412,13 +4725,35 @@ function connectInterviewWebSocket(interviewId) {
   }
 }
 
+function updateCodeGutter(text) {
+  const gutter = document.querySelector("#code-gutter");
+  if (!gutter) return;
+  const count = Math.max(12, String(text || "").split("\n").length);
+  gutter.textContent = Array.from({ length: count }, (_, i) => i + 1).join("\n");
+}
+
 function disconnectInterviewWebSocket() {
   if (state.interviewSocket) {
     try { state.interviewSocket.close(); } catch {}
     state.interviewSocket = null;
   }
+  if (state.rtcPeer) {
+    try { state.rtcPeer.close(); } catch {}
+    state.rtcPeer = null;
+  }
   clearInterval(state.interviewPoll);
   state.interviewPoll = null;
+}
+
+function stopInterviewMedia() {
+  if (state.localStream) {
+    state.localStream.getTracks().forEach(t => t.stop());
+    state.localStream = null;
+  }
+  state.remoteStream = null;
+  state.remoteStreamActive = false;
+  state.interviewJoined = false;
+  state.rtcStatus = "waiting";
 }
 
 async function saveInterviewWorkspace() {
@@ -4773,24 +5108,35 @@ app.addEventListener("click", async event => {
     renderWorkspace();
     return;
   }
+  if (target.dataset.action === "retry-ai-generate") {
+    document.querySelector("#ai-question-generate-form")?.requestSubmit();
+    return;
+  }
   if (target.dataset.action === "save-ai-questions") {
     if (!state.questionBankJob || !state.aiGeneratedQuestions.length) return;
     syncAiQuestionsFromDOM();
+    const totalToSave = state.aiGeneratedQuestions.length;
+    state.aiProgress = `Saving ${totalToSave} questions… 0 of ${totalToSave} saved.`;
+    state.aiError = "";
+    renderWorkspace();
     try {
       const result = await api(`/jobs/${encodeURIComponent(state.questionBankJob.id)}/questions/batch`, {
         method: "POST",
         body: JSON.stringify({ questions: state.aiGeneratedQuestions })
       });
+      const addedCount = result.created ?? result.count ?? 0;
+      state.aiProgress = `Saving ${totalToSave} questions… ${addedCount} of ${totalToSave} saved.`;
       state.modal = "";
       state.aiGeneratedQuestions = [];
       await loadQuestionBank(state.questionBankJob.id);
-      const addedCount = result.created ?? result.count ?? 0;
-      let msg = `Added ${addedCount} question${addedCount === 1 ? "" : "s"} to the question bank.`;
+      let msg = `Saved ${addedCount} of ${totalToSave} question${addedCount === 1 ? "" : "s"} to the question bank.`;
       if (result.skipped) msg += ` (${result.skipped} duplicate${result.skipped === 1 ? "" : "s"} skipped)`;
       if (result.invalid) msg += ` (${result.invalid} invalid question${result.invalid === 1 ? "" : "s"} omitted)`;
       showToast(msg);
     } catch (error) {
-      showToast(error.message, true);
+      state.aiError = error.message || "Failed to save questions.";
+      showToast(state.aiError, true);
+      renderWorkspace();
     }
     return;
   }
@@ -5073,9 +5419,6 @@ app.addEventListener("click", async event => {
         body: JSON.stringify({ email }),
       });
       state.busy = false;
-      if (state.pendingVerification) {
-        state.pendingVerification.devOtp = res.dev_otp || state.pendingVerification.devOtp || "";
-      }
       state.verificationBanner = { text: res.message || "Verification email resent.", error: false };
       renderAuth(false);
       showToast(res.message || "Verification email resent.");
@@ -5116,9 +5459,115 @@ app.addEventListener("click", async event => {
       state.currentInterview = await api(`/interviews/${encodeURIComponent(target.dataset.id)}`);
       state.page = "Interview room";
       state.editorDirty = false;
+      state.interviewJoined = ["Cancelled", "Completed"].includes(state.currentInterview.status);
+      state.interviewExecution = state.currentInterview.last_execution || {};
       renderWorkspace();
-      connectInterviewWebSocket(target.dataset.id);
+      if (!state.interviewJoined) {
+        await checkPrejoinDevices();
+      }
     } catch (error) { showToast(error.message, true); }
+    return;
+  }
+  if (target.dataset.action === "recheck-devices") {
+    await checkPrejoinDevices();
+    return;
+  }
+  if (target.dataset.action === "join-live-room") {
+    if (!state.currentInterview) return;
+    state.interviewJoined = true;
+    state.rtcStatus = "waiting";
+    renderWorkspace();
+    attachInterviewVideoStreams();
+    connectInterviewWebSocket(state.currentInterview.id);
+    return;
+  }
+  if (target.dataset.action === "leave-live-room") {
+    disconnectInterviewWebSocket();
+    stopInterviewMedia();
+    state.currentInterview = null;
+    state.page = "Interviews";
+    renderWorkspace();
+    return;
+  }
+  if (target.dataset.action === "toggle-mic") {
+    state.micMuted = !state.micMuted;
+    if (state.localStream) {
+      state.localStream.getAudioTracks().forEach(t => { t.enabled = !state.micMuted; });
+    }
+    if (state.interviewSocket?.readyState === WebSocket.OPEN) {
+      state.interviewSocket.send(JSON.stringify({ type: "media_state", mic_muted: state.micMuted }));
+    }
+    renderWorkspace();
+    attachInterviewVideoStreams();
+    return;
+  }
+  if (target.dataset.action === "toggle-cam") {
+    state.camOff = !state.camOff;
+    if (state.localStream) {
+      state.localStream.getVideoTracks().forEach(t => { t.enabled = !state.camOff; });
+    }
+    if (state.interviewSocket?.readyState === WebSocket.OPEN) {
+      state.interviewSocket.send(JSON.stringify({ type: "media_state", cam_off: state.camOff }));
+    }
+    renderWorkspace();
+    attachInterviewVideoStreams();
+    return;
+  }
+  if (target.dataset.action === "toggle-focus-code") {
+    state.interviewFocusCode = !state.interviewFocusCode;
+    renderWorkspace();
+    attachInterviewVideoStreams();
+    return;
+  }
+  if (target.dataset.action === "run-interview-code") {
+    if (!state.currentInterview || state.codeRunning) return;
+    const editor = document.querySelector("#interview-code");
+    const language = document.querySelector("#editor-language");
+    if (!editor || !language) return;
+    state.codeRunning = true;
+    renderWorkspace();
+    attachInterviewVideoStreams();
+    try {
+      const res = await api(`/interviews/${encodeURIComponent(state.currentInterview.id)}/code/run`, {
+        method: "POST",
+        body: JSON.stringify({ code: editor.value, language: language.value }),
+      });
+      state.interviewExecution = res;
+      state.currentInterview.code = editor.value;
+      state.currentInterview.language = language.value;
+    } catch (error) { showToast(error.message, true); }
+    finally {
+      state.codeRunning = false;
+      renderWorkspace();
+      attachInterviewVideoStreams();
+    }
+    return;
+  }
+  if (target.dataset.action === "submit-interview-code") {
+    if (!state.currentInterview || state.codeSubmitting) return;
+    const editor = document.querySelector("#interview-code");
+    const language = document.querySelector("#editor-language");
+    if (!editor || !language) return;
+    if (!window.confirm("Submit this solution as your final answer?")) return;
+    state.codeSubmitting = true;
+    renderWorkspace();
+    attachInterviewVideoStreams();
+    try {
+      const res = await api(`/interviews/${encodeURIComponent(state.currentInterview.id)}/code/submit`, {
+        method: "POST",
+        body: JSON.stringify({ code: editor.value, language: language.value }),
+      });
+      state.interviewExecution = res.execution || {};
+      state.currentInterview.code_submitted = true;
+      state.currentInterview.code = editor.value;
+      state.currentInterview.language = language.value;
+      showToast("Solution submitted and shared with the interviewer.");
+    } catch (error) { showToast(error.message, true); }
+    finally {
+      state.codeSubmitting = false;
+      renderWorkspace();
+      attachInterviewVideoStreams();
+    }
     return;
   }
   if (target.dataset.action === "close-modal") {
@@ -5224,6 +5673,10 @@ app.addEventListener("click", async event => {
 
 app.addEventListener("input", event => {
   if (event.target.id !== "interview-code") return;
+  updateCodeGutter(event.target.value);
+  if (state.interviewSocket?.readyState === WebSocket.OPEN) {
+    try { state.interviewSocket.send(JSON.stringify({ type: "typing" })); } catch {}
+  }
   state.editorDirty = true;
   const status = document.querySelector("#editor-sync-status");
   if (status) status.textContent = "Unsaved changes";
@@ -5298,11 +5751,26 @@ async function start() {
     renderAuth(false);
     return;
   }
-  if (!state.token) { renderAuth(); return; }
+  const interviewRoomToken = params.get("interview_room");
+  if (!state.token) {
+    if (interviewRoomToken) state.pendingInterviewRoom = interviewRoomToken;
+    renderAuth();
+    return;
+  }
   try {
     const result = await api("/me");
     state.user = result;
     await loadWorkspace();
+    const targetRoom = interviewRoomToken || state.pendingInterviewRoom;
+    if (targetRoom) {
+      state.pendingInterviewRoom = "";
+      window.history.replaceState({}, document.title, window.location.pathname);
+      state.currentInterview = await api(`/interviews/room/${encodeURIComponent(targetRoom)}`);
+      state.page = "Interview room";
+      state.interviewJoined = false;
+      renderWorkspace();
+      await checkPrejoinDevices();
+    }
   } catch (error) {
     saveToken("");
     renderAuth();

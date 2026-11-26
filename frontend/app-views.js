@@ -82,7 +82,7 @@
           <div style="flex:1;overflow-y:auto;padding:14px;background:#faf8f6;border-radius:10px;display:flex;flex-direction:column;gap:10px;">
             ${thread.loading ? `<p style="text-align:center;color:#78716c">Loading messages…</p>` : messages.length ? messages.map(m => {
               const isMe = m.sender_id === state.user.id;
-              return `<div style="align-self:${isMe ? 'flex-end' : 'flex-start'};max-width:80%;background:${isMe ? '#c83b42' : '#ffffff'};color:${isMe ? '#ffffff' : '#1c1917'};padding:10px 14px;border-radius:12px;border:${isMe ? 'none' : '1px solid #e7e5e4'};box-shadow:0 1px 3px rgba(0,0,0,0.05);">
+              return `<div style="align-self:${isMe ? 'flex-end' : 'flex-start'};max-width:80%;background:${isMe ? 'var(--accent)' : '#ffffff'};color:${isMe ? '#ffffff' : 'var(--ink)'};padding:10px 14px;border-radius:12px;border:${isMe ? 'none' : '1px solid var(--line)'};box-shadow:0 1px 3px rgba(0,0,0,0.05);">
                 <div style="font-size:11px;opacity:0.8;margin-bottom:4px">${esc(m.sender_name)} · <time>${new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time></div>
                 <div style="font-size:13px;line-height:1.4">${esc(m.content)}</div>
               </div>`;
@@ -141,7 +141,7 @@
           <div class="modal-head"><div><span class="eyebrow">Comprehensive Dossier</span><h2>${esc(d.candidate_name || "Candidate Dossier")}</h2><p>${esc(d.job_title || "")} · ${esc(d.company || "")}</p></div><button class="icon-button" aria-label="Close dialog" data-action="close-modal">×</button></div>
           ${state.dossierLoading ? `<p style="text-align:center;padding:20px;color:#78716c">Compiling candidate dossier…</p>` : `
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:16px;">
-              <div class="card" style="padding:12px;"><strong>Resume Match Score</strong><div style="font-size:24px;font-weight:700;color:#c83b42;margin-top:4px;">${d.match_percentage != null ? `${d.match_percentage}%` : "—"}</div><small style="color:#78716c">Matched: ${(d.matched_skills || []).join(", ") || "None"}</small></div>
+              <div class="card" style="padding:12px;"><strong>Resume Match Score</strong><div style="font-size:24px;font-weight:700;color:var(--accent);margin-top:4px;">${d.match_percentage != null ? `${d.match_percentage}%` : "—"}</div><small style="color:var(--muted)">Matched: ${(d.matched_skills || []).join(", ") || "None"}</small></div>
               <div class="card" style="padding:12px;"><strong>Assessment Performance</strong><div style="font-size:24px;font-weight:700;color:#308366;margin-top:4px;">${d.assessment_score != null ? `${d.assessment_score}%` : "Pending"}</div><small style="color:#78716c">Status: ${esc(d.assessment_status || "Not completed")}</small></div>
             </div>
             ${d.proctoring_flagged ? `<div style="background:#fef2f2;border:1px solid #fecaca;padding:10px 14px;border-radius:8px;color:#991b1b;font-size:12px;margin-bottom:14px;">⚠️ Proctoring Notice: Flags recorded during technical assessment (${d.proctoring_flags_count || 0} incidents).</div>` : ""}
@@ -259,7 +259,7 @@
               ${(currentQ.options || []).map((opt, idx) => {
                 const isSelected = state.practiceSelectedOption === idx;
                 let bg = isSelected ? '#fee2e2' : '#f8fafc';
-                let border = isSelected ? '1px solid #c83b42' : '1px solid #e2e8f0';
+                let border = isSelected ? '1px solid var(--accent)' : '1px solid var(--line)';
                 if (state.practiceSubmitted) {
                   if (idx === state.practiceLastResult?.correct_index) {
                     bg = '#dcfce7'; border = '1px solid #16a34a';
@@ -342,7 +342,7 @@
               <tbody>
                 ${logs.map(l => `<tr>
                   <td><small>${new Date(l.created_at).toLocaleString()}</small></td>
-                  <td><strong style="color:#c83b42">${esc(l.action)}</strong></td>
+                  <td><strong style="color:var(--accent)">${esc(l.action)}</strong></td>
                   <td>${esc(l.actor_email || `ID:${l.actor_id}`)}</td>
                   <td><span class="badge">${esc(l.target_type)}:${esc(l.target_id || "—")}</span></td>
                   <td><small>${esc(JSON.stringify(l.details || {}))}</small></td>

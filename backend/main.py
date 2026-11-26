@@ -1345,9 +1345,13 @@ class InterviewInvitationBody(BaseModel):
     scheduled_at: str = Field(min_length=10, max_length=40)
     timezone: str = Field(min_length=1, max_length=80)
     duration_minutes: int = Field(ge=5, le=480)
-    meeting_platform: str = Field(pattern="^(Google Meet|Microsoft Teams|Zoom|Other)$")
-    meeting_url: str = Field(min_length=1, max_length=2048)
+    meeting_platform: str = Field(default="SkillSphere Live", pattern="^(SkillSphere Live|Google Meet|Microsoft Teams|Zoom|Other)$")
+    meeting_url: str = Field(default="", max_length=2048)
     recruiter_message: str = Field(default="", max_length=2000)
+    problem_title: str = Field(default="", max_length=200)
+    problem_prompt: str = Field(default="", max_length=8000)
+    problem_starter_code: str = Field(default="", max_length=20000)
+    early_entry_minutes: int = Field(default=15, ge=0, le=120)
 
 
 class InterviewUpdateBody(BaseModel):
@@ -1355,14 +1359,23 @@ class InterviewUpdateBody(BaseModel):
     scheduled_at: str | None = Field(default=None, min_length=10, max_length=40)
     timezone: str | None = Field(default=None, min_length=1, max_length=80)
     duration_minutes: int | None = Field(default=None, ge=5, le=480)
-    meeting_platform: str | None = Field(default=None, pattern="^(Google Meet|Microsoft Teams|Zoom|Other)$")
-    meeting_url: str | None = Field(default=None, min_length=1, max_length=2048)
+    meeting_platform: str | None = Field(default=None, pattern="^(SkillSphere Live|Google Meet|Microsoft Teams|Zoom|Other)$")
+    meeting_url: str | None = Field(default=None, max_length=2048)
     recruiter_message: str | None = Field(default=None, max_length=2000)
+    problem_title: str | None = Field(default=None, max_length=200)
+    problem_prompt: str | None = Field(default=None, max_length=8000)
+    problem_starter_code: str | None = Field(default=None, max_length=20000)
+    early_entry_minutes: int | None = Field(default=None, ge=0, le=120)
 
 
 class InterviewWorkspaceBody(BaseModel):
     code: str = Field(max_length=50_000)
-    language: str = Field(default="python", pattern="^(python|javascript|typescript|java|cpp)$")
+    language: str = Field(default="python", pattern="^(python|javascript|typescript|java|cpp|sql)$")
+
+
+class InterviewCodeRunBody(BaseModel):
+    code: str = Field(min_length=1, max_length=50_000)
+    language: str = Field(default="python", pattern="^(python|javascript|typescript|java|cpp|sql)$")
 
 
 class ForgotPasswordBody(BaseModel):
@@ -2025,19 +2038,52 @@ def initialize_database() -> None:
                 recruiter_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
                 scheduled_at TEXT NOT NULL,
                 teams_url TEXT NOT NULL DEFAULT '',
-                meeting_platform TEXT NOT NULL DEFAULT 'Microsoft Teams',
+                meeting_platform TEXT NOT NULL DEFAULT 'SkillSphere Live',
                 meeting_url TEXT NOT NULL DEFAULT '',
+                room_token TEXT NOT NULL DEFAULT '',
                 duration_minutes INTEGER NOT NULL DEFAULT 60,
                 timezone TEXT NOT NULL DEFAULT 'UTC',
                 recruiter_message TEXT NOT NULL DEFAULT '',
+                problem_title TEXT NOT NULL DEFAULT '',
+                problem_prompt TEXT NOT NULL DEFAULT '',
+                problem_starter_code TEXT NOT NULL DEFAULT '',
+                early_entry_minutes INTEGER NOT NULL DEFAULT 15,
                 status TEXT NOT NULL DEFAULT 'Scheduled'
                     CHECK(status IN ('Scheduled', 'Rescheduled', 'Cancelled', 'Completed')),
                 invitation_sent_at TEXT,
                 candidate_viewed_at TEXT,
                 code TEXT NOT NULL DEFAULT '',
                 language TEXT NOT NULL DEFAULT 'python',
+                code_submitted INTEGER NOT NULL DEFAULT 0,
+                submitted_code TEXT NOT NULL DEFAULT '',
+                submitted_language TEXT NOT NULL DEFAULT '',
+                code_submitted_at TEXT,
+                last_execution_json TEXT NOT NULL DEFAULT '{}',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS interview_participants (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                interview_id INTEGER NOT NULL REFERENCES interviews(id) ON DELETE CASCADE,
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                role TEXT NOT NULL,
+                joined_at TEXT NOT NULL,
+                left_at TEXT,
+                status TEXT NOT NULL DEFAULT 'Joined'
+            );
+            CREATE TABLE IF NOT EXISTS interview_code_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                interview_id INTEGER NOT NULL REFERENCES interviews(id) ON DELETE CASCADE,
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                language TEXT NOT NULL,
+                code TEXT NOT NULL,
+                stdout TEXT NOT NULL DEFAULT '',
+                stderr TEXT NOT NULL DEFAULT '',
+                exit_code INTEGER NOT NULL DEFAULT 0,
+                timed_out INTEGER NOT NULL DEFAULT 0,
+                is_submission INTEGER NOT NULL DEFAULT 0,
+                duration_ms INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS candidate_ai_summaries (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2603,15 +2649,28 @@ def initialize_database() -> None:
         for column, definition in (
             ("meeting_platform", "TEXT NOT NULL DEFAULT 'Microsoft Teams'"),
             ("meeting_url", "TEXT NOT NULL DEFAULT ''"),
+            ("room_token", "TEXT NOT NULL DEFAULT ''"),
             ("duration_minutes", "INTEGER NOT NULL DEFAULT 60"),
             ("timezone", "TEXT NOT NULL DEFAULT 'UTC'"),
             ("recruiter_message", "TEXT NOT NULL DEFAULT ''"),
+            ("problem_title", "TEXT NOT NULL DEFAULT ''"),
+            ("problem_prompt", "TEXT NOT NULL DEFAULT ''"),
+            ("problem_starter_code", "TEXT NOT NULL DEFAULT ''"),
+            ("early_entry_minutes", "INTEGER NOT NULL DEFAULT 15"),
             ("status", "TEXT NOT NULL DEFAULT 'Scheduled' CHECK(status IN ('Scheduled', 'Rescheduled', 'Cancelled', 'Completed'))"),
             ("invitation_sent_at", "TEXT"),
             ("candidate_viewed_at", "TEXT"),
+            ("code_submitted", "INTEGER NOT NULL DEFAULT 0"),
+            ("submitted_code", "TEXT NOT NULL DEFAULT ''"),
+            ("submitted_language", "TEXT NOT NULL DEFAULT ''"),
+            ("code_submitted_at", "TEXT"),
+            ("last_execution_json", "TEXT NOT NULL DEFAULT '{}'"),
         ):
             if column not in interview_columns:
                 db.execute(f"ALTER TABLE interviews ADD COLUMN {column} {definition}")
+        missing_room_tokens = db.execute("SELECT id FROM interviews WHERE room_token = '' OR room_token IS NULL").fetchall()
+        for r in missing_room_tokens:
+            db.execute("UPDATE interviews SET room_token = ? WHERE id = ?", (secrets.token_urlsafe(24), r["id"]))
         db.execute(
             """UPDATE interviews SET meeting_url = teams_url
             WHERE meeting_url = '' AND teams_url != ''"""
@@ -3135,20 +3194,54 @@ def relevant_question_topic_weights(
     return weights, reason
 
 
+def _is_valid_active_question_row(question: sqlite3.Row) -> bool:
+    q_text = str(question["question"] or "").strip()
+    if len(q_text) < 10:
+        return False
+    try:
+        opts = json.loads(question["options_json"])
+    except Exception:
+        return False
+    if not isinstance(opts, list) or len(opts) != 4:
+        return False
+    cleaned_opts = [str(o).strip() for o in opts]
+    if any(not o for o in cleaned_opts) or len({o.casefold() for o in cleaned_opts}) != 4:
+        return False
+    c_idx = question["correct_index"]
+    return isinstance(c_idx, int) and 0 <= c_idx <= 3
+
+
 def relevant_balanced_question_sample(
     questions: list[sqlite3.Row],
     topic_weights: dict[str, int],
     count: int,
 ) -> list[sqlite3.Row]:
+    seen_ids: set[int] = set()
+    seen_texts: set[tuple[str, str]] = set()
+    unique_valid: list[sqlite3.Row] = []
+    for question in questions:
+        qid = question["id"] if "id" in question.keys() else None
+        if qid is not None and qid in seen_ids:
+            continue
+        if not _is_valid_active_question_row(question):
+            continue
+        t_key = (str(question["technology"] or "").strip().casefold(), str(question["question"] or "").strip().casefold())
+        if t_key in seen_texts:
+            continue
+        if qid is not None:
+            seen_ids.add(qid)
+        seen_texts.add(t_key)
+        unique_valid.append(question)
+
     groups = {
-        topic: [question for question in questions if question["technology"].casefold() == topic.casefold()]
+        topic: [question for question in unique_valid if question["technology"].casefold() == topic.casefold()]
         for topic in topic_weights
     }
     active_topics = [topic for topic, group in groups.items() if group]
     if sum(len(group) for group in groups.values()) < count or not active_topics:
         return []
-    total_weight = sum(topic_weights[topic] for topic in active_topics)
-    desired = {topic: count * topic_weights[topic] / total_weight for topic in active_topics}
+    total_weight = sum(max(1, topic_weights[topic]) for topic in active_topics)
+    desired = {topic: count * max(1, topic_weights[topic]) / total_weight for topic in active_topics}
     allocation = {topic: min(len(groups[topic]), int(desired[topic])) for topic in active_topics}
     remaining = count - sum(allocation.values())
     while remaining:
@@ -3156,7 +3249,7 @@ def relevant_balanced_question_sample(
         if not candidates:
             return []
         candidates.sort(
-            key=lambda topic: (desired[topic] - allocation[topic], topic_weights[topic]),
+            key=lambda topic: (desired[topic] - allocation[topic], len(groups[topic]) - allocation[topic], topic_weights[topic]),
             reverse=True,
         )
         allocation[candidates[0]] += 1
@@ -3182,14 +3275,15 @@ def assessment_for_match(
         FROM job_questions WHERE job_id = ? AND active = 1 ORDER BY id""",
         (job["id"],),
     ).fetchall()
+    valid_questions = [q for q in questions if _is_valid_active_question_row(q)]
     available_topics: dict[str, int] = {}
-    for question in questions:
+    for question in valid_questions:
         available_topics[question["technology"]] = available_topics.get(question["technology"], 0) + 1
     topic_weights, reasoning = relevant_question_topic_weights(
         job, resume, saved_profile_json, available_topics
     )
     relevant_questions = [
-        question for question in questions
+        question for question in valid_questions
         if question["technology"].casefold() in {topic.casefold() for topic in topic_weights}
     ]
     target_count = (
@@ -3197,38 +3291,45 @@ def assessment_for_match(
         if ("assessment_question_count" in job.keys() and job["assessment_question_count"])
         else 20
     )
+    total_available = len(valid_questions)
     manual_topics: list[str] = []
     if not topic_weights:
         manual_topics = [topic for topic, count in available_topics.items() if count >= target_count]
     if len(relevant_questions) < target_count and not manual_topics:
-        additional_needed = target_count - len(relevant_questions)
-        owner = db.execute("SELECT recruiter_id FROM jobs WHERE id = ?", (job["id"],)).fetchone()
-        if owner:
-            already_notified = db.execute(
-                """SELECT 1 FROM notifications WHERE user_id = ? AND type = 'question_bank_incomplete'
-                AND related_application_id = ? LIMIT 1""",
-                (owner["recruiter_id"], application_id),
-            ).fetchone()
-            if not already_notified:
-                notify_user(
-                    db, owner["recruiter_id"], "question_bank_incomplete",
-                    "Candidate is waiting for an assessment",
-                    f"{additional_needed} more relevant active question(s) are needed for {job['title']}.",
-                    application_id=application_id, email=True,
-                )
-            candidate_already_notified = db.execute(
-                """SELECT 1 FROM notifications WHERE user_id = ? AND type = 'assessment_pending'
-                AND related_application_id = ? LIMIT 1""",
-                (candidate_id, application_id),
-            ).fetchone()
-            if not candidate_already_notified:
-                notify_user(
-                    db, candidate_id, "assessment_pending", "Your assessment is being prepared",
-                    f"The hiring team is preparing the next step for your {job['title']} application. "
-                    "You’ll receive a notification when it’s ready.",
-                    application_id=application_id,
-                )
-        return
+        if total_available >= target_count and available_topics:
+            # Combined pool across all active topics meets target_count (e.g. 8 + 7 + 5 = 20)
+            topic_weights = {topic: 1 for topic in available_topics}
+            reasoning = (
+                "Questions will be balanced across all available active topics in the job question bank."
+            )
+        else:
+            owner = db.execute("SELECT recruiter_id FROM jobs WHERE id = ?", (job["id"],)).fetchone()
+            if owner:
+                already_notified = db.execute(
+                    """SELECT 1 FROM notifications WHERE user_id = ? AND type = 'question_bank_incomplete'
+                    AND related_application_id = ? LIMIT 1""",
+                    (owner["recruiter_id"], application_id),
+                ).fetchone()
+                if not already_notified:
+                    notify_user(
+                        db, owner["recruiter_id"], "question_bank_incomplete",
+                        "Candidate is waiting for an assessment",
+                        f"At least {target_count} questions are required across the selected topics. Currently available: {total_available}.",
+                        application_id=application_id, email=True,
+                    )
+                candidate_already_notified = db.execute(
+                    """SELECT 1 FROM notifications WHERE user_id = ? AND type = 'assessment_pending'
+                    AND related_application_id = ? LIMIT 1""",
+                    (candidate_id, application_id),
+                ).fetchone()
+                if not candidate_already_notified:
+                    notify_user(
+                        db, candidate_id, "assessment_pending", "Your assessment is being prepared",
+                        f"The hiring team is preparing the next step for your {job['title']} application. "
+                        "You’ll receive a notification when it’s ready.",
+                        application_id=application_id,
+                    )
+            return
     status = "Manual Topic Required" if manual_topics else "Not Sent"
     topics = manual_topics if manual_topics else list(topic_weights)
     technology = None if manual_topics else ", ".join(topics)
@@ -3643,7 +3744,7 @@ def register(request: Request, body: RegisterBody) -> dict[str, Any]:
         "user": user,
         "message": "Account created. Please check your email for your verification link or 6-digit code.",
     }
-    if os.environ.get("SKILLSPHERE_ENABLE_DEMO", "true").lower() not in {"false", "0", "no"}:
+    if not IS_PRODUCTION and not (os.environ.get("RESEND_API_KEY", "").strip() or os.environ.get("SENDGRID_API_KEY", "").strip() or os.environ.get("SKILLSPHERE_SMTP_HOST", "").strip()):
         resp["dev_token"] = raw_token
         resp["dev_otp"] = otp
     return resp
@@ -4530,15 +4631,15 @@ def generate_questions_local(
     count: int = 5,
     difficulty: str = "Mixed",
     subtopic: str = "",
-    custom_prompt: str = ""
+    custom_prompt: str = "",
+    exclude_questions: set[str] | None = None,
 ) -> list[dict[str, Any]]:
-    # Normalize tech name lookup
+    seen_q = set(exclude_questions or set())
     matched_key = next((k for k in LOCAL_TECH_QUESTION_BANKS if k.lower() == technology.lower()), None)
     bank = list(LOCAL_TECH_QUESTION_BANKS.get(matched_key, [])) if matched_key else []
 
     results: list[dict[str, Any]] = []
 
-    # Filter bank by requested difficulty if specific
     if bank:
         if difficulty in {"Easy", "Medium", "Hard"}:
             bank_diff = [q for q in bank if q["difficulty"] == difficulty]
@@ -4548,6 +4649,10 @@ def generate_questions_local(
         for item in bank:
             if len(results) >= count:
                 break
+            q_key = item["question"].strip().casefold()
+            if q_key in seen_q:
+                continue
+            seen_q.add(q_key)
             results.append({
                 "technology": technology,
                 "subtopic": item.get("subtopic") or (subtopic or f"{technology} Core"),
@@ -4557,10 +4662,9 @@ def generate_questions_local(
                 "correct_index": item["correct_index"],
                 "explanation": item["explanation"],
                 "learning_resource_url": item.get("learning_resource_url", ""),
-                "active": True
+                "active": True,
             })
 
-    # Procedural generation if more questions are needed
     procedural_topics = [
         ("Architecture & Design", "Medium", "Which design principle is considered best practice when structuring modular components in {tech}?"),
         ("Error Handling & Diagnostics", "Easy", "What is the recommended approach for intercepting and handling unexpected runtime exceptions in {tech}?"),
@@ -4569,20 +4673,50 @@ def generate_questions_local(
         ("Testing & Quality Assurance", "Easy", "When implementing unit and integration tests in {tech}, what is the primary benefit of test isolation?"),
         ("Memory & Resource Management", "Hard", "How does the runtime engine of {tech} handle resource cleanup and prevent memory leaks over time?"),
         ("Data Transformation & Flow", "Medium", "Which pattern ensures predictable data mutations and immutable state transitions in {tech}?"),
-        ("Dependency Management & Isolation", "Easy", "Why is sandboxed dependency isolation recommended when configuring deployment pipelines for {tech}?")
+        ("Dependency Management & Isolation", "Easy", "Why is sandboxed dependency isolation recommended when configuring deployment pipelines for {tech}?"),
+        ("API Contracts & Versioning", "Medium", "How should backward-compatible interface changes be introduced in production {tech} services?"),
+        ("Observability & Logging", "Easy", "Which structured logging practice makes diagnosing production issues in {tech} fastest and safest?"),
+        ("Caching & Latency", "Hard", "What cache invalidation strategy avoids stale reads while keeping {tech} response latency predictable?"),
+        ("Concurrency & Async Execution", "Hard", "Which concurrency pattern prevents race conditions and deadlocks in multi-worker {tech} workloads?"),
+        ("Schema & Input Validation", "Easy", "Why should strict schema validation be enforced at service boundaries in {tech}?"),
+        ("Configuration & Secrets", "Medium", "What is the safest way to manage environment-specific credentials in {tech} deployments?"),
+        ("Automated Regression Testing", "Medium", "Which testing practice best catches integration regressions before deploying {tech} updates?"),
+        ("Rate Limiting & Backpressure", "Hard", "How does applying backpressure and rate limiting protect downstream {tech} dependencies during traffic spikes?"),
+        ("Code Maintainability", "Easy", "Which refactoring practice keeps {tech} modules readable and straightforward to test?"),
+        ("Fault Tolerance & Retries", "Hard", "When retrying transient failures in {tech}, why is exponential backoff with jitter recommended?"),
+        ("Data Consistency", "Medium", "How do atomic transactions prevent partial state corruption in {tech} workflows?"),
+        ("Deployment & Rollbacks", "Easy", "What deployment check ensures a new {tech} release can be rolled back safely without data loss?"),
+    ]
+    scenario_contexts = [
+        "in a high-throughput production service",
+        "during a live code review",
+        "for a distributed microservice architecture",
+        "under strict latency and reliability SLAs",
+        "when onboarding a multi-team codebase",
     ]
 
-    needed = count - len(results)
-    for i in range(needed):
-        topic_name, diff, q_tmpl = procedural_topics[i % len(procedural_topics)]
+    attempt_idx = 0
+    max_local_attempts = max(count * 4, 60)
+    while len(results) < count and attempt_idx < max_local_attempts:
+        topic_name, diff, q_tmpl = procedural_topics[attempt_idx % len(procedural_topics)]
+        cycle = attempt_idx // len(procedural_topics)
+        attempt_idx += 1
         final_diff = difficulty if difficulty in {"Easy", "Medium", "Hard"} else diff
         target_subtopic = subtopic or f"{technology} {topic_name}"
 
         q_text = q_tmpl.format(tech=technology)
+        if cycle > 0:
+            ctx = scenario_contexts[(cycle - 1) % len(scenario_contexts)]
+            q_text = f"{q_text.rstrip('?')} ({ctx})?"
         if custom_prompt:
-            q_text += f" (Scenario: {custom_prompt[:60]}...)"
+            q_text += f" [Context: {custom_prompt[:50]}]"
 
-        correct_ans = f"Decoupling components through well-defined interfaces and adhering to standard {technology} conventions."
+        q_key = q_text.strip().casefold()
+        if q_key in seen_q:
+            continue
+        seen_q.add(q_key)
+
+        correct_ans = f"Applying modular boundaries, explicit validation, and standard {technology} {topic_name.lower()} practices."
         opt_b = "Bypassing validation layers to maximize raw I/O throughput in high-load clusters."
         opt_c = "Storing mutable state globally across all shared threads without locking."
         opt_d = "Disabling strict type and boundary checking to suppress runtime warnings."
@@ -4600,7 +4734,7 @@ def generate_questions_local(
             "correct_index": c_idx,
             "explanation": f"In {technology}, robust implementations prioritize loose coupling, standardized lifecycle management, and verified boundary validation.",
             "learning_resource_url": "",
-            "active": True
+            "active": True,
         })
 
     return results[:count]
@@ -4611,8 +4745,9 @@ def generate_ai_questions(
     count: int = 5,
     difficulty: str = "Mixed",
     subtopic: str = "",
-    custom_prompt: str = ""
-) -> list[dict[str, Any]]:
+    custom_prompt: str = "",
+    existing_questions: set[str] | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, int]]:
     sys_prompt = (
         "You are an expert technical interviewer and assessment designer. "
         "Generate realistic, challenging multiple-choice technical questions for candidate assessments. "
@@ -4631,52 +4766,103 @@ def generate_ai_questions(
         "    }\n"
         "  ]\n"
         "}\n"
-        "Ensure each question has exactly 4 options with only ONE objectively correct answer."
+        "Ensure each question has exactly 4 distinct non-empty options with only ONE objectively correct answer."
     )
-    user_prompt = f"Generate {count} {difficulty} questions for technology '{technology}'."
-    if subtopic:
-        user_prompt += f" Focus on subtopic: '{subtopic}'."
-    if custom_prompt:
-        user_prompt += f" Specific instructions: '{custom_prompt}'."
 
-    llm_res = call_llm_json(user_prompt, sys_prompt)
-    if llm_res and isinstance(llm_res, dict) and isinstance(llm_res.get("questions"), list):
-        cleaned: list[dict[str, Any]] = []
+    seen_keys: set[str] = set(existing_questions or set())
+    collected: list[dict[str, Any]] = []
+    raw_generated = 0
+    rejected_or_dup = 0
+    retry_count = 0
+    max_retries = 3
+
+    for attempt in range(max_retries):
+        needed = count - len(collected)
+        if needed <= 0:
+            break
+        if attempt > 0:
+            retry_count += 1
+        user_prompt = f"Generate {needed} unique {difficulty} questions for technology '{technology}'."
+        if subtopic:
+            user_prompt += f" Focus on subtopic: '{subtopic}'."
+        if custom_prompt:
+            user_prompt += f" Specific instructions: '{custom_prompt}'."
+        if seen_keys:
+            user_prompt += f" Do not repeat any of the {len(seen_keys)} previously generated questions."
+
+        try:
+            llm_res = call_llm_json(user_prompt, sys_prompt)
+        except Exception as exc:
+            logger.warning("AI question generation attempt %d failed: %s", attempt + 1, exc)
+            llm_res = None
+
+        if not (llm_res and isinstance(llm_res, dict) and isinstance(llm_res.get("questions"), list)):
+            continue
+
         for q in llm_res["questions"]:
+            raw_generated += 1
             if not isinstance(q, dict):
+                rejected_or_dup += 1
                 continue
-            opts = q.get("options")
-            if not isinstance(opts, list) or len(opts) != 4:
+            candidate_item = {
+                "technology": str(q.get("technology") or technology).strip() or technology,
+                "subtopic": str(q.get("subtopic") or subtopic).strip(),
+                "difficulty": str(q.get("difficulty") or "Medium").strip().capitalize(),
+                "question": str(q.get("question") or "").strip(),
+                "options": q.get("options") if isinstance(q.get("options"), list) else [],
+                "correct_index": q.get("correct_index", 0),
+                "explanation": str(q.get("explanation") or "").strip(),
+                "learning_resource_url": str(q.get("learning_resource_url") or "").strip(),
+                "active": True,
+            }
+            validated, _ = validate_question_data(candidate_item)
+            if not validated:
+                rejected_or_dup += 1
                 continue
-            idx = q.get("correct_index", 0)
-            if not isinstance(idx, int) or not (0 <= idx <= 3):
-                idx = 0
-            diff = str(q.get("difficulty", "Medium")).capitalize()
-            if diff not in {"Easy", "Medium", "Hard"}:
-                diff = "Medium"
-            q_text = str(q.get("question", "")).strip()
-            if len(q_text) < 10:
+            q_key = validated["question"].strip().casefold()
+            if q_key in seen_keys:
+                rejected_or_dup += 1
                 continue
-            cleaned.append({
-                "technology": str(q.get("technology", technology)).strip() or technology,
-                "subtopic": str(q.get("subtopic", subtopic)).strip(),
-                "difficulty": diff,
-                "question": q_text,
-                "options": [str(o).strip() for o in opts],
-                "correct_index": idx,
-                "explanation": str(q.get("explanation", "")).strip(),
-                "learning_resource_url": str(q.get("learning_resource_url", "")).strip(),
-                "active": True
-            })
-        if len(cleaned) >= count:
-            return cleaned[:count]
-        if cleaned:
-            # Supplement remaining count
-            needed = count - len(cleaned)
-            fallback = generate_questions_local(technology, needed, difficulty, subtopic, custom_prompt)
-            return (cleaned + fallback)[:count]
+            seen_keys.add(q_key)
+            collected.append(validated)
+            if len(collected) >= count:
+                break
 
-    return generate_questions_local(technology, count, difficulty, subtopic, custom_prompt)
+    if len(collected) < count:
+        needed = count - len(collected)
+        fallback = generate_questions_local(
+            technology,
+            needed,
+            difficulty,
+            subtopic,
+            custom_prompt,
+            exclude_questions=seen_keys,
+        )
+        for item in fallback:
+            validated, _ = validate_question_data(item)
+            if not validated:
+                continue
+            q_key = validated["question"].strip().casefold()
+            if q_key in seen_keys:
+                continue
+            seen_keys.add(q_key)
+            collected.append(validated)
+            raw_generated += 1
+            if len(collected) >= count:
+                break
+
+    stats = {
+        "requested_count": count,
+        "generated_count": raw_generated,
+        "rejected_or_duplicate_count": rejected_or_dup,
+        "retry_count": retry_count,
+        "final_count": len(collected),
+    }
+    logger.info(
+        "AI question generation complete: tech=%s requested=%d generated=%d rejected_or_dup=%d retries=%d final=%d",
+        technology, count, raw_generated, rejected_or_dup, retry_count, len(collected),
+    )
+    return collected[:count], stats
 
 
 def synthesize_candidate_ai_summary(
@@ -5096,17 +5282,25 @@ def ai_generate_questions(
 ) -> dict[str, Any]:
     with connect() as db:
         owned_job(db, job_id, user)
-    questions = generate_ai_questions(
+        existing_rows = db.execute(
+            "SELECT lower(trim(question)) AS q FROM job_questions WHERE job_id = ?",
+            (job_id,),
+        ).fetchall()
+        existing_questions = {r["q"] for r in existing_rows if r["q"]}
+    questions, stats = generate_ai_questions(
         technology=body.technology,
         count=body.count,
         difficulty=body.difficulty,
         subtopic=body.subtopic,
         custom_prompt=body.custom_prompt,
+        existing_questions=existing_questions,
     )
     return {
         "job_id": job_id,
         "technology": body.technology,
+        "requested_count": body.count,
         "count": len(questions),
+        "stats": stats,
         "questions": questions,
     }
 
@@ -5118,6 +5312,7 @@ def batch_create_job_questions(
     user: dict[str, Any] = Depends(require_role("recruiter", "admin")),
 ) -> dict[str, Any]:
     with connect() as db:
+        db.execute("BEGIN IMMEDIATE")
         job = owned_job(db, job_id, user)
         rec_id = job["recruiter_id"] if "recruiter_id" in job.keys() and job["recruiter_id"] else user["id"]
 
@@ -5619,6 +5814,7 @@ def list_applications(user: dict[str, Any] = Depends(current_user)) -> dict[str,
                 j.title, j.company, u.name AS candidate_name, u.email AS candidate_email,
                 x.id AS assessment_id,
                 x.status AS assessment_status, x.technology AS assessment_topic,
+                x.question_topic_weights_json,
                 x.assessment_name, x.assessment_round, x.score_percentage AS assessment_score_percentage,
                 x.result AS assessment_result, x.correct_answer_count AS assessment_correct_count,
                 x.incorrect_answer_count AS assessment_incorrect_count,
@@ -5637,6 +5833,7 @@ def list_applications(user: dict[str, Any] = Depends(current_user)) -> dict[str,
                 j.title, j.company, u.name AS candidate_name, u.email AS candidate_email,
                 x.id AS assessment_id,
                 x.status AS assessment_status, x.technology AS assessment_topic,
+                x.question_topic_weights_json,
                 x.assessment_name, x.assessment_round, x.score_percentage AS assessment_score_percentage,
                 x.result AS assessment_result, x.correct_answer_count AS assessment_correct_count,
                 x.incorrect_answer_count AS assessment_incorrect_count,
@@ -5664,11 +5861,31 @@ def list_applications(user: dict[str, Any] = Depends(current_user)) -> dict[str,
             interviews_by_application = {
                 row["application_id"]: dict(row) for row in interview_rows
             }
+        dist_by_assessment: dict[int, dict[str, int]] = {}
+        if user["role"] in {"recruiter", "admin"}:
+            assessment_ids = [row["assessment_id"] for row in rows if row["assessment_id"]]
+            if assessment_ids:
+                aplaceholders = ",".join("?" for _ in assessment_ids)
+                dist_rows = db.execute(
+                    f"""SELECT aq.assessment_id, t.technology, COUNT(*) AS cnt
+                    FROM assessment_questions aq
+                    JOIN technical_questions t ON t.id = aq.question_id
+                    WHERE aq.assessment_id IN ({aplaceholders})
+                    GROUP BY aq.assessment_id, t.technology""",
+                    assessment_ids,
+                ).fetchall()
+                for dr in dist_rows:
+                    dist_by_assessment.setdefault(dr["assessment_id"], {})[dr["technology"]] = dr["cnt"]
     items = []
     for row in rows:
         item = dict(row)
         item["matched_skills"] = json.loads(item.pop("matched_skills_json") or "[]")
         item["missing_skills"] = json.loads(item.pop("missing_skills_json") or "[]")
+        item.pop("question_topic_weights_json", None)
+        if user["role"] in {"recruiter", "admin"} and item.get("assessment_id") and item.get("assessment_status") not in {None, "Not Sent", "Manual Topic Required"}:
+            item["topic_distribution"] = dist_by_assessment.get(item["assessment_id"], {})
+        else:
+            item["topic_distribution"] = {}
         interview = interviews_by_application.get(item["id"])
         if interview and user["role"] == "candidate" and interview["status"] in {"Cancelled", "Completed"}:
             interview["meeting_url"] = ""
@@ -5985,10 +6202,25 @@ def issue_assessment_link(
     ).fetchall()
     selected = relevant_balanced_question_sample(questions, topic_weights, target_count)
     if len(selected) != target_count:
-        raise HTTPException(
-            status_code=409,
-            detail=f"The selected question topics need at least {target_count} active questions in total.",
-        )
+        # Fallback: check if the combined active pool across all topics for this job meets target_count
+        all_job_questions = db.execute(
+            """SELECT id, technology, question, options_json, correct_index, difficulty,
+            explanation, learning_resource_url, subtopic FROM job_questions
+            WHERE job_id = ? AND active = 1""",
+            (managed["job_id"],),
+        ).fetchall()
+        all_valid = [q for q in all_job_questions if _is_valid_active_question_row(q)]
+        if len(all_valid) >= target_count:
+            all_topics = sorted({q["technology"] for q in all_valid})
+            all_weights = {t: topic_weights.get(t, 1) for t in all_topics}
+            selected = relevant_balanced_question_sample(all_valid, all_weights, target_count)
+            topics = all_topics
+        if len(selected) != target_count:
+            avail_count = len([q for q in questions if _is_valid_active_question_row(q)])
+            raise HTTPException(
+                status_code=409,
+                detail=f"At least {target_count} questions are required across the selected topics. Currently available: {avail_count}. Add {max(0, target_count - avail_count)} more active questions.",
+            )
     token = secrets.token_urlsafe(32)
     token_hash = hashlib.sha256(token.encode()).hexdigest()
     created = datetime.now(timezone.utc)
@@ -6052,9 +6284,19 @@ def issue_assessment_link(
                 question["subtopic"] if "subtopic" in question.keys() else "",
             ),
         )
+    raw_dist: dict[str, int] = {}
+    for q in selected:
+        t_name = q["technology"]
+        raw_dist[t_name] = raw_dist.get(t_name, 0) + 1
+    topic_distribution = {t: raw_dist[t] for t in topics if t in raw_dist}
+    for t, c in raw_dist.items():
+        if t not in topic_distribution:
+            topic_distribution[t] = c
+    combined_tech_label = ", ".join(topic_distribution.keys()) if topic_distribution else managed["technology"]
     db.execute(
         """UPDATE assessments SET token_hash = ?, status = 'Sent', starts_at = NULL,
         expires_at = ?, submitted_at = NULL, score = NULL, total_questions = ?,
+        technology = ?, question_topics_json = ?,
         assessment_name = ?, assessment_round = 'Round 1', pass_percentage = ?,
         score_percentage = NULL, correct_answer_count = NULL, incorrect_answer_count = NULL,
         result = NULL, result_processed_at = NULL, time_taken_seconds = NULL,
@@ -6064,7 +6306,10 @@ def issue_assessment_link(
         proctoring_flagged_at = NULL, detailed_results_visible = ?
         WHERE id = ?""",
         (
-            token_hash, expiry, target_count, ROUND1_ASSESSMENT_NAME, ROUND1_PASS_PERCENTAGE,
+            token_hash, expiry, target_count,
+            combined_tech_label,
+            json.dumps(list(topic_distribution.keys())),
+            ROUND1_ASSESSMENT_NAME, ROUND1_PASS_PERCENTAGE,
             ASSESSMENT_DURATION_MINUTES,
             now() if delivery == "email" else None,
             int(PROCTORING_REQUIRED),
@@ -6077,7 +6322,7 @@ def issue_assessment_link(
         managed["candidate_id"],
         "assessment_sent",
         "Your assessment is ready",
-        f"Your {managed['technology']} assessment for {managed['title']} is available. The secure link was sent to your registered email.",
+        f"Your {combined_tech_label} assessment for {managed['title']} is available. The secure link was sent to your registered email.",
         application_id=managed["application_id"],
         assessment_id=managed["assessment_id"],
         action_url=assessment_url,
@@ -6085,13 +6330,15 @@ def issue_assessment_link(
     )
     add_notification(
         db, managed["owner_id"], "assessment_sent", "Assessment link sent",
-        f"A {managed['technology']} assessment link was sent to {managed['candidate_email']} for {managed['title']}.",
+        f"A {combined_tech_label} assessment link was sent to {managed['candidate_email']} for {managed['title']}.",
         application_id=managed["application_id"], assessment_id=managed["assessment_id"],
         email_delivery_status="Sent" if delivery == "email" else "Development",
     )
     return {
         "status": "Sent",
         "delivery": delivery,
+        "topic_distribution": topic_distribution,
+        "selected_question_ids": [q["id"] for q in selected],
     }
 
 
@@ -6155,39 +6402,36 @@ def send_assessment(
         managed = managed_assessment(db, application_id, user)
         if not managed["assessment_id"]:
             summary = job_question_summary(db, managed["job_id"])
-            if not summary["ready"]:
-                target_q = summary.get("configured_question_count", 20)
+            target_q = summary.get("configured_question_count", 20)
+            total_avail = summary.get("active_count", 0)
+            if not summary["ready"] or total_avail < target_q:
                 raise HTTPException(
                     status_code=409,
-                    detail=(
-                        f"A job-specific question bank needs at least {target_q} active questions. "
-                        f"Add {summary['additional_needed']} more active questions."
-                    ),
+                    detail=f"At least {target_q} questions are required across the selected topics. Currently available: {total_avail}. Add {max(0, target_q - total_avail)} more active questions.",
                 )
-            # Question bank is ready but no assessment record exists yet (e.g., candidate
-            # applied without a parsed resume). Create a minimal assessment record now so
-            # the recruiter's manual send can proceed.
             topics_info = summary.get("topics", [])
-            best_topic = topics_info[0]["technology"] if topics_info else None
-            if not best_topic:
+            selected_topics = [t["technology"] for t in topics_info if t.get("active_count", 0) > 0]
+            if not selected_topics:
                 raise HTTPException(
                     status_code=409,
                     detail="No assessment topic available. Add questions to the question bank first.",
                 )
+            best_topic = ", ".join(selected_topics)
+            equal_weights = {t: 1 for t in selected_topics}
             db.execute(
                 """INSERT INTO assessments
                 (application_id, candidate_id, job_id, technology, status, match_percentage,
                  total_questions, assessment_name, assessment_round, pass_percentage,
                  duration_minutes, question_topics_json, question_topic_weights_json,
                  selection_reasoning, proctoring_required, created_at)
-                VALUES (?, ?, ?, ?, 'Not Sent', ?, 20, ?, 'Round 1', ?, ?, ?, ?, ?, ?, ?)""",
+                VALUES (?, ?, ?, ?, 'Not Sent', ?, ?, ?, 'Round 1', ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     application_id, managed["candidate_id"], managed["job_id"], best_topic,
-                    managed["match_percentage"] or 0,
+                    managed["match_percentage"] or 0, target_q,
                     ROUND1_ASSESSMENT_NAME, ROUND1_PASS_PERCENTAGE,
                     ASSESSMENT_DURATION_MINUTES,
-                    json.dumps([best_topic]), json.dumps({}),
-                    "Manual: recruiter-initiated for candidate without parsed profile",
+                    json.dumps(selected_topics), json.dumps(equal_weights),
+                    "Manual: recruiter-initiated across all active question bank topics",
                     int(PROCTORING_REQUIRED), now(),
                 ),
             )
@@ -6888,28 +7132,35 @@ def select_assessment_topic(
         if managed["assessment_status"] != "Manual Topic Required":
             raise HTTPException(status_code=409, detail="A manual topic can only be set when automatic selection is unavailable")
             # Manual selections must still have a complete, relevant job-specific bank.
+        selected_topics = [t.strip() for t in body.technology.split(",") if t.strip()]
+        if not selected_topics:
+            raise HTTPException(status_code=422, detail="Select at least one valid topic")
+        job_row = db.execute("SELECT assessment_question_count FROM jobs WHERE id = ?", (managed["job_id"],)).fetchone()
+        target_q = (job_row["assessment_question_count"] if job_row and job_row["assessment_question_count"] else 20)
+        placeholders = ",".join("?" for _ in selected_topics)
         bank_count = db.execute(
-            """SELECT COUNT(*) FROM job_questions
-            WHERE job_id = ? AND lower(technology) = lower(?) AND active = 1""",
-            (managed["job_id"], body.technology),
+            f"""SELECT COUNT(*) FROM job_questions
+            WHERE job_id = ? AND lower(technology) IN ({placeholders}) AND active = 1""",
+            (managed["job_id"], *(t.casefold() for t in selected_topics)),
         ).fetchone()[0]
-        if bank_count < 20:
+        if bank_count < target_q:
             raise HTTPException(
                 status_code=409,
-                detail=f"Add {20 - bank_count} more active {body.technology} questions before selecting this topic",
+                detail=f"At least {target_q} questions are required across the selected topics. Currently available: {bank_count}.",
             )
+        combined_label = ", ".join(selected_topics)
         db.execute(
             """UPDATE assessments SET technology = ?, status = 'Not Sent',
             question_topics_json = ?, question_topic_weights_json = ?, selection_reasoning = ?
             WHERE id = ?""",
             (
-                body.technology, json.dumps([body.technology]),
-                json.dumps({body.technology: 1}),
-                "The recruiter selected this topic because no relevant topic could be inferred automatically.",
+                combined_label, json.dumps(selected_topics),
+                json.dumps({t: 1 for t in selected_topics}),
+                "The recruiter selected these topics from the job question bank.",
                 managed["assessment_id"],
             ),
         )
-    return {"technology": body.technology, "status": "Not Sent"}
+    return {"technology": combined_label, "status": "Not Sent"}
 
 
 def public_assessment_for_token(
@@ -8338,6 +8589,41 @@ def notify_interview_candidate(
     )
 
 
+def interview_ice_servers() -> list[dict[str, Any]]:
+    servers: list[dict[str, Any]] = [
+        {"urls": ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"]}
+    ]
+    turn_url = os.environ.get("SKILLSPHERE_TURN_URL", "").strip()
+    if turn_url:
+        turn_entry: dict[str, Any] = {"urls": [turn_url]}
+        turn_user = os.environ.get("SKILLSPHERE_TURN_USERNAME", "").strip()
+        turn_cred = os.environ.get("SKILLSPHERE_TURN_CREDENTIAL", "").strip()
+        if turn_user:
+            turn_entry["username"] = turn_user
+        if turn_cred:
+            turn_entry["credential"] = turn_cred
+        servers.append(turn_entry)
+    return servers
+
+
+def compute_waiting_room_state(interview: Mapping[str, Any], user_role: str) -> tuple[bool, int]:
+    if user_role in {"recruiter", "admin"}:
+        return True, 0
+    early_mins = int(interview.get("early_entry_minutes") if interview.get("early_entry_minutes") is not None else 15)
+    try:
+        sched_dt = datetime.fromisoformat(str(interview["scheduled_at"]))
+        if sched_dt.tzinfo is None:
+            sched_dt = sched_dt.replace(tzinfo=timezone.utc)
+        open_dt = sched_dt - timedelta(minutes=early_mins)
+        now_dt = datetime.now(timezone.utc)
+        if now_dt >= open_dt:
+            return True, 0
+        mins_left = max(1, int((open_dt - now_dt).total_seconds() // 60) + 1)
+        return False, mins_left
+    except Exception:
+        return True, 0
+
+
 def public_interview(
     interview: sqlite3.Row | dict[str, Any],
     user: dict[str, Any],
@@ -8346,6 +8632,14 @@ def public_interview(
     if user["role"] == "candidate" and result["status"] in {"Cancelled", "Completed"}:
         result["meeting_url"] = ""
         result["teams_url"] = ""
+    try:
+        result["last_execution"] = json.loads(result.pop("last_execution_json", "{}") or "{}")
+    except Exception:
+        result["last_execution"] = {}
+    can_enter, mins_until = compute_waiting_room_state(result, user["role"])
+    result["can_enter_room"] = can_enter
+    result["minutes_until_open"] = mins_until
+    result["ice_servers"] = interview_ice_servers()
     return result
 
 
@@ -8354,9 +8648,12 @@ def interview_details(db: sqlite3.Connection, interview_id: int, user: dict[str,
     row = db.execute(
         f"""SELECT i.id, i.application_id, i.recruiter_id, i.scheduled_at, i.teams_url,
             COALESCE(NULLIF(i.meeting_url, ''), i.teams_url) AS meeting_url,
-            i.meeting_platform, i.duration_minutes, i.timezone, i.recruiter_message,
+            i.room_token, i.meeting_platform, i.duration_minutes, i.timezone, i.recruiter_message,
+            i.problem_title, i.problem_prompt, i.problem_starter_code, i.early_entry_minutes,
             i.status, i.invitation_sent_at, i.candidate_viewed_at,
-            i.code, i.language, i.created_at, i.updated_at, a.candidate_id, a.job_id,
+            i.code, i.language, i.code_submitted, i.submitted_code, i.submitted_language,
+            i.code_submitted_at, i.last_execution_json,
+            i.created_at, i.updated_at, a.candidate_id, a.job_id,
             candidate.name AS candidate_name, j.title, j.company,
             recruiter.name AS recruiter_name
             FROM interviews i
@@ -8379,9 +8676,11 @@ def list_interviews(user: dict[str, Any] = Depends(current_user)) -> dict[str, A
         rows = db.execute(
             f"""SELECT i.id, i.application_id, i.recruiter_id, i.scheduled_at, i.teams_url,
                 COALESCE(NULLIF(i.meeting_url, ''), i.teams_url) AS meeting_url,
-                i.meeting_platform, i.duration_minutes, i.timezone, i.recruiter_message,
+                i.room_token, i.meeting_platform, i.duration_minutes, i.timezone, i.recruiter_message,
+                i.problem_title, i.problem_prompt, i.early_entry_minutes,
                 i.status, i.invitation_sent_at, i.candidate_viewed_at,
-                i.language, i.created_at, i.updated_at, a.candidate_id, a.job_id,
+                i.language, i.code_submitted, i.code_submitted_at,
+                i.created_at, i.updated_at, a.candidate_id, a.job_id,
                 candidate.name AS candidate_name, j.title, j.company,
                 recruiter.name AS recruiter_name
                 FROM interviews i
@@ -8403,7 +8702,13 @@ def create_interview_invitation(
     user: dict[str, Any],
 ) -> dict[str, Any]:
     scheduled_at = parse_interview_schedule(body.scheduled_at, body.timezone)
-    meeting_url = validate_meeting_url(body.meeting_url)
+    room_token = secrets.token_urlsafe(24)
+    if body.meeting_platform == "SkillSphere Live":
+        meeting_url = f"{PUBLIC_BASE_URL}/?interview_room={room_token}"
+    else:
+        if not body.meeting_url.strip():
+            raise HTTPException(status_code=422, detail="Enter a secure HTTPS meeting link")
+        meeting_url = validate_meeting_url(body.meeting_url)
     application = db.execute(
         """SELECT a.id, a.status, a.candidate_id, j.id AS job_id, j.title, j.company,
         j.recruiter_id FROM applications a JOIN jobs j ON j.id = a.job_id
@@ -8415,25 +8720,31 @@ def create_interview_invitation(
     if application["status"] in {"Rejected", "Withdrawn", "Accepted", "Selected"}:
         raise HTTPException(status_code=409, detail="This application cannot be scheduled for an interview")
     timestamp = now()
+    starter_code = body.problem_starter_code or ""
     cursor = db.execute(
         """INSERT INTO interviews
         (application_id, recruiter_id, scheduled_at, teams_url, meeting_platform, meeting_url,
-         duration_minutes, timezone, recruiter_message, status, invitation_sent_at, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'Scheduled', ?, ?, ?)""",
+         room_token, duration_minutes, timezone, recruiter_message,
+         problem_title, problem_prompt, problem_starter_code, early_entry_minutes, code,
+         status, invitation_sent_at, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Scheduled', ?, ?, ?)""",
         (
-        application["id"], application["recruiter_id"], scheduled_at,
-        meeting_url if body.meeting_platform == "Microsoft Teams" else "",
-        body.meeting_platform, meeting_url, body.duration_minutes, body.timezone,
-        body.recruiter_message, timestamp, timestamp, timestamp,
+            application["id"], application["recruiter_id"], scheduled_at,
+            meeting_url if body.meeting_platform == "Microsoft Teams" else "",
+            body.meeting_platform, meeting_url, room_token, body.duration_minutes, body.timezone,
+            body.recruiter_message, body.problem_title, body.problem_prompt, starter_code,
+            body.early_entry_minutes, starter_code, timestamp, timestamp, timestamp,
         ),
     )
+    interview_id = cursor.lastrowid
     if application["status"] != "Interview":
         db.execute("UPDATE applications SET status = 'Interview' WHERE id = ?", (application["id"],))
     record_application_status(
         db, application["id"], "Interview", user,
         f"Interview scheduled for {scheduled_at}.",
     )
-    interview = dict(interview_details(db, cursor.lastrowid, user))
+    log_audit(db, user["id"], user["role"], "INTERVIEW_CREATED", "interview", interview_id)
+    interview = dict(interview_details(db, interview_id, user))
     notify_interview_candidate(
         db, interview, "interview_scheduled", "Interview scheduled", "scheduled"
     )
@@ -8461,8 +8772,12 @@ def update_application_interview(
     updates = body.model_dump(exclude_none=True)
     if not updates:
         raise HTTPException(status_code=422, detail="Provide at least one interview detail to update")
-    if "meeting_url" in updates:
+    if updates.get("meeting_platform") == "SkillSphere Live":
+        updates.pop("meeting_url", None)
+    elif "meeting_url" in updates and updates["meeting_url"]:
         updates["meeting_url"] = validate_meeting_url(updates["meeting_url"])
+    elif "meeting_url" in updates and not updates["meeting_url"]:
+        updates.pop("meeting_url")
     try:
         with connect() as db:
             interview_row = interview_details(db, interview_id, user)
@@ -8675,18 +8990,31 @@ def get_interview(
 class InterviewConnectionManager:
     def __init__(self) -> None:
         self.active_rooms: dict[int, set[WebSocket]] = {}
+        self.room_users: dict[int, dict[WebSocket, dict[str, Any]]] = {}
 
-    async def connect(self, interview_id: int, websocket: WebSocket) -> None:
+    async def connect(self, interview_id: int, websocket: WebSocket, user: dict[str, Any]) -> None:
         await websocket.accept()
-        if interview_id not in self.active_rooms:
-            self.active_rooms[interview_id] = set()
-        self.active_rooms[interview_id].add(websocket)
+        self.active_rooms.setdefault(interview_id, set()).add(websocket)
+        self.room_users.setdefault(interview_id, {})[websocket] = {
+            "user_id": user["id"],
+            "name": user["name"],
+            "role": user["role"],
+        }
 
-    def disconnect(self, interview_id: int, websocket: WebSocket) -> None:
+    def disconnect(self, interview_id: int, websocket: WebSocket) -> dict[str, Any] | None:
         if interview_id in self.active_rooms:
             self.active_rooms[interview_id].discard(websocket)
             if not self.active_rooms[interview_id]:
                 del self.active_rooms[interview_id]
+        user_info = None
+        if interview_id in self.room_users:
+            user_info = self.room_users[interview_id].pop(websocket, None)
+            if not self.room_users[interview_id]:
+                del self.room_users[interview_id]
+        return user_info
+
+    def participants(self, interview_id: int) -> list[dict[str, Any]]:
+        return list(self.room_users.get(interview_id, {}).values())
 
     async def broadcast(self, interview_id: int, message: dict[str, Any], sender: WebSocket | None = None) -> None:
         for connection in list(self.active_rooms.get(interview_id, set())):
@@ -8700,14 +9028,162 @@ class InterviewConnectionManager:
 interview_manager = InterviewConnectionManager()
 
 
+def execute_interview_code(language: str, code: str) -> dict[str, Any]:
+    import shutil
+    import subprocess
+    import sys
+    import tempfile
+    import time
+
+    start_ts = time.monotonic()
+    max_output = 16_384
+    timeout_sec = 5
+
+    if language == "sql":
+        try:
+            conn = sqlite3.connect(":memory:")
+            conn.set_authorizer(
+                lambda action, *args: sqlite3.SQLITE_DENY
+                if action in {sqlite3.SQLITE_ATTACH, sqlite3.SQLITE_DETACH}
+                else sqlite3.SQLITE_OK
+            )
+            conn.executescript(
+                """
+                CREATE TABLE employees (id INTEGER PRIMARY KEY, name TEXT, department TEXT, salary INTEGER);
+                INSERT INTO employees VALUES
+                    (1, 'Alice', 'Engineering', 125000),
+                    (2, 'Bob', 'Engineering', 115000),
+                    (3, 'Carol', 'Product', 105000),
+                    (4, 'Dave', 'Sales', 95000);
+                """
+            )
+            cur = conn.cursor()
+            statements = [s.strip() for s in code.split(";") if s.strip()]
+            out_lines: list[str] = []
+            for stmt in statements:
+                cur.execute(stmt)
+                if cur.description:
+                    cols = [d[0] for d in cur.description]
+                    out_lines.append(" | ".join(cols))
+                    out_lines.append("-" * len(out_lines[-1]))
+                    for r in cur.fetchmany(100):
+                        out_lines.append(" | ".join(str(v) for v in r))
+                else:
+                    out_lines.append(f"OK ({cur.rowcount} row(s) affected)")
+            conn.close()
+            duration_ms = int((time.monotonic() - start_ts) * 1000)
+            return {
+                "stdout": "\n".join(out_lines)[:max_output] or "Query executed successfully (0 rows).",
+                "stderr": "",
+                "exit_code": 0,
+                "timed_out": False,
+                "duration_ms": duration_ms,
+            }
+        except Exception as exc:
+            return {
+                "stdout": "",
+                "stderr": str(exc)[:max_output],
+                "exit_code": 1,
+                "timed_out": False,
+                "duration_ms": int((time.monotonic() - start_ts) * 1000),
+            }
+
+    with tempfile.TemporaryDirectory(prefix="skillsphere_exec_") as tmpdir:
+        safe_env = {"PATH": os.environ.get("PATH", ""), "HOME": tmpdir, "TMP": tmpdir, "TEMP": tmpdir}
+        cmd: list[str] = []
+        if language == "python":
+            prelude = (
+                "import builtins\n"
+                "_blocked = {'socket', 'urllib', 'http', 'ftplib', 'smtplib', 'subprocess', 'shutil', 'ctypes'}\n"
+                "_orig_import = builtins.__import__\n"
+                "def _safe_import(name, *args, **kwargs):\n"
+                "    if name.split('.')[0] in _blocked:\n"
+                "        raise ImportError(f'Module {name} is disabled in sandbox')\n"
+                "    return _orig_import(name, *args, **kwargs)\n"
+                "builtins.__import__ = _safe_import\n"
+            )
+            script_path = Path(tmpdir) / "solution.py"
+            script_path.write_text(prelude + "\n" + code, encoding="utf-8")
+            cmd = [sys.executable, "-I", str(script_path)]
+        elif language in {"javascript", "typescript"}:
+            node_bin = shutil.which("node")
+            if not node_bin:
+                return {"stdout": "", "stderr": "Node.js runtime is not installed on this server.", "exit_code": 127, "timed_out": False, "duration_ms": 0}
+            script_path = Path(tmpdir) / "solution.js"
+            script_path.write_text(code, encoding="utf-8")
+            cmd = [node_bin, str(script_path)]
+        elif language == "java":
+            javac_bin = shutil.which("javac")
+            java_bin = shutil.which("java")
+            if not javac_bin or not java_bin:
+                return {"stdout": "", "stderr": "Java runtime (javac/java) is not installed on this server.", "exit_code": 127, "timed_out": False, "duration_ms": 0}
+            src_path = Path(tmpdir) / "Main.java"
+            src_path.write_text(code, encoding="utf-8")
+            try:
+                comp = subprocess.run([javac_bin, str(src_path)], cwd=tmpdir, env=safe_env, capture_output=True, text=True, timeout=timeout_sec)
+            except subprocess.TimeoutExpired:
+                return {"stdout": "", "stderr": "Compilation timed out after 5s.", "exit_code": 124, "timed_out": True, "duration_ms": 5000}
+            if comp.returncode != 0:
+                return {"stdout": comp.stdout[:max_output], "stderr": comp.stderr[:max_output], "exit_code": comp.returncode, "timed_out": False, "duration_ms": int((time.monotonic() - start_ts) * 1000)}
+            cmd = [java_bin, "-Xmx128m", "-cp", tmpdir, "Main"]
+        elif language == "cpp":
+            gpp_bin = shutil.which("g++")
+            if not gpp_bin:
+                return {"stdout": "", "stderr": "C++ compiler (g++) is not installed on this server.", "exit_code": 127, "timed_out": False, "duration_ms": 0}
+            src_path = Path(tmpdir) / "solution.cpp"
+            bin_path = Path(tmpdir) / ("solution.exe" if os.name == "nt" else "solution")
+            src_path.write_text(code, encoding="utf-8")
+            try:
+                comp = subprocess.run([gpp_bin, "-std=c++17", str(src_path), "-o", str(bin_path)], cwd=tmpdir, env=safe_env, capture_output=True, text=True, timeout=timeout_sec)
+            except subprocess.TimeoutExpired:
+                return {"stdout": "", "stderr": "Compilation timed out after 5s.", "exit_code": 124, "timed_out": True, "duration_ms": 5000}
+            if comp.returncode != 0:
+                return {"stdout": comp.stdout[:max_output], "stderr": comp.stderr[:max_output], "exit_code": comp.returncode, "timed_out": False, "duration_ms": int((time.monotonic() - start_ts) * 1000)}
+            cmd = [str(bin_path)]
+
+        try:
+            proc = subprocess.run(cmd, cwd=tmpdir, env=safe_env, capture_output=True, text=True, timeout=timeout_sec)
+            return {
+                "stdout": proc.stdout[:max_output],
+                "stderr": proc.stderr[:max_output],
+                "exit_code": proc.returncode,
+                "timed_out": False,
+                "duration_ms": int((time.monotonic() - start_ts) * 1000),
+            }
+        except subprocess.TimeoutExpired as exc:
+            return {
+                "stdout": (exc.stdout or "")[:max_output] if isinstance(exc.stdout, str) else "",
+                "stderr": f"Execution timed out after {timeout_sec}s limit.",
+                "exit_code": 124,
+                "timed_out": True,
+                "duration_ms": int((time.monotonic() - start_ts) * 1000),
+            }
+
+
+@app.get("/api/interviews/room/{room_token}")
+def get_interview_by_room_token(
+    room_token: str,
+    user: dict[str, Any] = Depends(current_user),
+) -> dict[str, Any]:
+    with connect() as db:
+        row = db.execute("SELECT id FROM interviews WHERE room_token = ?", (room_token.strip(),)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Interview room not found")
+        interview = interview_details(db, row["id"], user)
+        log_audit(db, user["id"], user["role"], "INTERVIEW_ROOM_ACCESSED", "interview", row["id"])
+    data = public_interview(interview, user)
+    data["active_participants"] = interview_manager.participants(row["id"])
+    return data
+
+
 @app.put("/api/interviews/{interview_id}/workspace")
 async def update_interview_workspace(
     interview_id: int,
     body: InterviewWorkspaceBody,
     user: dict[str, Any] = Depends(current_user),
 ) -> dict[str, Any]:
-    if user["role"] not in {"candidate", "recruiter"}:
-        raise HTTPException(status_code=403, detail="This action is not available for your account")
+    if user["role"] != "candidate":
+        raise HTTPException(status_code=403, detail="Only the candidate can edit code in the interview workspace")
     with connect() as db:
         interview_details(db, interview_id, user)
         updated_at = now()
@@ -8716,12 +9192,89 @@ async def update_interview_workspace(
             (body.code, body.language, updated_at, interview_id),
         )
         interview = interview_details(db, interview_id, user)
-    # Broadcast to active WebSockets in this room
     await interview_manager.broadcast(
         interview_id,
         {"type": "code_change", "code": body.code, "language": body.language, "sender": user["name"]},
     )
-    return dict(interview)
+    return public_interview(interview, user)
+
+
+@app.post("/api/interviews/{interview_id}/code/run")
+async def run_interview_code(
+    interview_id: int,
+    body: InterviewCodeRunBody,
+    user: dict[str, Any] = Depends(current_user),
+) -> dict[str, Any]:
+    if user["role"] != "candidate":
+        raise HTTPException(status_code=403, detail="Only the candidate can run code in the interview room")
+    with connect() as db:
+        interview_details(db, interview_id, user)
+        result = execute_interview_code(body.language, body.code)
+        ts = now()
+        db.execute(
+            """INSERT INTO interview_code_runs
+            (interview_id, user_id, language, code, stdout, stderr, exit_code, timed_out, is_submission, duration_ms, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)""",
+            (
+                interview_id, user["id"], body.language, body.code,
+                result["stdout"], result["stderr"], result["exit_code"],
+                int(result["timed_out"]), result["duration_ms"], ts,
+            ),
+        )
+        db.execute(
+            "UPDATE interviews SET code = ?, language = ?, last_execution_json = ?, updated_at = ? WHERE id = ?",
+            (body.code, body.language, json.dumps(result), ts, interview_id),
+        )
+        log_audit(db, user["id"], user["role"], "INTERVIEW_CODE_RUN", "interview", interview_id)
+    await interview_manager.broadcast(
+        interview_id,
+        {"type": "code_execution", "execution": result, "language": body.language, "sender": user["name"]},
+    )
+    return result
+
+
+@app.post("/api/interviews/{interview_id}/code/submit")
+async def submit_interview_code(
+    interview_id: int,
+    body: InterviewCodeRunBody,
+    user: dict[str, Any] = Depends(current_user),
+) -> dict[str, Any]:
+    if user["role"] != "candidate":
+        raise HTTPException(status_code=403, detail="Only the candidate can submit code in the interview room")
+    with connect() as db:
+        interview_details(db, interview_id, user)
+        result = execute_interview_code(body.language, body.code)
+        ts = now()
+        db.execute(
+            """INSERT INTO interview_code_runs
+            (interview_id, user_id, language, code, stdout, stderr, exit_code, timed_out, is_submission, duration_ms, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)""",
+            (
+                interview_id, user["id"], body.language, body.code,
+                result["stdout"], result["stderr"], result["exit_code"],
+                int(result["timed_out"]), result["duration_ms"], ts,
+            ),
+        )
+        db.execute(
+            """UPDATE interviews
+            SET code = ?, language = ?, code_submitted = 1, submitted_code = ?,
+                submitted_language = ?, code_submitted_at = ?, last_execution_json = ?, updated_at = ?
+            WHERE id = ?""",
+            (body.code, body.language, body.code, body.language, ts, json.dumps(result), ts, interview_id),
+        )
+        log_audit(db, user["id"], user["role"], "INTERVIEW_CODE_SUBMITTED", "interview", interview_id)
+    await interview_manager.broadcast(
+        interview_id,
+        {
+            "type": "code_submitted",
+            "code": body.code,
+            "language": body.language,
+            "execution": result,
+            "submitted_at": ts,
+            "sender": user["name"],
+        },
+    )
+    return {"ok": True, "submitted_at": ts, "execution": result}
 
 
 @app.websocket("/ws/interviews/{interview_id}")
@@ -8733,28 +9286,57 @@ async def interview_websocket(websocket: WebSocket, interview_id: int, token: st
         payload = decode_token(token)
         with connect() as db:
             row = db.execute("SELECT * FROM users WHERE id = ?", (payload.get("sub"),)).fetchone()
-            if not row or not row["active"]:
+            if not row or not row["active"] or ("email_verified" in row.keys() and not row["email_verified"]):
                 await websocket.close(code=1008)
                 return
             user = public_user(row)
             interview = interview_details(db, interview_id, user)
+            can_enter, _ = compute_waiting_room_state(dict(interview), user["role"])
+            if not can_enter and not interview_manager.participants(interview_id):
+                await websocket.close(code=1008)
+                return
+            ts = now()
+            db.execute(
+                "INSERT INTO interview_participants (interview_id, user_id, role, joined_at, status) VALUES (?, ?, ?, ?, 'Joined')",
+                (interview_id, user["id"], user["role"], ts),
+            )
+            log_audit(db, user["id"], user["role"], "INTERVIEW_JOINED", "interview", interview_id)
     except Exception:
         await websocket.close(code=1008)
         return
 
-    await interview_manager.connect(interview_id, websocket)
+    await interview_manager.connect(interview_id, websocket, user)
     try:
+        try:
+            last_exec = json.loads(interview["last_execution_json"] or "{}")
+        except Exception:
+            last_exec = {}
         await websocket.send_json({
             "type": "sync",
             "code": interview["code"] or "",
             "language": interview["language"] or "python",
+            "code_submitted": bool(interview["code_submitted"]) if "code_submitted" in interview.keys() else False,
+            "last_execution": last_exec,
+            "participants": interview_manager.participants(interview_id),
         })
+        await interview_manager.broadcast(
+            interview_id,
+            {
+                "type": "participant_joined",
+                "user": {"user_id": user["id"], "name": user["name"], "role": user["role"]},
+                "participants": interview_manager.participants(interview_id),
+            },
+            sender=websocket,
+        )
         while True:
             data = await websocket.receive_json()
-            if data.get("type") == "code_change":
+            msg_type = data.get("type")
+            if msg_type == "code_change":
+                if user["role"] != "candidate":
+                    continue
                 new_code = str(data.get("code", ""))[:50_000]
                 new_lang = str(data.get("language", "python"))
-                if new_lang not in {"python", "javascript", "typescript", "java", "cpp"}:
+                if new_lang not in {"python", "javascript", "typescript", "java", "cpp", "sql"}:
                     new_lang = "python"
                 with connect() as db:
                     db.execute(
@@ -8766,8 +9348,33 @@ async def interview_websocket(websocket: WebSocket, interview_id: int, token: st
                     {"type": "code_change", "code": new_code, "language": new_lang, "sender": user["name"]},
                     sender=websocket,
                 )
+            elif msg_type in {"typing", "media_state", "webrtc_offer", "webrtc_answer", "webrtc_ice"}:
+                relay = dict(data)
+                relay["sender_id"] = user["id"]
+                relay["sender_name"] = user["name"]
+                relay["sender_role"] = user["role"]
+                await interview_manager.broadcast(interview_id, relay, sender=websocket)
     except (WebSocketDisconnect, Exception):
-        interview_manager.disconnect(interview_id, websocket)
+        left_user = interview_manager.disconnect(interview_id, websocket)
+        if left_user:
+            try:
+                with connect() as db:
+                    db.execute(
+                        """UPDATE interview_participants SET left_at = ?, status = 'Left'
+                        WHERE id = (SELECT MAX(id) FROM interview_participants WHERE interview_id = ? AND user_id = ? AND left_at IS NULL)""",
+                        (now(), interview_id, left_user["user_id"]),
+                    )
+                    log_audit(db, left_user["user_id"], left_user["role"], "INTERVIEW_LEFT", "interview", interview_id)
+            except Exception:
+                pass
+            await interview_manager.broadcast(
+                interview_id,
+                {
+                    "type": "participant_left",
+                    "user": left_user,
+                    "participants": interview_manager.participants(interview_id),
+                },
+            )
 
 
 @app.patch("/api/applications/{application_id}/withdraw")
@@ -10016,7 +10623,7 @@ def resend_verification(
         "email": row["email"],
         "message": "Verification link and code sent to your email.",
     }
-    if os.environ.get("SKILLSPHERE_ENABLE_DEMO", "true").lower() not in {"false", "0", "no"}:
+    if not IS_PRODUCTION and not (os.environ.get("RESEND_API_KEY", "").strip() or os.environ.get("SENDGRID_API_KEY", "").strip() or os.environ.get("SKILLSPHERE_SMTP_HOST", "").strip()):
         resp["dev_token"] = raw_token
         resp["dev_otp"] = otp
     return resp
@@ -10049,7 +10656,7 @@ def change_verification_email(request: Request, body: ChangeVerificationEmailBod
         "email": new_email,
         "message": f"Email updated to {new_email}. A new verification link and code have been sent.",
     }
-    if os.environ.get("SKILLSPHERE_ENABLE_DEMO", "true").lower() not in {"false", "0", "no"}:
+    if not IS_PRODUCTION and not (os.environ.get("RESEND_API_KEY", "").strip() or os.environ.get("SENDGRID_API_KEY", "").strip() or os.environ.get("SKILLSPHERE_SMTP_HOST", "").strip()):
         resp["dev_token"] = raw_token
         resp["dev_otp"] = otp
     return resp

@@ -72,6 +72,18 @@ class SkillSphereApiTests(unittest.TestCase):
                 ],
             )
 
+    def register_and_login(self, name: str, email: str, password: str, role: str = "candidate") -> dict[str, str]:
+        reg = self.client.post(
+            "/api/auth/register",
+            json={"name": name, "email": email, "password": password, "role": role},
+        )
+        self.assertEqual(reg.status_code, 201, reg.text)
+        token = reg.json().get("dev_token")
+        self.assertTrue(token, reg.text)
+        verify = self.client.post("/api/auth/verify-email", json={"token": token})
+        self.assertEqual(verify.status_code, 200, verify.text)
+        return self.login(email, password)
+
     def create_pdf_upload(self):
         writer = PdfWriter()
         writer.add_blank_page(width=612, height=792)
@@ -256,12 +268,7 @@ class SkillSphereApiTests(unittest.TestCase):
 
     def test_recruiter_cannot_update_an_application_for_another_team(self):
         candidate = self.login()
-        second_recruiter = self.client.post(
-            "/api/auth/register",
-            json={"name": "Other Recruiter", "email": "other@company.com", "password": "LongEnough9!", "role": "recruiter"},
-        )
-        self.assertEqual(second_recruiter.status_code, 201)
-        other_headers = {"Authorization": f"Bearer {second_recruiter.json()['access_token']}"}
+        other_headers = self.register_and_login("Other Recruiter", "other@company.com", "LongEnough9!", "recruiter")
         posted_job = self.client.post(
             "/api/jobs",
             headers=other_headers,
@@ -596,11 +603,7 @@ class SkillSphereApiTests(unittest.TestCase):
         shared = self.client.get(f"/api/interviews/{interview['id']}", headers=recruiter)
         self.assertEqual(shared.json()["code"], "print('hello')")
 
-        outsider_registration = self.client.post(
-            "/api/auth/register",
-            json={"name": "Other Candidate", "email": "other-candidate@example.com", "password": "LongEnough9!", "role": "candidate"},
-        )
-        outsider = {"Authorization": f"Bearer {outsider_registration.json()['access_token']}"}
+        outsider = self.register_and_login("Other Candidate", "other-candidate@example.com", "LongEnough9!", "candidate")
         self.assertEqual(self.client.get(f"/api/interviews/{interview['id']}", headers=outsider).status_code, 404)
         self.assertEqual(
             self.client.post(
@@ -679,16 +682,7 @@ class SkillSphereApiTests(unittest.TestCase):
             headers=recruiter,
             json=self.interview_payload(),
         ).json()
-        registered = self.client.post(
-            "/api/auth/register",
-            json={
-                "name": "Other Recruiter",
-                "email": "other-recruiter@example.com",
-                "password": "LongEnough9!",
-                "role": "recruiter",
-            },
-        )
-        other_recruiter = {"Authorization": f"Bearer {registered.json()['access_token']}"}
+        other_recruiter = self.register_and_login("Other Recruiter", "other-recruiter@example.com", "LongEnough9!", "recruiter")
         path = f"/api/applications/{application['id']}/interviews"
         self.assertEqual(
             self.client.post(path, headers=other_recruiter, json=self.interview_payload()).status_code,
@@ -718,16 +712,7 @@ class SkillSphereApiTests(unittest.TestCase):
         owner_interview = next(item["interview"] for item in owner_applications if item["id"] == application["id"])
         self.assertEqual(owner_interview["meeting_url"], payload["meeting_url"])
 
-        outsider_registration = self.client.post(
-            "/api/auth/register",
-            json={
-                "name": "Other Candidate",
-                "email": "other-candidate@example.com",
-                "password": "LongEnough9!",
-                "role": "candidate",
-            },
-        )
-        outsider = {"Authorization": f"Bearer {outsider_registration.json()['access_token']}"}
+        outsider = self.register_and_login("Other Candidate", "other-candidate@example.com", "LongEnough9!", "candidate")
         self.assertEqual(self.client.get("/api/applications", headers=outsider).json()["items"], [])
         self.assertEqual(
             self.client.get(f"/api/interviews/{interview['id']}", headers=outsider).status_code,
@@ -960,11 +945,7 @@ class SkillSphereApiTests(unittest.TestCase):
         self.assertFalse(self.client.get(
             f"/api/jobs/{job['id']}/question-bank-summary", headers=recruiter
         ).json()["ready"])
-        other = self.client.post(
-            "/api/auth/register",
-            json={"name": "Other Recruiter", "email": "other-bank@example.com", "password": "LongEnough9!", "role": "recruiter"},
-        ).json()
-        other_headers = {"Authorization": f"Bearer {other['access_token']}"}
+        other_headers = self.register_and_login("Other Recruiter", "other-bank@example.com", "LongEnough9!", "recruiter")
         self.assertEqual(
             self.client.get(f"/api/jobs/{job['id']}/questions", headers=other_headers).status_code,
             404,
@@ -1098,11 +1079,7 @@ C. A module
 D. A loop
 Answer: A
 """
-        other = self.client.post(
-            "/api/auth/register",
-            json={"name": "Other Recruiter", "email": "other-import@example.com", "password": "LongEnough9!", "role": "recruiter"},
-        ).json()
-        other_headers = {"Authorization": f"Bearer {other['access_token']}"}
+        other_headers = self.register_and_login("Other Recruiter", "other-import@example.com", "LongEnough9!", "recruiter")
         with patch.object(main, "extract_question_bank_pdf_text", side_effect=AssertionError("Must authorize before parsing")):
             denied = self.client.post(
                 f"/api/jobs/{job['id']}/question-bank/imports",
@@ -1394,11 +1371,7 @@ Answer: A
         self.assertEqual(len(review.json()["events"]), 7)
 
         admin = self.login("admin@skillsphere.dev")
-        other_recruiter = self.client.post(
-            "/api/auth/register",
-            json={"name": "Second Recruiter", "email": "second-recruiter@example.com", "password": "LongEnough9!", "role": "recruiter"},
-        ).json()
-        other_headers = {"Authorization": f"Bearer {other_recruiter['access_token']}"}
+        other_headers = self.register_and_login("Second Recruiter", "second-recruiter@example.com", "LongEnough9!", "recruiter")
         self.assertEqual(self.client.get(
             f"/api/assessment-reviews/{assessment_id}/proctoring", headers=other_headers
         ).status_code, 404)
@@ -1576,11 +1549,7 @@ Answer: A
         self.assertEqual(candidate_review.status_code, 403)
 
         # Unauthorized recruiter cannot view review (404)
-        other_user = self.client.post(
-            "/api/auth/register",
-            json={"name": "Second Recruiter", "email": "second-recruiter@example.com", "password": "LongEnough9!", "role": "recruiter"},
-        ).json()
-        other_recruiter = {"Authorization": f"Bearer {other_user['access_token']}"}
+        other_recruiter = self.register_and_login("Second Recruiter", "second-recruiter@example.com", "LongEnough9!", "recruiter")
         self.assertEqual(
             self.client.get(f"/api/assessment-reviews/{assessment_id}", headers=other_recruiter).status_code,
             404,
@@ -1789,12 +1758,7 @@ Answer: A
 
     def test_recruiter_cannot_manage_another_recruiters_assessment(self):
         _, _, application = self.apply_with_match(["Python"], ["Python"])
-        other_registration = self.client.post(
-            "/api/auth/register",
-            json={"name": "Other Recruiter", "email": "other-recruiter@example.com", "password": "LongEnough9!", "role": "recruiter"},
-        )
-        self.assertEqual(other_registration.status_code, 201, other_registration.text)
-        other_recruiter = {"Authorization": f"Bearer {other_registration.json()['access_token']}"}
+        other_recruiter = self.register_and_login("Other Recruiter", "other-recruiter@example.com", "LongEnough9!", "recruiter")
         denied = self.client.post(
             f"/api/applications/{application['id']}/assessment/send", headers=other_recruiter
         )
@@ -2021,11 +1985,7 @@ Answer: A
             questions = db.execute("SELECT id, correct_index FROM assessment_questions WHERE assessment_id = ?", (assessment_id,)).fetchall()
         self.client.post(f"/api/assessments/{token}/submit", json={"answers": {q["id"]: q["correct_index"] for q in questions}})
 
-        reg = self.client.post(
-            "/api/auth/register",
-            json={"name": "Other Candidate", "email": "other@skillsphere.dev", "password": "LongEnough9!", "role": "candidate"},
-        )
-        candidate_b = {"Authorization": f"Bearer {reg.json()['access_token']}"}
+        candidate_b = self.register_and_login("Other Candidate", "other@skillsphere.dev", "LongEnough9!", "candidate")
         forbidden = self.client.get(f"/api/assessment-reviews/{assessment_id}", headers=candidate_b)
         self.assertEqual(forbidden.status_code, 403)
 
@@ -2253,6 +2213,23 @@ Answer: A
         self.assertEqual(dup_res.status_code, 201, dup_res.text)
         self.assertEqual(dup_res.json()["created"], 0)
         self.assertEqual(dup_res.json()["count"], 0)
+        self.assertEqual(dup_res.json()["skipped"], 5)
+
+        # Validation test: invalid questions must be counted in 'invalid' and not throw 500
+        invalid_batch = self.client.post(
+            f"/api/jobs/{job['id']}/questions/batch",
+            headers=recruiter,
+            json={
+                "questions": [
+                    {"technology": "", "question": "Too short", "options": ["A", "B", "C", "D"], "correct_index": 0},
+                    {"technology": "Python", "question": "What is Python?", "options": ["A", "A", "C", "D"], "correct_index": 0},
+                    {"technology": "Python", "question": "Valid question text here?", "options": ["1", "2", "3", "4"], "correct_index": 99},
+                ]
+            },
+        )
+        self.assertEqual(invalid_batch.status_code, 201)
+        self.assertEqual(invalid_batch.json()["invalid"], 3)
+        self.assertEqual(invalid_batch.json()["created"], 0)
 
         # Verify added to question bank
         bank_res = self.client.get(f"/api/jobs/{job['id']}/questions", headers=recruiter)
@@ -2260,11 +2237,7 @@ Answer: A
         self.assertEqual(bank_res.json()["active_count"], 5)
 
         # Unauthorized recruiter cannot batch add to this job
-        reg_res = self.client.post(
-            "/api/auth/register",
-            json={"email": "other_rec@skillsphere.dev", "password": "Demo123!", "name": "Other Recruiter", "role": "recruiter"},
-        )
-        other_recruiter = {"Authorization": f"Bearer {reg_res.json()['access_token']}"}
+        other_recruiter = self.register_and_login("Other Recruiter", "other_rec@skillsphere.dev", "Demo123!", "recruiter")
         other_batch = self.client.post(
             f"/api/jobs/{job['id']}/questions/batch",
             headers=other_recruiter,
@@ -2302,11 +2275,7 @@ Answer: A
         self.assertEqual(cand_del.status_code, 403)
 
         # Other recruiter cannot delete job
-        reg_res = self.client.post(
-            "/api/auth/register",
-            json={"email": "sre_other_rec@skillsphere.dev", "password": "Demo123!", "name": "Other Recruiter", "role": "recruiter"},
-        )
-        other_recruiter = {"Authorization": f"Bearer {reg_res.json()['access_token']}"}
+        other_recruiter = self.register_and_login("Other Recruiter", "sre_other_rec@skillsphere.dev", "Demo123!", "recruiter")
         other_del = self.client.delete(f"/api/jobs/{job_id}", headers=other_recruiter)
         self.assertEqual(other_del.status_code, 404)
 
@@ -2314,10 +2283,15 @@ Answer: A
         del_res = self.client.delete(f"/api/jobs/{job_id}", headers=recruiter)
         self.assertEqual(del_res.status_code, 200, del_res.text)
         self.assertTrue(del_res.json()["deleted"])
+        self.assertTrue(del_res.json().get("archived"))
 
-        # Job is now 404
+        # Job is now 404 for active candidate/public view
         get_res = self.client.get(f"/api/jobs/{job_id}", headers=recruiter)
         self.assertEqual(get_res.status_code, 404)
+
+        # Candidate attempting to apply to archived job gets 404
+        apply_res = self.client.post(f"/api/jobs/{job_id}/apply", headers=candidate)
+        self.assertEqual(apply_res.status_code, 404)
 
         # Admin can also delete jobs
         admin_job = self.client.post(
@@ -2339,6 +2313,36 @@ Answer: A
         admin_del = self.client.delete(f"/api/jobs/{admin_job['id']}", headers=admin)
         self.assertEqual(admin_del.status_code, 200, admin_del.text)
         self.assertTrue(admin_del.json()["deleted"])
+        self.assertTrue(admin_del.json().get("archived"))
+
+    def test_workspace_bootstrap(self):
+        recruiter = self.login("recruiter@skillsphere.dev")
+        candidate = self.login("candidate@skillsphere.dev")
+        admin = self.login("admin@skillsphere.dev")
+
+        # Candidate bootstrap
+        c_boot = self.client.get("/api/workspace/bootstrap", headers=candidate)
+        self.assertEqual(c_boot.status_code, 200)
+        c_data = c_boot.json()
+        self.assertIn("user", c_data)
+        self.assertIn("jobs", c_data)
+        self.assertIn("applications", c_data)
+        self.assertIn("interviews", c_data)
+        self.assertIn("notifications", c_data)
+        self.assertEqual(c_data["user"]["role"], "candidate")
+
+        # Recruiter bootstrap
+        r_boot = self.client.get("/api/workspace/bootstrap", headers=recruiter)
+        self.assertEqual(r_boot.status_code, 200)
+        r_data = r_boot.json()
+        self.assertEqual(r_data["user"]["role"], "recruiter")
+        self.assertIn("jobs", r_data)
+
+        # Admin bootstrap
+        a_boot = self.client.get("/api/workspace/bootstrap", headers=admin)
+        self.assertEqual(a_boot.status_code, 200)
+        a_data = a_boot.json()
+        self.assertEqual(a_data["user"]["role"], "admin")
 
     def test_candidate_ai_screening_summary(self):
         candidate, recruiter, application = self.apply_with_match(["Python"], ["Python"])
@@ -2386,11 +2390,7 @@ Answer: A
         self.assertEqual(cand_summary.status_code, 403)
 
         # Other recruiter is forbidden (isolated as 404)
-        reg_res2 = self.client.post(
-            "/api/auth/register",
-            json={"email": "other_rec2@skillsphere.dev", "password": "Demo123!", "name": "Other Recruiter 2", "role": "recruiter"},
-        )
-        other_rec = {"Authorization": f"Bearer {reg_res2.json()['access_token']}"}
+        other_rec = self.register_and_login("Other Recruiter 2", "other_rec2@skillsphere.dev", "Demo123!", "recruiter")
         other_summary = self.client.get(f"/api/applications/{application['id']}/ai-summary", headers=other_rec)
         self.assertEqual(other_summary.status_code, 404)
 
@@ -2576,14 +2576,7 @@ Answer: A
         self.assertFalse(item["monitoring_available"])
 
         # 2. Unauthorized recruiter cannot access candidate live monitoring
-        unauth_reg = self.client.post("/api/auth/register", json={
-            "name": "Other Recruiter",
-            "email": "other_recruiter@skillsphere.dev",
-            "password": "Password123!",
-            "role": "recruiter"
-        })
-        self.assertEqual(unauth_reg.status_code, 201)
-        unauth_headers = self.login("other_recruiter@skillsphere.dev", "Password123!")
+        unauth_headers = self.register_and_login("Other Recruiter", "other_recruiter@skillsphere.dev", "Password123!", "recruiter")
         unauth_token = unauth_headers["Authorization"].split(" ")[1]
 
         unauth_list = self.client.get("/api/recruiter/live-assessments", headers=unauth_headers).json()["items"]
@@ -2787,11 +2780,7 @@ Answer: A
         self.assertEqual(self.client.get(f"/api/chat/history/{session_id}", headers=recruiter).status_code, 403)
 
         # 8. Another candidate cannot access first candidate's chat history
-        user2_res = self.client.post(
-            "/api/auth/register",
-            json={"name": "Candidate Two", "email": "cand2@example.com", "password": "Password123!", "role": "candidate"},
-        ).json()
-        cand2_headers = {"Authorization": f"Bearer {user2_res['access_token']}"}
+        cand2_headers = self.register_and_login("Candidate Two", "cand2@example.com", "Password123!", "candidate")
         self.assertEqual(self.client.get(f"/api/chat/history/{session_id}", headers=cand2_headers).status_code, 404)
 
         # 9. Clear chat history
@@ -2805,11 +2794,7 @@ Answer: A
 
     def test_rule_based_career_chatbot_resume_awareness(self):
         # Register fresh candidate without resume
-        new_cand_res = self.client.post(
-            "/api/auth/register",
-            json={"name": "Resume Test Cand", "email": "resumetest@example.com", "password": "Password123!", "role": "candidate"},
-        ).json()
-        new_cand_headers = {"Authorization": f"Bearer {new_cand_res['access_token']}"}
+        new_cand_headers = self.register_and_login("Resume Test Cand", "resumetest@example.com", "Password123!", "candidate")
 
         # Ask about resume when no resume is uploaded
         no_res = self.client.post(
@@ -2822,7 +2807,7 @@ Answer: A
         self.assertIn("my profile", no_res.json()["message"].lower())
 
         # Now seed resume with skills and projects
-        cand_id = new_cand_res["user"]["id"]
+        cand_id = self.client.get("/api/me", headers=new_cand_headers).json()["id"]
         with main.connect() as db:
             db.execute(
                 """INSERT INTO resumes (candidate_id, filename, storage_path, content_type,
@@ -2902,6 +2887,762 @@ Answer: A
         self.assertEqual(res.status_code, 200)
         self.assertIn("items", res.json())
 
+    # =========================================================================
+    # TESTS FOR 14 NEW FEATURE SETS (SkillSphere Feature Parity)
+    # =========================================================================
+
+    def test_forgot_and_reset_password_flow(self):
+        # 1. Forgot password request
+        res = self.client.post("/api/auth/forgot-password", json={"email": "candidate@skillsphere.dev"})
+        self.assertEqual(res.status_code, 200)
+        data = res.json()
+        self.assertTrue(data.get("ok"))
+        token = data.get("dev_token")
+        self.assertTrue(token)
+
+        # 2. Reset password with valid token
+        res_reset = self.client.post("/api/auth/reset-password", json={"token": token, "new_password": "NewSecretPassword123!"})
+        self.assertEqual(res_reset.status_code, 200)
+
+        # 3. Login with newly set password
+        res_login = self.client.post("/api/auth/login", json={"email": "candidate@skillsphere.dev", "password": "NewSecretPassword123!"})
+        self.assertEqual(res_login.status_code, 200)
+
+        # 4. Expired / invalid token rejects
+        res_invalid = self.client.post("/api/auth/reset-password", json={"token": "invalid_fake_token", "new_password": "AnotherPassword123!"})
+        self.assertEqual(res_invalid.status_code, 400)
+
+    def test_email_verification_flow(self):
+        # 1. Signup creates account in unverified state, blocks login & protected access
+        reg = self.client.post(
+            "/api/auth/register",
+            json={"name": "Verify User", "email": "verify_flow@example.com", "password": "Password123!", "role": "candidate"},
+        )
+        self.assertEqual(reg.status_code, 201, reg.text)
+        reg_data = reg.json()
+        self.assertTrue(reg_data["verification_required"])
+        self.assertIsNone(reg_data["access_token"])
+        self.assertFalse(bool(reg_data["user"]["email_verified"]))
+        token = reg_data["dev_token"]
+        otp = reg_data["dev_otp"]
+
+        # Unverified user cannot log in
+        blocked_login = self.client.post(
+            "/api/auth/login",
+            json={"email": "verify_flow@example.com", "password": "Password123!"},
+        )
+        self.assertEqual(blocked_login.status_code, 403)
+
+        # Unverified user cannot access protected endpoints even with a forged/issued JWT
+        with main.connect() as db:
+            user_row = db.execute("SELECT * FROM users WHERE email = 'verify_flow@example.com'").fetchone()
+        raw_jwt = main.encode_token(user_row)
+        blocked_me = self.client.get("/api/me", headers={"Authorization": f"Bearer {raw_jwt}"})
+        self.assertEqual(blocked_me.status_code, 403)
+
+        # 2. Invalid token/OTP rejected with clear message
+        bad_token = self.client.post("/api/auth/verify-email", json={"token": "not-a-real-token-value"})
+        self.assertEqual(bad_token.status_code, 400)
+        bad_otp = self.client.post(
+            "/api/auth/verify-email",
+            json={"email": "verify_flow@example.com", "otp": "000000"},
+        )
+        self.assertEqual(bad_otp.status_code, 400)
+
+        # 3. Expired token rejected
+        with main.connect() as db:
+            db.execute(
+                "UPDATE email_verification_tokens SET expires_at = '2020-01-01T00:00:00+00:00' WHERE user_id = ?",
+                (user_row["id"],),
+            )
+        expired_res = self.client.post("/api/auth/verify-email", json={"token": token})
+        self.assertEqual(expired_res.status_code, 400)
+        self.assertIn("expired", expired_res.json()["detail"].lower())
+
+        # 4. Change email before verification invalidates old token and sends to new email
+        wrong_pw = self.client.post(
+            "/api/auth/change-verification-email",
+            json={"current_email": "verify_flow@example.com", "password": "WrongPassword!", "new_email": "verify_new@example.com"},
+        )
+        self.assertEqual(wrong_pw.status_code, 401)
+        changed = self.client.post(
+            "/api/auth/change-verification-email",
+            json={"current_email": "verify_flow@example.com", "password": "Password123!", "new_email": "verify_new@example.com"},
+        )
+        self.assertEqual(changed.status_code, 200, changed.text)
+        new_otp = changed.json()["dev_otp"]
+        new_token = changed.json()["dev_token"]
+
+        # Old token/OTP no longer works
+        old_after_change = self.client.post("/api/auth/verify-email", json={"token": token})
+        self.assertEqual(old_after_change.status_code, 400)
+
+        # 5. Resend verification works and enforces rate limit after 3 challenges in 10m
+        r1 = self.client.post("/api/auth/resend-verification", json={"email": "verify_new@example.com"})
+        self.assertEqual(r1.status_code, 200, r1.text)
+        r2 = self.client.post("/api/auth/resend-verification", json={"email": "verify_new@example.com"})
+        self.assertEqual(r2.status_code, 429, r2.text)
+
+        # Previous token/OTP before resend is invalidated; latest OTP verifies account
+        stale_verify = self.client.post("/api/auth/verify-email", json={"token": new_token})
+        self.assertEqual(stale_verify.status_code, 400)
+        latest_otp = r1.json()["dev_otp"]
+        ok_verify = self.client.post(
+            "/api/auth/verify-email",
+            json={"email": "verify_new@example.com", "otp": latest_otp},
+        )
+        self.assertEqual(ok_verify.status_code, 200, ok_verify.text)
+
+        # 6. Reused OTP/token is rejected
+        reused = self.client.post(
+            "/api/auth/verify-email",
+            json={"email": "verify_new@example.com", "otp": latest_otp},
+        )
+        self.assertEqual(reused.status_code, 400)
+
+        # 7. Verified user can now log in and check verification status
+        headers = self.login("verify_new@example.com", "Password123!")
+        status_res = self.client.get("/api/auth/verification-status", headers=headers)
+        self.assertEqual(status_res.status_code, 200)
+        self.assertTrue(status_res.json()["verified"])
+
+    def test_email_notifications_preferences_retries_and_safeguards(self):
+        recruiter = self.login("recruiter@skillsphere.dev")
+        candidate = self.login("candidate@skillsphere.dev")
+        admin = self.login("admin@skillsphere.dev")
+
+        # 1. Major in-app notifications also trigger email delivery logs
+        sent_emails = []
+        original_send = main.send_email_message
+
+        def spy_send(recipient, subject, body_text):
+            sent_emails.append((recipient, subject, body_text))
+            return "Sent"
+
+        with patch.object(main, "send_email_message", side_effect=spy_send):
+            # Job posted -> account_activity notification
+            job_res = self.client.post(
+                "/api/jobs",
+                headers=recruiter,
+                json={
+                    "title": "Email Notify Engineer",
+                    "company": "SkillSphere",
+                    "description": "Build reliable notification systems.",
+                    "location": "Remote",
+                    "experience": "2 years",
+                    "job_type": "Full-time",
+                    "salary": "$120k",
+                    "skills": ["Python"],
+                },
+            )
+            self.assertEqual(job_res.status_code, 201)
+            job_id = job_res.json()["id"]
+
+            # Ensure candidate has a resume so /apply succeeds
+            with main.connect() as db:
+                cand_row = db.execute("SELECT id FROM users WHERE email = 'candidate@skillsphere.dev'").fetchone()
+                db.execute(
+                    """INSERT INTO resumes (candidate_id, filename, storage_path, content_type, extracted_text, parsed_profile_json, processing_status, uploaded_at)
+                    VALUES (?, 'cv.pdf', 'cv.pdf', 'application/pdf', 'Python developer', ?, 'completed', ?)
+                    ON CONFLICT(candidate_id) DO UPDATE SET parsed_profile_json = excluded.parsed_profile_json""",
+                    (cand_row["id"], json.dumps({"skills": ["Python"]}), main.now()),
+                )
+
+            # Candidate applies -> application notifications to candidate & recruiter
+            apply_res = self.client.post(f"/api/jobs/{job_id}/apply", headers=candidate)
+            self.assertEqual(apply_res.status_code, 201)
+            app_id = apply_res.json()["id"]
+
+            # Recruiter updates status -> application_status notification
+            status_res = self.client.patch(
+                f"/api/applications/{app_id}/status",
+                headers=recruiter,
+                json={"status": "Shortlisted"},
+            )
+            self.assertEqual(status_res.status_code, 200)
+
+            # Recruiter schedules interview -> interview_scheduled notification
+            int_res = self.client.post(
+                f"/api/applications/{app_id}/interviews",
+                headers=recruiter,
+                json=self.interview_payload(),
+            )
+            self.assertEqual(int_res.status_code, 201)
+
+            # Recruiter sends direct message -> new_message notification
+            cand_id = self.client.get("/api/me", headers=candidate).json()["id"]
+            msg_res = self.client.post(
+                "/api/messages",
+                headers=recruiter,
+                json={"recipient_id": cand_id, "application_id": app_id, "job_id": job_id, "content": "Hello!"},
+            )
+            self.assertEqual(msg_res.status_code, 200)
+
+        subjects = [s for _, s, _ in sent_emails]
+        self.assertTrue(any("New job posted" in s for s in subjects), subjects)
+        self.assertTrue(any("Application submitted" in s or "New candidate application" in s for s in subjects), subjects)
+        self.assertTrue(any("shortlisted" in s.lower() for s in subjects), subjects)
+        self.assertTrue(any("Interview" in s for s in subjects), subjects)
+        self.assertTrue(any("New message" in s for s in subjects), subjects)
+
+        # 2. Preferences: disabling non-essential messages suppresses message email, but keeps essential application email enabled
+        pref_put = self.client.put(
+            "/api/notifications/preferences",
+            headers=candidate,
+            json={"messages_enabled": False, "account_activity_enabled": False, "system_alerts_enabled": False},
+        )
+        self.assertEqual(pref_put.status_code, 200)
+        self.assertFalse(pref_put.json()["messages_enabled"])
+        self.assertIn("application", pref_put.json()["essential_categories"])
+
+        sent_emails.clear()
+        with patch.object(main, "send_email_message", side_effect=spy_send):
+            # Non-essential message notification -> skipped by preference
+            self.client.post(
+                "/api/messages",
+                headers=recruiter,
+                json={"recipient_id": cand_id, "application_id": app_id, "job_id": job_id, "content": "Second msg"},
+            )
+            # Essential application status update -> still sent!
+            status2 = self.client.patch(
+                f"/api/applications/{app_id}/status",
+                headers=recruiter,
+                json={"status": "Accepted"},
+            )
+            self.assertEqual(status2.status_code, 200, status2.text)
+        pref_subjects = [s for _, s, _ in sent_emails]
+        self.assertFalse(any("New message" in s for s in pref_subjects), pref_subjects)
+        self.assertTrue(any("offer" in s.lower() or "accepted" in s.lower() or "status" in s.lower() for s in pref_subjects), pref_subjects)
+
+        # 3. Safeguard: unverified user never receives notification emails
+        with main.connect() as db:
+            db.execute(
+                "INSERT INTO users (name, email, password_hash, role, email_verified, created_at) VALUES ('Unverified', 'unver_notif@example.com', 'hash', 'candidate', 0, ?)",
+                (main.now(),),
+            )
+            unver_id = db.execute("SELECT id FROM users WHERE email = 'unver_notif@example.com'").fetchone()["id"]
+            sent_emails.clear()
+            with patch.object(main, "send_email_message", side_effect=spy_send):
+                nid = main.notify_user(db, unver_id, "application_status", "Status changed", "Details")
+            row = db.execute("SELECT email_delivery_status FROM notifications WHERE id = ?", (nid,)).fetchone()
+            self.assertEqual(row["email_delivery_status"], "Skipped_Unverified")
+            self.assertEqual(sent_emails, [])
+
+        # 4. Duplicate-event prevention & Failed email delivery + retry behavior
+        with main.connect() as db:
+            sent_emails.clear()
+            with patch.object(main, "send_email_message", side_effect=spy_send):
+                n1 = main.notify_user(db, cand_id, "system_alert", "Alert", "Body", event_key="dedup-test-1")
+                n2 = main.notify_user(db, cand_id, "system_alert", "Alert", "Body", event_key="dedup-test-1")
+            # Re-enable system_alerts first or check essential category
+            with patch.object(main, "send_email_message", side_effect=spy_send):
+                n3 = main.notify_user(db, cand_id, "application_status", "Essential", "Body", event_key="dedup-ess-1")
+                n4 = main.notify_user(db, cand_id, "application_status", "Essential", "Body", event_key="dedup-ess-1")
+            r3 = db.execute("SELECT email_delivery_status FROM notifications WHERE id = ?", (n3,)).fetchone()
+            r4 = db.execute("SELECT email_delivery_status FROM notifications WHERE id = ?", (n4,)).fetchone()
+            self.assertEqual(r3["email_delivery_status"], "Sent")
+            self.assertEqual(r4["email_delivery_status"], "Duplicate_Skipped")
+
+            # Simulate failed delivery then retry
+            with patch.object(main, "send_email_message", return_value="Failed"):
+                n_fail = main.notify_user(db, cand_id, "application_status", "Retry Test", "Body")
+            fail_row = db.execute("SELECT email_delivery_status, email_attempts FROM notifications WHERE id = ?", (n_fail,)).fetchone()
+            self.assertEqual(fail_row["email_delivery_status"], "Failed")
+            self.assertEqual(fail_row["email_attempts"], 1)
+
+        # Candidate cannot call admin retry endpoint
+        self.assertEqual(self.client.post("/api/notifications/retry-emails", headers=candidate).status_code, 403)
+        with patch.object(main, "send_email_message", side_effect=spy_send):
+            retry_res = self.client.post("/api/notifications/retry-emails", headers=admin)
+        self.assertEqual(retry_res.status_code, 200, retry_res.text)
+        self.assertGreaterEqual(retry_res.json()["succeeded"], 1)
+        with main.connect() as db:
+            retried_row = db.execute("SELECT email_delivery_status, email_attempts, email_sent_at FROM notifications WHERE id = ?", (n_fail,)).fetchone()
+            self.assertEqual(retried_row["email_delivery_status"], "Sent")
+            self.assertEqual(retried_row["email_attempts"], 2)
+            self.assertIsNotNone(retried_row["email_sent_at"])
+
+        # Candidate can view their own email deliveries
+        deliv_res = self.client.get("/api/notifications/deliveries", headers=candidate)
+        self.assertEqual(deliv_res.status_code, 200)
+        self.assertGreater(len(deliv_res.json()["items"]), 0)
+
+    def test_saved_jobs_and_recommendations(self):
+        candidate = self.login("candidate@skillsphere.dev")
+        # Get a job ID
+        res_jobs = self.client.get("/api/jobs?page=1&page_size=6", headers=candidate)
+        jobs = res_jobs.json()["items"]
+        self.assertTrue(len(jobs) > 0)
+        job_id = jobs[0]["id"]
+
+        # Save job
+        res_save = self.client.post(f"/api/jobs/{job_id}/save", headers=candidate)
+        self.assertEqual(res_save.status_code, 200)
+
+        # List saved jobs
+        res_list = self.client.get("/api/jobs/saved", headers=candidate)
+        self.assertEqual(res_list.status_code, 200)
+        saved_ids = [j["id"] for j in res_list.json()["items"]]
+        self.assertIn(job_id, saved_ids)
+
+        # Remove from saved
+        res_delete = self.client.delete(f"/api/jobs/{job_id}/save", headers=candidate)
+        self.assertEqual(res_delete.status_code, 200)
+
+        # Verify removed
+        res_list_after = self.client.get("/api/jobs/saved", headers=candidate)
+        self.assertNotIn(job_id, [j["id"] for j in res_list_after.json()["items"]])
+
+        # Recommended jobs endpoint
+        res_rec = self.client.get("/api/jobs/recommended", headers=candidate)
+        self.assertEqual(res_rec.status_code, 200)
+        self.assertIn("items", res_rec.json())
+
+    def test_resume_analysis_and_versions(self):
+        candidate = self.login("candidate@skillsphere.dev")
+        # Resume analysis endpoint returns quality score
+        res_analysis = self.client.get("/api/resume/analysis", headers=candidate)
+        self.assertEqual(res_analysis.status_code, 200)
+        data = res_analysis.json()
+        self.assertIn("score", data)
+        self.assertIn("level", data)
+
+        # Resume versions list endpoint
+        res_versions = self.client.get("/api/resume/versions", headers=candidate)
+        self.assertEqual(res_versions.status_code, 200)
+        self.assertIn("items", res_versions.json())
+
+    def test_recruiter_job_management_and_company_profile(self):
+        recruiter = self.login("recruiter@skillsphere.dev")
+        # Get one of recruiter's jobs
+        res_jobs = self.client.get("/api/jobs?mine=true&page=1&page_size=6", headers=recruiter)
+        jobs = res_jobs.json()["items"]
+        self.assertTrue(len(jobs) > 0)
+        job_id = jobs[0]["id"]
+
+        # Edit job listing
+        res_patch = self.client.patch(f"/api/jobs/{job_id}", headers=recruiter, json={
+            "title": "Principal Lead Designer",
+            "location": "Global Remote",
+            "status": "Closed"
+        })
+        self.assertEqual(res_patch.status_code, 200)
+        updated = res_patch.json()
+        self.assertEqual(updated["title"], "Principal Lead Designer")
+        self.assertEqual(updated["status"], "Closed")
+
+        # Company profile get and update
+        res_profile = self.client.get("/api/company/profile", headers=recruiter)
+        self.assertEqual(res_profile.status_code, 200)
+
+        res_update_prof = self.client.put("/api/company/profile", headers=recruiter, json={
+            "company": "SkillSphere Inc.",
+            "description": "Leading career engineering platform",
+            "website": "https://skillsphere.dev"
+        })
+        self.assertEqual(res_update_prof.status_code, 200)
+        self.assertEqual(res_update_prof.json()["company"], "SkillSphere Inc.")
+
+    def test_direct_candidate_recruiter_messaging(self):
+        candidate = self.login("candidate@skillsphere.dev")
+        recruiter = self.login("recruiter@skillsphere.dev")
+
+        # Get candidate ID and recruiter ID from /api/me
+        cand_user = self.client.get("/api/me", headers=candidate).json()
+        rec_user = self.client.get("/api/me", headers=recruiter).json()
+
+        # Candidate sends message to recruiter
+        res_send = self.client.post("/api/messages", headers=candidate, json={
+            "recipient_id": rec_user["id"],
+            "content": "Hello recruiter! I am interested in your open role."
+        })
+        self.assertEqual(res_send.status_code, 200)
+
+        # Recruiter gets unread count
+        res_unread = self.client.get("/api/messages/unread-count", headers=recruiter)
+        self.assertEqual(res_unread.status_code, 200)
+        self.assertGreaterEqual(res_unread.json()["unread_count"], 1)
+
+        # Recruiter views thread
+        res_thread = self.client.get(f"/api/messages/thread/{cand_user['id']}", headers=recruiter)
+        self.assertEqual(res_thread.status_code, 200)
+        self.assertTrue(len(res_thread.json()["messages"]) > 0)
+
+        # Recruiter replies to candidate
+        res_reply = self.client.post("/api/messages", headers=recruiter, json={
+            "recipient_id": cand_user["id"],
+            "content": "Thank you for reaching out! We are reviewing your application."
+        })
+        self.assertEqual(res_reply.status_code, 200)
+
+    def test_question_duplication_and_collections(self):
+        recruiter = self.login("recruiter@skillsphere.dev")
+        res_jobs = self.client.get("/api/jobs?mine=true&page=1&page_size=6", headers=recruiter)
+        job_id = res_jobs.json()["items"][0]["id"]
+
+        # Ensure job has a question
+        self.create_job_question_bank(job_id, count=1, headers=recruiter)
+        res_q = self.client.get(f"/api/jobs/{job_id}/questions", headers=recruiter)
+        questions = res_q.json()["items"]
+        q_id = questions[0]["id"]
+
+        # Duplicate question
+        res_dup = self.client.post(f"/api/jobs/{job_id}/questions/{q_id}/duplicate", headers=recruiter)
+        self.assertEqual(res_dup.status_code, 200)
+        self.assertTrue("Copy" in res_dup.json()["question"])
+
+        # Create question collection template
+        res_coll = self.client.post("/api/question-collections", headers=recruiter, json={
+            "name": "Standard Python Core",
+            "description": "Standard Python assessment pack",
+            "technology": "Python"
+        })
+        self.assertEqual(res_coll.status_code, 201)
+        coll_id = res_coll.json()["id"]
+
+        # Import collection into another job
+        res_import = self.client.post(f"/api/question-collections/{coll_id}/import-to-job/{job_id}", headers=recruiter)
+        self.assertEqual(res_import.status_code, 200)
+
+    def test_candidate_technical_practice(self):
+        candidate = self.login("candidate@skillsphere.dev")
+        # Add practice technology
+        res_add = self.client.post("/api/practice/technologies", headers=candidate, json={"technology": "Python"})
+        self.assertIn(res_add.status_code, [200, 201])
+
+        # Get practice questions
+        res_q = self.client.get("/api/practice/questions?technology=Python&limit=5", headers=candidate)
+        self.assertEqual(res_q.status_code, 200)
+        questions = res_q.json()["items"]
+        self.assertTrue(len(questions) > 0)
+        first_q = questions[0]
+
+        # Submit practice answer
+        res_sub = self.client.post("/api/practice/submit", headers=candidate, json={
+            "question_id": first_q["id"],
+            "selected_option_index": 0
+        })
+        self.assertEqual(res_sub.status_code, 200)
+        self.assertIn("is_correct", res_sub.json())
+
+        # Check practice analytics
+        res_anal = self.client.get("/api/practice/analytics", headers=candidate)
+        self.assertEqual(res_anal.status_code, 200)
+        self.assertGreaterEqual(res_anal.json()["total_attempts"], 1)
+
+    def test_assessment_score_adjustment_and_retry(self):
+        recruiter = self.login("recruiter@skillsphere.dev")
+        # Ensure a job, candidate application and assessment exist
+        with main.connect() as db:
+            row = db.execute("SELECT id FROM assessments LIMIT 1").fetchone()
+            if not row:
+                row_job = db.execute("SELECT id, recruiter_id FROM jobs LIMIT 1").fetchone()
+                job_id = row_job["id"]
+                cand_id = db.execute("SELECT id FROM users WHERE role = 'candidate' LIMIT 1").fetchone()["id"]
+                db.execute("""INSERT INTO applications (job_id, candidate_id, status, applied_at)
+                    VALUES (?, ?, 'Applied', CURRENT_TIMESTAMP)""", (job_id, cand_id))
+                app_id = db.execute("SELECT last_insert_rowid() AS id").fetchone()["id"]
+                db.execute("""INSERT INTO assessments 
+                    (job_id, candidate_id, application_id, duration_minutes, status, score_percentage, result, match_percentage, created_at)
+                    VALUES (?, ?, ?, 45, 'Completed', 65.0, 'Failed', 80.0, CURRENT_TIMESTAMP)""", (job_id, cand_id, app_id))
+                assessment_id = db.execute("SELECT last_insert_rowid() AS id").fetchone()["id"]
+            else:
+                assessment_id = row["id"]
+
+        # Recruiter adjusts score with required audit reason
+        res_adj = self.client.post(f"/api/assessments/{assessment_id}/adjust-score", headers=recruiter, json={
+            "new_score": 85.0,
+            "reason": "Corrected manual verification on question 3"
+        })
+        self.assertEqual(res_adj.status_code, 200)
+
+        # Recruiter re-invites candidate (retry)
+        res_retry = self.client.post(f"/api/assessments/{assessment_id}/retry", headers=recruiter)
+        self.assertEqual(res_retry.status_code, 200)
+
+    def test_video_assessment_configuration_and_evaluation(self):
+        recruiter = self.login("recruiter@skillsphere.dev")
+        res_jobs = self.client.get("/api/jobs?mine=true&page=1&page_size=6", headers=recruiter)
+        job_id = res_jobs.json()["items"][0]["id"]
+
+        # Create async video assessment prompt configuration
+        res_create = self.client.post("/api/video-assessments", headers=recruiter, json={
+            "job_id": job_id,
+            "title": "Engineering Video Screening",
+            "time_limit_seconds": 120,
+            "questions": [
+                {"question_text": "Introduce yourself and past achievements", "max_duration_seconds": 120},
+                {"question_text": "Describe a challenging bug you fixed", "max_duration_seconds": 120}
+            ]
+        })
+        self.assertEqual(res_create.status_code, 201)
+        video_asmnt_id = res_create.json()["id"]
+
+        # Assign to candidate application (ensure application exists first)
+        with main.connect() as db:
+            app_row = db.execute("SELECT id FROM applications WHERE job_id = ? LIMIT 1", (job_id,)).fetchone()
+            if not app_row:
+                cand_id = db.execute("SELECT id FROM users WHERE role = 'candidate' LIMIT 1").fetchone()["id"]
+                db.execute("""INSERT INTO applications (job_id, candidate_id, status, applied_at)
+                    VALUES (?, ?, 'Applied', CURRENT_TIMESTAMP)""", (job_id, cand_id))
+                app_id = db.execute("SELECT last_insert_rowid() AS id").fetchone()["id"]
+            else:
+                app_id = app_row["id"]
+
+        res_assign = self.client.post(f"/api/video-assessments/{video_asmnt_id}/assign?application_id={app_id}", headers=recruiter)
+        self.assertEqual(res_assign.status_code, 200)
+        token = res_assign.json()["token"]
+
+        # Candidate loads assignment via secure token
+        res_load = self.client.get(f"/api/video-assessments/assignment/{token}")
+        self.assertEqual(res_load.status_code, 200)
+
+        # Candidate submits video answer
+        q_id = res_load.json()["questions"][0]["id"]
+        res_sub = self.client.post(f"/api/video-assessments/assignment/{token}/submit", json={
+            "responses": [{
+                "question_id": q_id,
+                "video_url": "https://res.cloudinary.com/demo/video/upload/sample.mp4",
+                "duration_seconds": 120
+            }]
+        })
+        self.assertEqual(res_sub.status_code, 200)
+
+    def test_interview_scorecard_and_candidate_dossier(self):
+        recruiter = self.login("recruiter@skillsphere.dev")
+        # Ensure an interview exists
+        with main.connect() as db:
+            row = db.execute("SELECT id FROM interviews LIMIT 1").fetchone()
+            if not row:
+                rec_id = db.execute("SELECT id FROM users WHERE role = 'recruiter' LIMIT 1").fetchone()["id"]
+                cand_id = db.execute("SELECT id FROM users WHERE role = 'candidate' LIMIT 1").fetchone()["id"]
+                job_id = db.execute("SELECT id FROM jobs WHERE recruiter_id = ? LIMIT 1", (rec_id,)).fetchone()["id"]
+                db.execute("""INSERT INTO applications (job_id, candidate_id, status, applied_at)
+                    VALUES (?, ?, 'Applied', CURRENT_TIMESTAMP)""", (job_id, cand_id))
+                app_id = db.execute("SELECT last_insert_rowid() AS id").fetchone()["id"]
+                db.execute("""INSERT INTO interviews (application_id, recruiter_id, scheduled_at, duration_minutes, meeting_platform, meeting_url, status, created_at, updated_at)
+                    VALUES (?, ?, CURRENT_TIMESTAMP, 60, 'Google Meet', 'https://meet.google.com/abc-defg-hij', 'Scheduled', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)""", (app_id, rec_id))
+                interview_id = db.execute("SELECT last_insert_rowid() AS id").fetchone()["id"]
+            else:
+                interview_id = row["id"]
+
+        # Save interview scorecard
+        res_sc = self.client.post(f"/api/interviews/{interview_id}/scorecard", headers=recruiter, json={
+            "technical_score": 5,
+            "communication_score": 4,
+            "problem_solving_score": 5,
+            "culture_fit_score": 4,
+            "recommendation": "Strong Yes",
+            "notes": "Demonstrated deep systems engineering principles."
+        })
+        self.assertEqual(res_sc.status_code, 200)
+
+        # Read scorecard back
+        res_get_sc = self.client.get(f"/api/interviews/{interview_id}/scorecard", headers=recruiter)
+        self.assertEqual(res_get_sc.status_code, 200)
+        self.assertEqual(res_get_sc.json()["scorecard"]["recommendation"], "Strong Yes")
+
+        # Read full candidate dossier
+        res_dossier = self.client.get(f"/api/interviews/{interview_id}/dossier", headers=recruiter)
+        self.assertEqual(res_dossier.status_code, 200)
+
+    def test_support_tickets_and_escalation(self):
+        candidate = self.login("candidate@skillsphere.dev")
+        admin = self.login("admin@skillsphere.dev")
+
+        # Candidate creates ticket
+        res_ticket = self.client.post("/api/tickets", headers=candidate, json={
+            "subject": "Need help with video assessment camera check",
+            "category": "Assessment",
+            "priority": "High",
+            "message": "My camera is displaying blank in the preview."
+        })
+        self.assertEqual(res_ticket.status_code, 201)
+        ticket_id = res_ticket.json()["id"]
+
+        # Candidate replies
+        res_msg = self.client.post(f"/api/tickets/{ticket_id}/messages", headers=candidate, json={
+            "message": "Update: It works after disabling brave shields."
+        })
+        self.assertEqual(res_msg.status_code, 200)
+
+        # Admin reads tickets queue
+        res_admin_queue = self.client.get("/api/admin/tickets", headers=admin)
+        self.assertEqual(res_admin_queue.status_code, 200)
+        self.assertTrue(len(res_admin_queue.json()["items"]) > 0)
+
+        # Admin updates ticket status to Resolved
+        res_update = self.client.patch(f"/api/admin/tickets/{ticket_id}", headers=admin, json={
+            "status": "Resolved"
+        })
+        self.assertEqual(res_update.status_code, 200)
+        self.assertEqual(res_update.json()["status"], "Resolved")
+
+    def test_admin_availability_and_audit_logs(self):
+        admin = self.login("admin@skillsphere.dev")
+        # Toggle presence
+        res_avail = self.client.post("/api/admin/availability?online=true", headers=admin)
+        self.assertEqual(res_avail.status_code, 200)
+        self.assertTrue(res_avail.json()["is_online"])
+
+        # Check availability
+        res_get = self.client.get("/api/admin/availability", headers=admin)
+        self.assertEqual(res_get.status_code, 200)
+
+        # View audit logs
+        res_audit = self.client.get("/api/admin/audit-logs", headers=admin)
+        self.assertEqual(res_audit.status_code, 200)
+        self.assertIn("items", res_audit.json())
+
+    def test_job_moderation_by_admin(self):
+        admin = self.login("admin@skillsphere.dev")
+        res_jobs = self.client.get("/api/jobs?page=1&page_size=6", headers=admin)
+        job_id = res_jobs.json()["items"][0]["id"]
+
+        # Moderate job (flag)
+        res_flag = self.client.post(f"/api/admin/jobs/{job_id}/moderate", headers=admin, json={
+            "action": "flag",
+            "note": "Verification required for salary transparency"
+        })
+        self.assertEqual(res_flag.status_code, 200)
+        self.assertTrue(res_flag.json()["flagged"])
+
+        # Unflag job
+        res_unflag = self.client.post(f"/api/admin/jobs/{job_id}/moderate", headers=admin, json={
+            "action": "unflag"
+        })
+        self.assertEqual(res_unflag.status_code, 200)
+        self.assertFalse(res_unflag.json()["flagged"])
+
+    def test_multilingual_assistant(self):
+        candidate = self.login("candidate@skillsphere.dev")
+        # Send query in Spanish
+        res_es = self.client.post("/api/chat/multilingual", headers=candidate, json={
+            "message": "Hola, ¿cómo puedo preparar mi currículum?",
+            "preferred_language": "es"
+        })
+        self.assertEqual(res_es.status_code, 200)
+        self.assertIn("reply", res_es.json())
+
+        # Test escalation request trigger
+        res_esc = self.client.post("/api/chat/multilingual", headers=candidate, json={
+            "message": "I have a problem and want to speak with a human support agent",
+            "preferred_language": "en"
+        })
+        self.assertEqual(res_esc.status_code, 200)
+        self.assertTrue(res_esc.json().get("suggest_ticket", False))
+
+    def test_recruiter_can_send_round1_regardless_of_ats_score(self):
+        recruiter = self.login("recruiter@skillsphere.dev")
+        job_res = self.client.post(
+            "/api/jobs",
+            headers=recruiter,
+            json={
+                "title": "Backend Python Developer",
+                "company": "SkillSphere Labs",
+                "description": "Python FastAPI SQL role.",
+                "location": "Remote",
+                "experience": "2 years",
+                "job_type": "Full-time",
+                "salary": "$100k",
+                "skills": ["Python", "SQL"],
+                "assessment_question_count": 20,
+            },
+        )
+        self.assertEqual(job_res.status_code, 201, job_res.text)
+        job_id = job_res.json()["id"]
+
+        questions_payload = [
+            {
+                "technology": "Python",
+                "question": f"Python ATS independence question {idx}?",
+                "options": ["Option A", "Option B", "Option C", "Option D"],
+                "correct_index": 0,
+                "difficulty": "Medium",
+            }
+            for idx in range(1, 21)
+        ]
+        batch_res = self.client.post(
+            f"/api/jobs/{job_id}/questions/batch",
+            headers=recruiter,
+            json={"questions": questions_payload},
+        )
+        self.assertEqual(batch_res.status_code, 201, batch_res.text)
+
+        score_cases = [
+            ("ats_high@skillsphere.dev", 85, "Shortlisted"),
+            ("ats_low@skillsphere.dev", 25, "Applied"),
+            ("ats_zero@skillsphere.dev", 0, "Applied"),
+            ("ats_missing@skillsphere.dev", None, "Applied"),
+        ]
+        app_ids = []
+        with main.connect() as db:
+            for email, match_pct, app_status in score_cases:
+                db.execute(
+                    "INSERT INTO users (name, email, password_hash, role, created_at) VALUES (?, ?, ?, 'candidate', ?)",
+                    (email.split("@")[0], email, "hash", main.now()),
+                )
+                cid = db.execute("SELECT id FROM users WHERE email = ?", (email,)).fetchone()["id"]
+                db.execute(
+                    """INSERT INTO applications
+                    (job_id, candidate_id, status, match_percentage, matched_skills_json, missing_skills_json, applied_at)
+                    VALUES (?, ?, ?, ?, '[]', '[]', ?)""",
+                    (job_id, cid, app_status, match_pct, main.now()),
+                )
+                aid = db.execute(
+                    "SELECT id FROM applications WHERE job_id = ? AND candidate_id = ?",
+                    (job_id, cid),
+                ).fetchone()["id"]
+                app_ids.append((email, aid))
+
+        # Candidate cannot send assessments
+        candidate_headers = self.login("candidate@skillsphere.dev")
+        forbidden = self.client.post(
+            f"/api/applications/{app_ids[0][1]}/assessment/send",
+            headers=candidate_headers,
+        )
+        self.assertEqual(forbidden.status_code, 403)
+
+        # Recruiter can send and resend for high, low, zero, and missing ATS scores
+        for email, aid in app_ids:
+            with patch.dict(os.environ, {"SKILLSPHERE_SMTP_HOST": ""}):
+                send_res = self.client.post(
+                    f"/api/applications/{aid}/assessment/send",
+                    headers=recruiter,
+                )
+            self.assertEqual(send_res.status_code, 200, f"Send failed for {email}: {send_res.text}")
+            self.assertEqual(send_res.json()["status"], "Sent")
+
+            with patch.dict(os.environ, {"SKILLSPHERE_SMTP_HOST": ""}):
+                reissue_res = self.client.post(
+                    f"/api/applications/{aid}/assessment/reissue",
+                    headers=recruiter,
+                )
+            self.assertEqual(reissue_res.status_code, 200, f"Reissue failed for {email}: {reissue_res.text}")
+            self.assertEqual(reissue_res.json()["status"], "Sent")
+
+        # Missing/invalid candidate email fails with clear 400 error
+        with main.connect() as db:
+            db.execute(
+                "INSERT INTO users (name, email, password_hash, role, created_at) VALUES ('NoEmail', 'invalid-email', 'hash', 'candidate', ?)",
+                (main.now(),),
+            )
+            bad_cid = db.execute("SELECT id FROM users WHERE email = 'invalid-email'").fetchone()["id"]
+            db.execute(
+                """INSERT INTO applications
+                (job_id, candidate_id, status, match_percentage, matched_skills_json, missing_skills_json, applied_at)
+                VALUES (?, ?, 'Applied', 15, '[]', '[]', ?)""",
+                (job_id, bad_cid, main.now()),
+            )
+            bad_aid = db.execute(
+                "SELECT id FROM applications WHERE job_id = ? AND candidate_id = ?",
+                (job_id, bad_cid),
+            ).fetchone()["id"]
+        bad_res = self.client.post(f"/api/applications/{bad_aid}/assessment/send", headers=recruiter)
+        self.assertEqual(bad_res.status_code, 400)
+        self.assertIn("valid registered email", bad_res.json()["detail"])
+
 
 if __name__ == "__main__":
     unittest.main()
+

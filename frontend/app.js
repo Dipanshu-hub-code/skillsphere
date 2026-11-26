@@ -829,45 +829,218 @@ function saveToken(token) {
   else localStorage.removeItem("skillsphere_token");
 }
 
+function renderVerificationCard() {
+  const pv = state.pendingVerification || {};
+  const banner = state.verificationBanner
+    ? `<div style="margin-bottom:12px;padding:10px 12px;border-radius:8px;font-size:12px;background:${state.verificationBanner.error ? "#fef2f2" : "#ecfdf5"};border:1px solid ${state.verificationBanner.error ? "#fecaca" : "#a7f3d0"};color:${state.verificationBanner.error ? "#991b1b" : "#065f46"};">${esc(state.verificationBanner.text)}</div>`
+    : "";
+  const devHint = pv.devOtp
+    ? `<div style="margin-bottom:12px;padding:8px 10px;border-radius:8px;font-size:11px;background:#f8fafc;border:1px solid #e2e8f0;color:#334155;">Dev verification code: <strong>${esc(pv.devOtp)}</strong></div>`
+    : "";
+  return `
+    <span class="eyebrow">Verify your email</span>
+    <h2>Check your inbox</h2>
+    <p>We sent a single-use verification link and 6-digit code to <strong>${esc(pv.email || "")}</strong>.</p>
+    ${banner}${devHint}
+    <form class="auth-form" id="verify-otp-form">
+      <div class="field">
+        <label for="verify-otp">6-digit verification code</label>
+        <input class="input" id="verify-otp" name="otp" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" placeholder="123456" required />
+      </div>
+      <button class="btn btn-primary auth-submit" type="submit" ${state.busy ? "disabled" : ""}>${state.busy ? "Verifying…" : "Verify Email →"}</button>
+    </form>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:12px;align-items:center;">
+      <button type="button" class="btn btn-quiet btn-small" data-action="resend-verification" ${state.busy ? "disabled" : ""}>Resend verification email</button>
+      <button type="button" class="text-button" data-action="toggle-change-email">${pv.changingEmail ? "Cancel email change" : "Change email address"}</button>
+    </div>
+    ${pv.changingEmail ? `
+      <form class="auth-form" id="change-verification-email-form" style="margin-top:12px;padding-top:12px;border-top:1px solid #f1ece9;">
+        <div class="field"><label for="new-verify-email">New email address</label><input class="input" id="new-verify-email" name="new_email" type="email" placeholder="new@example.com" required /></div>
+        <div class="field"><label for="verify-change-password">Confirm password</label><input class="input" id="verify-change-password" name="password" type="password" placeholder="Enter your password" required /></div>
+        <button class="btn btn-quiet btn-small" type="submit" ${state.busy ? "disabled" : ""}>Update email &amp; resend</button>
+      </form>
+    ` : ""}
+    <div class="auth-switch" style="margin-top:14px;"><button type="button" data-action="back-to-signin">← Back to sign in</button></div>
+  `;
+}
+
 function renderAuth(register = false) {
+  document.title = "SkillSphere — AI Recruitment & Job Portal";
+  const banner = !state.pendingVerification && state.verificationBanner
+    ? `<div style="margin-bottom:12px;padding:10px 12px;border-radius:8px;font-size:12px;background:${state.verificationBanner.error ? "#fef2f2" : "#ecfdf5"};border:1px solid ${state.verificationBanner.error ? "#fecaca" : "#a7f3d0"};color:${state.verificationBanner.error ? "#991b1b" : "#065f46"};">${esc(state.verificationBanner.text)}</div>`
+    : "";
+  const categories = [
+    ["Software Engineering", "⌘", "Backend, Frontend & Full-Stack"],
+    ["Product & Design", "◈", "UI/UX, Product & Research"],
+    ["Data & AI", "⚡", "ML, Analytics & Data Science"],
+    ["Cloud & DevOps", "☁", "SRE, Kubernetes & Security"],
+    ["People & Operations", "♙", "Talent, HR & Business Ops"],
+    ["Growth & Marketing", "↗", "Brand, Content & Demand"],
+    ["Finance & Legal", "▣", "FP&A, Compliance & Risk"],
+    ["Customer Success", "💬", "Support, Solutions & Account"],
+  ];
   app.innerHTML = `
-    <main class="auth-page">
-      <section class="auth-copy">
-        <a class="brand" href="#" aria-label="SkillSphere home"><span class="brand-mark">S</span><span>SkillSphere</span></a>
-        <span class="eyebrow">A better kind of career platform</span>
-        <h1>Find work that <em>feels right.</em></h1>
-        <p>Bring your experience, discover opportunities that fit, and make your next move with confidence.</p>
-        <div class="auth-note"><span>●</span> Thoughtful matches. Real opportunities. One place.</div>
-        <div class="preview-card" aria-hidden="true">
-          <div class="preview-head"><strong>Your next move, made clearer</strong><span class="badge badge-green">Good fit</span></div>
-          <div class="preview-lines"><span class="preview-line red"></span><span class="preview-line"></span><span class="preview-line"></span><span class="preview-line" style="width:72%"></span></div>
-          <div class="preview-job"><strong>Product Designer · Northstar</strong><span style="color:#c83b42;font-weight:700">92% match</span></div>
-          <div class="preview-job"><strong>Frontend Engineer · Layer</strong><span style="color:#c83b42;font-weight:700">84% match</span></div>
+    <div class="public-shell">
+      <header class="public-nav">
+        <div class="public-nav-inner">
+          <a class="brand" href="#" aria-label="SkillSphere home"><span class="brand-mark">S</span><span>SkillSphere</span></a>
+          <nav class="public-links" aria-label="Primary">
+            <a href="#explore-categories">Categories</a>
+            <a href="#ai-matching">AI Matching</a>
+            <a href="#featured-roles">Featured Roles</a>
+            <a href="#testimonials">Stories</a>
+          </nav>
+          <div class="public-nav-actions">
+            <button type="button" class="btn btn-quiet btn-small" data-action="public-signin">Sign in</button>
+            <button type="button" class="btn btn-primary btn-small" data-action="public-register">Get started →</button>
+          </div>
+          <button type="button" class="icon-button public-mobile-toggle" data-action="toggle-public-menu" aria-label="Toggle navigation menu">☰</button>
+        </div>
+        <div class="public-mobile-menu${state.publicMenuOpen ? " open" : ""}" id="public-mobile-menu">
+          <a href="#explore-categories">Categories</a>
+          <a href="#ai-matching">AI Matching</a>
+          <a href="#featured-roles">Featured Roles</a>
+          <a href="#testimonials">Stories</a>
+          <div style="display:flex;gap:8px;padding-top:6px;">
+            <button type="button" class="btn btn-quiet btn-small" data-action="public-signin">Sign in</button>
+            <button type="button" class="btn btn-primary btn-small" data-action="public-register">Get started</button>
+          </div>
+        </div>
+      </header>
+
+      <section class="public-hero">
+        <div class="public-hero-inner">
+          <div class="public-hero-copy">
+            <span class="hero-pill">✦ AI-Powered Recruitment &amp; Skill Matching</span>
+            <h1>Find talent &amp; roles that <em>truly fit.</em></h1>
+            <p>SkillSphere connects candidates and hiring teams with transparent ATS skill matching, structured Round 1 technical assessments, and live collaborative interviews.</p>
+            <form class="hero-search-bar" id="hero-search-form">
+              <input class="input" name="q" placeholder="Job title, skill, or company" value="${esc(state.query)}" aria-label="Search job keyword" />
+              <input class="input" name="location" placeholder="Location or Remote" value="${esc(state.location)}" aria-label="Search location" />
+              <select class="select" name="job_type" aria-label="Employment type">
+                <option value="">All job types</option>
+                ${["Full-time", "Part-time", "Contract", "Remote"].map(t => `<option value="${t}" ${state.jobType === t ? "selected" : ""}>${t}</option>`).join("")}
+              </select>
+              <button type="submit" class="btn btn-primary">Find Jobs</button>
+            </form>
+            <div class="hero-trust">
+              <span><strong>✓</strong> Verified email &amp; secure accounts</span>
+              <span><strong>✓</strong> Transparent ATS skill insights</span>
+              <span><strong>✓</strong> Proctored Round 1 &amp; coding rooms</span>
+            </div>
+          </div>
+
+          <section class="auth-card" id="auth-card">
+            ${state.pendingVerification ? renderVerificationCard() : `
+              <span class="eyebrow">${register ? "Get started" : "Welcome back"}</span>
+              <h2>${register ? "Create your account" : "Sign in to SkillSphere"}</h2>
+              <p>${register ? "Set up your space and start finding your fit." : "Your next opportunity is closer than you think."}</p>
+              ${banner}
+              <form class="auth-form" id="auth-form">
+                ${register ? `<div class="field"><label for="auth-name">Full name</label><input class="input" id="auth-name" name="name" autocomplete="name" placeholder="Alex Morgan" required minlength="2" /></div>` : ""}
+                <div class="field"><label for="auth-email">Email address</label><input class="input" id="auth-email" name="email" type="email" autocomplete="email" placeholder="you@example.com" required /></div>
+                ${register ? `<div class="field"><label for="auth-role">I am a</label><select class="select" id="auth-role" name="role"><option value="candidate">Job seeker</option><option value="recruiter">Recruiter</option></select></div>` : ""}
+                <div class="field"><label for="auth-password">Password</label><div class="password-wrap"><input class="input" id="auth-password" name="password" type="password" autocomplete="${register ? "new-password" : "current-password"}" placeholder="${register ? "At least 8 characters" : "Enter your password"}" minlength="${register ? "8" : "1"}" required /><button type="button" class="password-toggle" data-toggle-password="auth-password" aria-label="Show password" title="Show password">👁</button></div></div>
+                ${register ? "" : `<div style="text-align:right;margin-top:-6px;margin-bottom:12px;"><button type="button" class="text-button" data-action="open-forgot-password" style="font-size:12px;">Forgot password?</button></div>`}
+                <button class="btn btn-primary auth-submit" type="submit" ${state.busy ? "disabled" : ""}>${state.busy ? "Please wait…" : register ? "Create account →" : "Sign in →"}</button>
+              </form>
+              <div class="auth-switch">${register ? "Already have an account?" : "New to SkillSphere?"} <button type="button" data-action="toggle-auth">${register ? "Sign in" : "Create an account"}</button></div>
+              ${register ? "" : `<div class="demo-logins"><span>Explore a demo workspace · password: ${demoPassword}</span><div class="demo-buttons"><button data-demo="candidate@skillsphere.dev">Job seeker</button><button data-demo="recruiter@skillsphere.dev">Recruiter</button><button data-demo="admin@skillsphere.dev">Admin</button></div></div>`}
+            `}
+          </section>
         </div>
       </section>
-      <section class="auth-card">
-        <span class="eyebrow">${register ? "Get started" : "Welcome back"}</span>
-        <h2>${register ? "Create your account" : "Sign in to SkillSphere"}</h2>
-        <p>${register ? "Set up your space and start finding your fit." : "Your next opportunity is closer than you think."}</p>
-        <form class="auth-form" id="auth-form">
-          ${register ? `<div class="field"><label for="auth-name">Full name</label><input class="input" id="auth-name" name="name" autocomplete="name" placeholder="Alex Morgan" required minlength="2" /></div>` : ""}
-          <div class="field"><label for="auth-email">Email address</label><input class="input" id="auth-email" name="email" type="email" autocomplete="email" placeholder="you@example.com" required /></div>
-          ${register ? `<div class="field"><label for="auth-role">I am a</label><select class="select" id="auth-role" name="role"><option value="candidate">Job seeker</option><option value="recruiter">Recruiter</option></select></div>` : ""}
-          <div class="field"><label for="auth-password">Password</label><div class="password-wrap"><input class="input" id="auth-password" name="password" type="password" autocomplete="${register ? "new-password" : "current-password"}" placeholder="${register ? "At least 8 characters" : "Enter your password"}" minlength="${register ? "8" : "1"}" required /><button type="button" class="password-toggle" data-toggle-password="auth-password" aria-label="Show password" title="Show password">👁</button></div></div>
-          <button class="btn btn-primary auth-submit" type="submit" ${state.busy ? "disabled" : ""}>${state.busy ? "Please wait…" : register ? "Create account →" : "Sign in →"}</button>
-        </form>
-        <div class="auth-switch">${register ? "Already have an account?" : "New to SkillSphere?"} <button type="button" data-action="toggle-auth">${register ? "Sign in" : "Create an account"}</button></div>
-        ${register ? "" : `<div class="demo-logins"><span>Explore a demo workspace · password: ${demoPassword}</span><div class="demo-buttons"><button data-demo="candidate@skillsphere.dev">Job seeker</button><button data-demo="recruiter@skillsphere.dev">Recruiter</button><button data-demo="admin@skillsphere.dev">Admin</button></div></div>`}
+
+      <section class="public-section" id="explore-categories">
+        <div class="public-section-head">
+          <div><span class="eyebrow">Browse by domain</span><h2>Explore career categories</h2><p>Discover open opportunities organized by discipline.</p></div>
+          <button type="button" class="btn btn-quiet btn-small" data-action="public-signin">Browse all roles →</button>
+        </div>
+        <div class="category-grid">
+          ${categories.map(([title, glyph, sub]) => `
+            <div class="category-card">
+              <div class="category-icon">${glyph}</div>
+              <div><strong>${esc(title)}</strong><small>${esc(sub)}</small></div>
+            </div>
+          `).join("")}
+        </div>
       </section>
-    </main>`;
+
+      <section class="public-section" id="ai-matching" style="padding-top:12px;">
+        <div class="public-section-head">
+          <div><span class="eyebrow">How SkillSphere works</span><h2>Built for fair, fast, high-signal hiring</h2></div>
+        </div>
+        <div class="feature-strip">
+          <article class="feature-box">
+            <div class="feature-num">01</div>
+            <h3>AI Resume &amp; Skill Matching</h3>
+            <p>Upload your PDF or DOCX resume once. SkillSphere extracts your skills and shows transparent matched vs. missing skills for every role.</p>
+          </article>
+          <article class="feature-box">
+            <div class="feature-num">02</div>
+            <h3>Round 1 Technical Assessments</h3>
+            <p>Recruiters can invite any candidate to a curated, proctored 20-question technical assessment with clear feedback and instant scoring.</p>
+          </article>
+          <article class="feature-box">
+            <div class="feature-num">03</div>
+            <h3>Live Coding &amp; Interviews</h3>
+            <p>Schedule interviews across timezones, share candidate dossiers, and collaborate in real-time coding rooms with full audit visibility.</p>
+          </article>
+        </div>
+      </section>
+
+      <section class="public-section" id="featured-roles" style="padding-top:12px;">
+        <div class="public-section-head">
+          <div><span class="eyebrow">Hiring now</span><h2>Featured opportunities &amp; teams</h2><p>Sign in to view full details, check your AI match score, and apply in one click.</p></div>
+        </div>
+        <div class="job-grid">
+          <article class="job-card"><div class="job-card-top"><div><h3>Senior Backend Engineer</h3><p>Northstar · Remote</p></div><span class="company-mark">N</span></div><div class="job-meta"><span class="badge badge-blue">Full-time</span><span>3–5 years</span></div><div class="skills"><span class="skill">Python</span><span class="skill">FastAPI</span><span class="skill">SQL</span></div><div class="job-card-bottom"><span class="salary">$130k – $160k</span><button type="button" class="btn btn-primary btn-small" data-action="public-signin">Sign in to apply →</button></div></article>
+          <article class="job-card"><div class="job-card-top"><div><h3>Product Designer</h3><p>Layer · New York, NY</p></div><span class="company-mark">L</span></div><div class="job-meta"><span class="badge badge-blue">Full-time</span><span>2–4 years</span></div><div class="skills"><span class="skill">Figma</span><span class="skill">Design Systems</span><span class="skill">UX Research</span></div><div class="job-card-bottom"><span class="salary">$110k – $135k</span><button type="button" class="btn btn-primary btn-small" data-action="public-signin">Sign in to apply →</button></div></article>
+        </div>
+      </section>
+
+      <section class="public-section" id="testimonials" style="padding-top:12px;">
+        <div class="public-section-head">
+          <div><span class="eyebrow">Trusted by teams &amp; talent</span><h2>What users say about SkillSphere</h2></div>
+        </div>
+        <div class="testimonial-grid">
+          <article class="testimonial-card"><p>“Seeing my exact matched and missing skills before applying helped me tailor my preparation and land my Round 1 pass.”</p><div class="testimonial-author"><div class="avatar">AM</div><div><strong>Alex Morgan</strong><small>Software Engineer</small></div></div></article>
+          <article class="testimonial-card"><p>“Managing question banks, Round 1 invitations, and live interview scorecards in one workspace cut our screening time in half.”</p><div class="testimonial-author"><div class="avatar">JR</div><div><strong>Jamie Rivera</strong><small>Technical Recruiter</small></div></div></article>
+          <article class="testimonial-card"><p>“The AI Career Assistant and mock interview practice gave me clear, actionable feedback before my final technical round.”</p><div class="testimonial-author"><div class="avatar">PK</div><div><strong>Priya Kapoor</strong><small>Data Analyst</small></div></div></article>
+        </div>
+      </section>
+
+      <section class="public-section" style="padding-top:12px;">
+        <div class="cta-banner">
+          <div><h2>Ready to make your next hire or career move?</h2><p>Create a verified SkillSphere account in under a minute.</p></div>
+          <div style="display:flex;gap:10px;flex-wrap:wrap;">
+            <button type="button" class="btn btn-quiet" data-action="public-signin">Sign in</button>
+            <button type="button" class="btn btn-primary" style="background:#fff;color:#312e81;" data-action="public-register">Create free account →</button>
+          </div>
+        </div>
+      </section>
+
+      <footer class="public-footer">
+        <div class="public-footer-inner">
+          <div><a class="brand" href="#"><span class="brand-mark">S</span><span style="color:#fff;">SkillSphere</span></a><p style="margin-top:12px;font-size:12px;line-height:1.6;color:#94a3b8;">Modern recruitment and career intelligence platform connecting candidates and hiring teams.</p></div>
+          <div><h4>Candidates</h4><ul><li><a href="#explore-categories">Browse Categories</a></li><li><a href="#ai-matching">AI Skill Matching</a></li><li><a href="#featured-roles">Featured Roles</a></li></ul></div>
+          <div><h4>Recruiters</h4><ul><li><a href="#ai-matching">Round 1 Assessments</a></li><li><a href="#ai-matching">Live Interviews</a></li><li><a href="#auth-card">Recruiter Portal</a></li></ul></div>
+          <div><h4>Platform</h4><ul><li><a href="#testimonials">Testimonials</a></li><li><a href="#auth-card">Sign In</a></li><li><a href="#auth-card">Create Account</a></li></ul></div>
+        </div>
+        <div class="public-footer-bottom">
+          <span>© 2026 SkillSphere Recruitment Platform. All rights reserved.</span>
+          <span>Secure · Verified · Transparent</span>
+        </div>
+      </footer>
+    </div>`;
   app.dataset.register = String(register);
 }
 
 function navItems() {
   const common = [["Dashboard", "⌂"], ["Find jobs", "⌕"], ["Applications", "▤"], ["Assessments", "✓"], ["My profile", "◉"]];
-  if (state.user?.role === "recruiter") return [["Dashboard", "⌂"], ["My jobs", "▣"], ["Applicants", "♙"], ["Assessments", "✓"], ["Live monitoring", "◎"], ["Question bank", "☷"], ["Interviews", "◷"], ["Company profile", "◉"]];
-  if (state.user?.role === "admin") return [["Dashboard", "⌂"], ["Users", "♙"], ["Job listings", "▣"], ["Assessments", "✓"], ["Live monitoring", "◎"], ["Question bank", "☷"], ["Interviews", "◷"]];
-  return [...common, ["Interviews", "◷"], ["Career Assistant", "💬"]];
+  if (state.user?.role === "recruiter") return [["Dashboard", "⌂"], ["My jobs", "▣"], ["Applicants", "♙"], ["Assessments", "✓"], ["Live monitoring", "◎"], ["Question bank", "☷"], ["Interviews", "◷"], ["Company profile", "◉"], ["Support", "☏"]];
+  if (state.user?.role === "admin") return [["Dashboard", "⌂"], ["Users", "♙"], ["Job listings", "▣"], ["Assessments", "✓"], ["Live monitoring", "◎"], ["Question bank", "☷"], ["Interviews", "◷"], ["Support", "☏"], ["Audit logs", "🛡"]];
+  return [...common, ["Practice", "✎"], ["Interviews", "◷"], ["Career Assistant", "💬"], ["Support", "☏"]];
 }
 
 function updatePageTitle(pageName) {
@@ -896,7 +1069,7 @@ function notificationPanel() {
   if (!state.notificationsOpen) return "";
   const rows = state.notifications;
   return `<section class="notification-panel" aria-label="Notifications">
-    <div class="notification-head"><div><strong>Notifications</strong><small>${state.unreadNotifications} unread</small></div><button class="text-button" data-action="mark-all-read" ${state.unreadNotifications ? "" : "disabled"}>Mark all read</button></div>
+    <div class="notification-head"><div><strong>Notifications</strong><small>${state.unreadNotifications} unread</small></div><div class="inline-actions"><button class="text-button" data-action="open-email-preferences">Email settings</button><button class="text-button" data-action="mark-all-read" ${state.unreadNotifications ? "" : "disabled"}>Mark all read</button></div></div>
     ${rows.length ? rows.map(item => `<div class="notification-item${item.is_read ? "" : " unread"}">
       <button data-action="open-notification" data-id="${esc(item.id)}"><span class="notification-dot"></span><span><strong>${esc(item.title)}</strong><small>${esc(item.message)}</small><time>${dateLabel(item.created_at)}</time></span></button>
       ${item.action_url && item.type.startsWith("interview_") && item.related_application_id
@@ -910,7 +1083,7 @@ function shell(content) {
   updatePageTitle(state.page);
   const active = name => state.page === name ? " active" : "";
   const nav = navItems().map(([name, glyph]) =>
-    `<button class="nav-item${active(name)}" data-page="${esc(name)}">${icon(glyph, name)}</button>`).join("");
+    `<button class="nav-item${active(name)}" data-page="${esc(name)}" aria-label="${esc(name)}" title="${esc(name)}">${icon(glyph, name)}</button>`).join("");
   app.innerHTML = `
     <div class="app-shell">
       <header class="topbar">
@@ -952,7 +1125,7 @@ function jobRow(job, actionLabel = "View role") {
   return `<article class="job-row"><div class="company-mark">${esc(initials(job.company))}</div><div><h3>${esc(job.title)}</h3><p>${esc(job.company)} · ${esc(job.location)}</p><div class="job-meta"><span>${esc(job.job_type || "Full-time")}</span><span>${esc(job.experience || "All levels")}</span>${job.salary ? `<span>${esc(job.salary)}</span>` : ""}</div></div><button class="btn btn-quiet btn-small" ${action}>${actionLabel}</button></article>`;
 }
 
-function recruiterJobRow(job) {
+function recruiterJobRow(job, showRemove = false) {
   return `<article class="job-row">
     <div class="company-mark">${esc(initials(job.company))}</div>
     <div style="flex:1">
@@ -968,9 +1141,10 @@ function recruiterJobRow(job) {
       </div>
     </div>
     <div style="display:flex;gap:8px;align-items:center;">
+      <button class="btn btn-quiet btn-small" data-action="open-edit-job" data-id="${esc(job.id)}">Edit</button>
       <button class="btn btn-quiet btn-small" data-page="Applicants">Applicants</button>
       <button class="btn btn-quiet btn-small" data-action="manage-question-bank" data-id="${esc(job.id)}">Question Bank</button>
-      <button class="btn btn-danger btn-small" data-action="delete-job" data-id="${esc(job.id)}" data-title="${esc(job.title)}" style="color:#dc2626;border-color:#fca5a5;background:transparent;cursor:pointer;">Delete</button>
+      ${showRemove ? `<button class="btn btn-danger btn-small" data-action="delete-job" data-id="${esc(job.id)}" data-title="${esc(job.title)}" style="color:#dc2626;border-color:#fca5a5;background:transparent;cursor:pointer;">Remove</button>` : ""}
     </div>
   </article>`;
 }
@@ -1118,25 +1292,39 @@ function candidateDashboard() {
 
 function jobCard(job) {
   const skills = (job.skills || []).slice(0, 4).map(skill => `<span class="skill">${esc(skill)}</span>`).join("");
-  return `<article class="job-card"><div class="job-card-top"><div><h3>${esc(job.title)}</h3><p>${esc(job.company)} · ${esc(job.location)}</p></div><span class="company-mark">${esc(initials(job.company))}</span></div><div class="job-meta"><span>${esc(job.job_type || "Full-time")}</span><span>${esc(job.experience || "All levels")}</span><span>${esc(dateLabel(job.created_at))}</span></div><div class="skills">${skills}</div><div class="job-card-bottom"><span class="salary">${esc(job.salary || "Salary not listed")}</span><button class="btn btn-primary btn-small" data-job="${esc(job.id)}">View details →</button></div></article>`;
+  const isSaved = state.savedJobIds && (state.savedJobIds.has(String(job.id)) || state.savedJobIds.has(Number(job.id)));
+  return `<article class="job-card"><div class="job-card-top"><div><h3>${esc(job.title)}</h3><p>${esc(job.company)} · ${esc(job.location)}</p></div><div style="display:flex;align-items:center;gap:6px;"><button type="button" class="icon-button" data-action="toggle-save-job" data-id="${esc(job.id)}" title="${isSaved ? 'Remove from saved' : 'Save role'}" style="color:${isSaved ? '#c83b42' : '#a8a29e'};font-size:16px;">${isSaved ? '★' : '☆'}</button><span class="company-mark">${esc(initials(job.company))}</span></div></div><div class="job-meta"><span>${esc(job.job_type || "Full-time")}</span><span>${esc(job.experience || "All levels")}</span><span>${esc(dateLabel(job.created_at))}</span></div><div class="skills">${skills}</div><div class="job-card-bottom"><span class="salary">${esc(job.salary || "Salary not listed")}</span><button class="btn btn-primary btn-small" data-job="${esc(job.id)}">View details →</button></div></article>`;
 }
 
 function jobsPage() {
   const action = state.user.role === "recruiter" ? `<button class="btn btn-primary" data-action="new-job">＋ Post a role</button>` : "";
-  return `${heading("Discover what's next", "Find your next <span style='color:#c83b42'>great fit.</span>", "Explore open roles and focus on the ones that feel right.", action)}
-    <section class="card"><div class="filters">
-      <div class="filter-input"><input class="input" id="job-query" placeholder="⌕   Search role, company, or skill" value="${esc(state.query)}" aria-label="Search jobs" /></div>
-      <div class="filter-field"><input class="input" id="job-location" placeholder="Location" value="${esc(state.location)}" aria-label="Filter by location" /></div>
-      <div class="filter-field"><select class="select" id="job-type" aria-label="Filter by job type"><option value="">All job types</option>${["Full-time", "Part-time", "Contract", "Remote"].map(value => `<option ${state.jobType === value ? "selected" : ""}>${value}</option>`).join("")}</select></div>
-      <div class="filter-field"><input class="input" id="job-experience" placeholder="Experience" value="${esc(state.experience)}" aria-label="Filter by experience" /></div>
-      <div class="filter-field"><input class="input" id="job-skill" placeholder="Required skill" value="${esc(state.skill)}" aria-label="Filter by skill" /></div>
-      <div class="filter-field"><select class="select" id="job-sort" aria-label="Sort job results"><option value="newest" ${state.sortBy === "newest" ? "selected" : ""}>Newest first</option><option value="company" ${state.sortBy === "company" ? "selected" : ""}>Company A–Z</option><option value="title" ${state.sortBy === "title" ? "selected" : ""}>Role A–Z</option></select></div>
-      <button class="btn btn-quiet" data-action="filter-jobs">Search roles</button>
-    </div>
-    <div class="card-heading"><div><h2>Open opportunities <span class="badge">${state.jobs.length}</span></h2><p>Roles that match your search</p></div><span class="badge badge-green">Updated today</span></div>
-    <div class="job-grid">${state.jobs.length ? state.jobs.map(jobCard).join("") : empty("No roles found", "Try a different search or clear your filters.", "⌕")}</div>
-    ${state.jobTotal > 6 ? `<div class="job-card-bottom" style="margin-top:14px"><span class="stat-note">Page ${state.jobPage} of ${Math.ceil(state.jobTotal / 6)}</span><div style="display:flex;gap:7px"><button class="btn btn-quiet btn-small" data-action="prev-page" ${state.jobPage <= 1 ? "disabled" : ""}>← Previous</button><button class="btn btn-quiet btn-small" data-action="next-page" ${state.jobPage >= Math.ceil(state.jobTotal / 6) ? "disabled" : ""}>Next →</button></div></div>` : ""}
-    </section>`;
+  const recommended = state.recommendedJobsList || [];
+  return `${heading("Discover what's next", "Find your next <span style='color:var(--accent)'>great fit.</span>", "Explore open roles and focus on the ones that feel right.", action)}
+    ${state.user.role === "candidate" && recommended.length ? `
+      <section class="card" style="margin-bottom:18px;background:linear-gradient(135deg, #eef2ff 0%, #fff 100%);border-color:#c7d2fe;">
+        <div class="card-heading"><div><h2>Recommended For You <span class="badge badge-blue">AI Match</span></h2><p>Roles matching skills detected in your profile &amp; resume</p></div><span class="badge badge-green">${recommended.length} matches</span></div>
+        <div class="job-grid">${recommended.slice(0, 3).map(jobCard).join("")}</div>
+      </section>
+    ` : ""}
+    <div class="jobs-layout">
+      <aside class="card jobs-filter-sidebar" aria-label="Job search filters">
+        <div class="card-heading" style="margin-bottom:8px;"><div><h2>Filter roles</h2><p>Narrow down opportunities</p></div><button type="button" class="text-button" data-action="clear-job-filters">Reset</button></div>
+        <div class="filters">
+          <div class="field"><label for="job-query">Keyword</label><input class="input" id="job-query" placeholder="Role, company, or skill" value="${esc(state.query)}" aria-label="Search jobs" /></div>
+          <div class="field"><label for="job-location">Location</label><input class="input" id="job-location" placeholder="City or Remote" value="${esc(state.location)}" aria-label="Filter by location" /></div>
+          <div class="field"><label for="job-type">Employment type</label><select class="select" id="job-type" aria-label="Filter by job type"><option value="">All job types</option>${["Full-time", "Part-time", "Contract", "Remote"].map(value => `<option ${state.jobType === value ? "selected" : ""}>${value}</option>`).join("")}</select></div>
+          <div class="field"><label for="job-experience">Experience (years)</label><input class="input" id="job-experience" type="number" min="0" max="50" step="1" inputmode="numeric" placeholder="e.g. 2" value="${esc(state.experience)}" aria-label="Filter by experience in years" /></div>
+          <div class="field"><label for="job-skill">Required skill</label><input class="input" id="job-skill" placeholder="e.g. Python, Figma" value="${esc(state.skill)}" aria-label="Filter by skill" /></div>
+          <div class="field"><label for="job-sort">Sort by</label><select class="select" id="job-sort" aria-label="Sort job results"><option value="newest" ${state.sortBy === "newest" ? "selected" : ""}>Newest first</option><option value="company" ${state.sortBy === "company" ? "selected" : ""}>Company A–Z</option><option value="title" ${state.sortBy === "title" ? "selected" : ""}>Role A–Z</option></select></div>
+          <button class="btn btn-primary" data-action="filter-jobs">Search roles</button>
+        </div>
+      </aside>
+      <section class="card">
+        <div class="card-heading"><div><h2>Open opportunities <span class="badge">${state.jobs.length}</span></h2><p>Roles that match your search</p></div><span class="badge badge-green">Updated today</span></div>
+        <div class="job-grid">${state.jobs.length ? state.jobs.map(jobCard).join("") : empty("No roles found", "Try a different search or clear your filters.", "⌕")}</div>
+        ${state.jobTotal > 6 ? `<div class="job-card-bottom" style="margin-top:16px"><span class="stat-note">Page ${state.jobPage} of ${Math.ceil(state.jobTotal / 6)}</span><div style="display:flex;gap:7px"><button class="btn btn-quiet btn-small" data-action="prev-page" ${state.jobPage <= 1 ? "disabled" : ""}>← Previous</button><button class="btn btn-quiet btn-small" data-action="next-page" ${state.jobPage >= Math.ceil(state.jobTotal / 6) ? "disabled" : ""}>Next →</button></div></div>` : ""}
+      </section>
+    </div>`;
 }
 
 function applicationsPage() {
@@ -1330,7 +1518,7 @@ Answer: A</pre><p>Difficulty may be Easy, Medium, or Hard. Text PDFs are recomme
       </form>
     </section>
     <section class="card" style="margin-top:16px"><div class="card-heading"><div><h2>Questions</h2><p>${state.questionBankQuestions.length} total questions · ${summary.active_count || 0} active</p></div></div>
-      ${state.questionBankQuestions.length ? `<div class="question-list">${state.questionBankQuestions.map(question => `<article class="question-item"><div><span class="eyebrow">${esc(question.technology)} · ${esc(question.difficulty)} · ${question.active ? "Active" : "Inactive"}</span><strong>${esc(question.question)}</strong><small>${question.options.map((option, index) => `${index === question.correct_index ? "✓ " : ""}${esc(option)}`).join(" · ")}</small></div><div class="question-actions"><button class="text-button" data-action="edit-question" data-id="${esc(question.id)}">Edit</button><button class="text-button" data-action="toggle-question" data-id="${esc(question.id)}">${question.active ? "Deactivate" : "Activate"}</button><button class="text-button danger-text" data-action="delete-question" data-id="${esc(question.id)}">Delete</button></div></article>`).join("")}</div>` : empty("No questions yet", "Add job-specific questions above to make this assessment bank ready.", "☷")}
+      ${state.questionBankQuestions.length ? `<div class="question-list">${state.questionBankQuestions.map(question => `<article class="question-item"><div><span class="eyebrow">${esc(question.technology)} · ${esc(question.difficulty)} · ${question.active ? "Active" : "Inactive"}</span><strong>${esc(question.question)}</strong><small>${question.options.map((option, index) => `${index === question.correct_index ? "✓ " : ""}${esc(option)}`).join(" · ")}</small></div><div class="question-actions"><button class="text-button" data-action="duplicate-question" data-id="${esc(question.id)}" title="Duplicate question">Duplicate</button><button class="text-button" data-action="edit-question" data-id="${esc(question.id)}">Edit</button><button class="text-button" data-action="toggle-question" data-id="${esc(question.id)}">${question.active ? "Deactivate" : "Activate"}</button><button class="text-button danger-text" data-action="delete-question" data-id="${esc(question.id)}">Delete</button></div></article>`).join("")}</div>` : empty("No questions yet", "Add job-specific questions above to make this assessment bank ready.", "☷")}
     </section>`;
 }
 function profilePage() {
@@ -1360,6 +1548,35 @@ function profilePage() {
           <div class="match-score"><div><strong>Phone</strong><p>${esc(parsed.phone || "Not provided")}</p></div></div>
           <div class="skills">${(parsed.skills || []).map(skill => `<span class="skill">${esc(skill)}</span>`).join("") || `<span class="skill">No skills detected</span>`}</div>
         </div>` : ""}
+        ${state.resumeQuality ? `
+          <div style="margin-top:16px;padding:12px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;">
+            <div style="display:flex;justify-content:space-between;align-items:center;">
+              <strong style="font-size:12px;">Resume Quality Score</strong>
+              <span class="badge ${state.resumeQuality.quality_score >= 80 ? 'badge-green' : state.resumeQuality.quality_score >= 50 ? 'badge-amber' : 'badge-red'}">${state.resumeQuality.quality_score}% · ${esc(state.resumeQuality.level)}</span>
+            </div>
+            ${(state.resumeQuality.missing_critical_info || []).length ? `
+              <div style="margin-top:8px;font-size:11px;color:#b91c1c;">
+                <strong>Missing details:</strong> ${(state.resumeQuality.missing_critical_info || []).join(", ")}
+              </div>
+            ` : ""}
+            ${(state.resumeQuality.actionable_suggestions || []).length ? `
+              <ul style="margin:6px 0 0 16px;padding:0;font-size:11px;color:#475569;">
+                ${state.resumeQuality.actionable_suggestions.slice(0, 3).map(s => `<li>${esc(s)}</li>`).join("")}
+              </ul>
+            ` : ""}
+          </div>
+        ` : ""}
+        ${(state.resumeVersions || []).length > 1 ? `
+          <div style="margin-top:16px;">
+            <strong style="font-size:12px;display:block;margin-bottom:6px;">Resume Version History (${state.resumeVersions.length})</strong>
+            <div style="display:flex;flex-direction:column;gap:6px;font-size:11px;">
+              ${state.resumeVersions.map(v => `<div style="display:flex;justify-content:space-between;padding:6px 8px;background:#f5f5f4;border-radius:6px;">
+                <span>v${v.version_number}: ${esc(v.filename)}</span>
+                <time style="color:#78716c">${dateLabel(v.created_at)}</time>
+              </div>`).join("")}
+            </div>
+          </div>
+        ` : ""}
       </aside>
     </div>`;
 }
@@ -1636,7 +1853,15 @@ function aiAssistantPage() {
       "Career Assistant",
       "SkillSphere Career Assistant",
       "Prepare for interviews, analyze your resume, explore technical concepts, and receive offline career guidance.",
-      `<div style="display:flex;align-items:center;gap:10px;">
+      `<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+        <select class="select" id="assistant-language-select" style="max-width:130px;font-size:11px;" aria-label="Assistant Language">
+          <option value="en" ${state.assistantLanguage === 'en' ? 'selected' : ''}>English (EN)</option>
+          <option value="es" ${state.assistantLanguage === 'es' ? 'selected' : ''}>Español (ES)</option>
+          <option value="hi" ${state.assistantLanguage === 'hi' ? 'selected' : ''}>हिन्दी (HI)</option>
+          <option value="fr" ${state.assistantLanguage === 'fr' ? 'selected' : ''}>Français (FR)</option>
+          <option value="de" ${state.assistantLanguage === 'de' ? 'selected' : ''}>Deutsch (DE)</option>
+        </select>
+        <button class="btn btn-quiet btn-small" data-action="escalate-support" title="Need human help? Open support ticket">Talk to Human / Support</button>
         <span class="ai-status-online"><span class="ai-status-dot"></span> Online</span>
         ${resumeBadge}
       </div>`
@@ -2053,7 +2278,7 @@ function liveAssessmentMonitoringSection(activeList) {
   const inProgressCount = items.filter(x => x.assessment_status === "Started").length;
 
   return `
-    <section class="card" style="margin-bottom:16px;">
+    <section id="live-monitoring-container" class="card" style="margin-bottom:16px;">
       <div class="card-heading">
         <div>
           <div style="display:flex;align-items:center;gap:8px;">
@@ -2227,8 +2452,16 @@ function recruiterDashboard() {
         <div class="job-list">${ownJobs.slice(0, 4).map(job => recruiterJobRow(job)).join("") || empty("No roles posted", "Create your first role to meet great candidates.")}</div>
       </article>
       <article class="card">
-        <div class="card-heading"><div><h2>Recent applicants</h2><p>A pulse check on your team’s pipeline</p></div></div>
-        <div class="application-list">${applicants.slice(0, 4).map(item => `<div class="application-row"><div><strong>${esc(item.candidate_name)}</strong><small>${esc(item.title)}</small></div><span class="badge badge-red">${esc(item.status)}</span></div>`).join("") || empty("Your applicant list is quiet", "New applicants will show up here.", "♙")}</div>
+        <div class="card-heading"><div><h2>Recent applicants</h2><p>A pulse check on your team’s pipeline</p></div><button class="text-button" data-page="Applicants">View all →</button></div>
+        <div class="application-list">${applicants.slice(0, 4).map(item => {
+          const st = item.assessment_status || "Not Sent";
+          const btn = ["Sent", "Expired"].includes(st)
+            ? `<span class="badge badge-amber">${esc(st)}</span><button class="btn btn-quiet btn-small" data-action="reissue-assessment" data-id="${esc(item.id)}">Resend Round 1 Assessment</button>`
+            : !["Started", "Completed", "Pending Recruiter Decision"].includes(st)
+              ? `<button class="btn btn-primary btn-small" data-action="send-assessment" data-id="${esc(item.id)}" title="Send Round 1 assessment invitation to this candidate">Send Round 1 Assessment</button>`
+              : "";
+          return `<div class="application-row"><div><strong>${esc(item.candidate_name)}</strong><small>${esc(item.title)}</small></div><div class="inline-actions">${btn}<span class="badge badge-red">${esc(item.status)}</span></div></div>`;
+        }).join("") || empty("Your applicant list is quiet", "New applicants will show up here.", "♙")}</div>
       </article>
     </section>`;
 }
@@ -2236,26 +2469,22 @@ function recruiterDashboard() {
 function recruiterJobsPage() {
   return `${heading("Manage your openings", "My jobs", "Create, update, and keep track of the roles you’ve posted.", `<button class="btn btn-primary" data-action="new-job">＋ Post a role</button>`)}
     <section class="card"><div class="card-heading"><div><h2>Published roles</h2><p>${state.jobs.length} open opportunit${state.jobs.length === 1 ? "y" : "ies"}</p></div></div>
-    <div class="job-list">${state.jobs.length ? state.jobs.map(job => recruiterJobRow(job)).join("") : empty("Nothing posted yet", "Post a role and find the right person for your team.")}</div></section>`;
+    <div class="job-list">${state.jobs.length ? state.jobs.map(job => recruiterJobRow(job, true)).join("") : empty("Nothing posted yet", "Post a role and find the right person for your team.")}</div></section>`;
 }
 
 function applicantsPage() {
   const rows = state.applications;
   return `${heading("Meet the people behind the profiles", "Applicants", "Review candidates and keep your hiring process moving.")}
     <section class="card"><div class="card-heading"><div><h2>Applications to review</h2><p>${rows.length} candidate${rows.length === 1 ? "" : "s"} across your open roles</p></div><button class="btn btn-quiet btn-small" data-page="Interviews">View interviews</button></div>
-    ${rows.length ? `<datalist id="assessment-topics">${["Python", "Java", "JavaScript/React", "SQL"].map(value => `<option value="${esc(value)}"></option>`).join("")}</datalist><div class="table-wrap"><table><thead><tr><th>Candidate</th><th>Role</th><th>Match</th><th>Applied</th><th>Resume</th><th>Status</th><th>Assessment</th><th>Topic</th><th>Email sent</th><th>Score</th><th>Completed</th><th>Actions</th></tr></thead><tbody>${rows.map(item => {
-      const eligible = Number(item.match_percentage) >= 70;
-      const assessmentStatus = item.assessment_status || (eligible ? "Not Sent" : "Not eligible");
-      const assessmentAction = !eligible ? "—"
-        : assessmentStatus === "Not Sent"
-          ? `<button class="text-button" data-action="send-assessment" data-id="${esc(item.id)}">Send assessment</button>`
-          : ["Sent", "Expired"].includes(assessmentStatus)
-            ? `<button class="text-button" data-action="reissue-assessment" data-id="${esc(item.id)}">Re-send link</button>`
-            : assessmentStatus === "Started" ? `<button class="text-button" data-action="view-live-video" data-id="${esc(item.assessment_id || item.id)}" style="color:#16a34a;font-weight:600;">◎ Live Video</button>`
-              : ["Completed", "Pending Recruiter Decision"].includes(assessmentStatus) ? (item.status.startsWith("Round 1 ") ? `<span class="badge ${item.status === 'Round 1 Passed' ? 'badge-green' : 'badge-red'}">${esc(item.status)}</span>` : `<span class="badge badge-amber">Pending Decision</span>`)
-                : assessmentStatus === "Manual Topic Required" ? "Choose topic"
-                  : assessmentStatus === "Expired" ? "Expired"
-                    : "—";
+    ${rows.length ? `<datalist id="assessment-topics">${["Python", "Java", "JavaScript/React", "SQL"].map(value => `<option value="${esc(value)}"></option>`).join("")}</datalist><div class="table-wrap"><table><thead><tr><th>Candidate</th><th>Assessment</th><th>Role</th><th>Match</th><th>Applied</th><th>Resume</th><th>Status</th><th>Topic</th><th>Email sent</th><th>Score</th><th>Completed</th><th>Actions</th></tr></thead><tbody>${rows.map(item => {
+      const assessmentStatus = item.assessment_status || "Not Sent";
+      const assessmentAction = ["Sent", "Expired"].includes(assessmentStatus)
+        ? `<div class="inline-actions"><span class="badge ${assessmentStatus === "Expired" ? "badge-red" : "badge-amber"}">${esc(assessmentStatus)}</span><button class="btn btn-quiet btn-small" data-action="reissue-assessment" data-id="${esc(item.id)}" title="Resend Round 1 assessment invitation to this candidate">Resend Round 1 Assessment</button></div>`
+        : assessmentStatus === "Started"
+          ? `<button class="text-button" data-action="view-live-video" data-id="${esc(item.assessment_id || item.id)}" style="color:#16a34a;font-weight:600;">◎ Live Video</button>`
+          : ["Completed", "Pending Recruiter Decision"].includes(assessmentStatus)
+            ? (item.status.startsWith("Round 1 ") ? `<span class="badge ${item.status === 'Round 1 Passed' ? 'badge-green' : 'badge-red'}">${esc(item.status)}</span>` : `<span class="badge badge-amber">Pending Decision</span>`)
+            : `<button class="btn btn-primary btn-small" data-action="send-assessment" data-id="${esc(item.id)}" title="Send Round 1 assessment invitation to this candidate">Send Round 1 Assessment</button>`;
       const topic = assessmentStatus === "Manual Topic Required"
         ? `<input class="status-select assessment-topic" list="assessment-topics" data-assessment-topic="${esc(item.id)}" aria-label="Choose assessment topic for ${esc(item.candidate_name)}" placeholder="Choose topic" />`
         : esc(item.assessment_topic || "—");
@@ -2265,7 +2494,7 @@ function applicantsPage() {
         : currentInterview && ["Scheduled", "Rescheduled"].includes(currentInterview.status)
           ? `<button class="text-button" data-action="edit-interview" data-id="${esc(currentInterview.id)}">Reschedule Interview</button>`
           : `<button class="text-button" data-action="schedule-interview" data-id="${esc(item.id)}">Schedule Interview</button>`;
-      return `<tr><td><strong>${esc(item.candidate_name)}</strong><small>${esc(item.candidate_email)}</small></td><td>${esc(item.title)}</td><td><strong>${item.match_percentage == null ? "—" : `${esc(item.match_percentage)}%`}</strong><details class="skill-details"><summary>Skills</summary><small>Matched: ${esc((item.matched_skills || []).join(", ") || "None")}</small><small>Missing: ${esc((item.missing_skills || []).join(", ") || "None")}</small></details></td><td>${dateLabel(item.applied_at)}</td><td><button class="text-button" data-action="download-resume" data-id="${esc(item.id)}">Open resume ↗</button></td><td><select class="status-select" data-status="${esc(item.id)}" aria-label="Update status for ${esc(item.candidate_name)}">${statusOptions(item.status).map(status => `<option ${status === (item.status === "Selected" ? "Accepted" : item.status) ? "selected" : ""}>${esc(status)}</option>`).join("")}</select></td><td>${assessmentAction}</td><td>${topic}</td><td>${item.assessment_email_sent_at ? dateLabel(item.assessment_email_sent_at) : "—"}</td><td>${item.assessment_score == null ? "—" : `${esc(item.assessment_score)}/20`}${item.assessment_result ? `<small>${esc(item.assessment_score_percentage)}% · ${esc(item.assessment_result)}</small>` : ""}</td><td>${item.assessment_submitted_at ? dateLabel(item.assessment_submitted_at) : "—"}</td><td><div class="inline-actions"><button class="text-button" data-action="view-ai-summary" data-id="${esc(item.id)}" title="Synthesize AI screening evaluation">⚡ AI Summary</button><button class="text-button" data-action="application-history" data-id="${esc(item.id)}">History</button><button class="text-button" data-action="edit-note" data-id="${esc(item.id)}">Notes</button>${item.assessment_id && ["Completed", "Pending Recruiter Decision"].includes(assessmentStatus) ? `<button class="text-button" data-action="review-assessment" data-id="${esc(item.assessment_id)}">Review & Decide</button>` : ""}${interviewAction}</div></td></tr>`;
+      return `<tr><td><strong>${esc(item.candidate_name)}</strong><small>${esc(item.candidate_email)}</small></td><td>${assessmentAction}</td><td>${esc(item.title)}</td><td><strong>${item.match_percentage == null ? "—" : `${esc(item.match_percentage)}%`}</strong><details class="skill-details"><summary>Skills</summary><small>Matched: ${esc((item.matched_skills || []).join(", ") || "None")}</small><small>Missing: ${esc((item.missing_skills || []).join(", ") || "None")}</small></details></td><td>${dateLabel(item.applied_at)}</td><td><button class="text-button" data-action="download-resume" data-id="${esc(item.id)}">Open resume ↗</button></td><td><select class="status-select" data-status="${esc(item.id)}" aria-label="Update status for ${esc(item.candidate_name)}">${statusOptions(item.status).map(status => `<option ${status === (item.status === "Selected" ? "Accepted" : item.status) ? "selected" : ""}>${esc(status)}</option>`).join("")}</select></td><td>${topic}</td><td>${item.assessment_email_sent_at ? dateLabel(item.assessment_email_sent_at) : "—"}</td><td>${item.assessment_score == null ? "—" : `${esc(item.assessment_score)}/20`}${item.assessment_result ? `<small>${esc(item.assessment_score_percentage)}% · ${esc(item.assessment_result)}</small>` : ""}</td><td>${item.assessment_submitted_at ? dateLabel(item.assessment_submitted_at) : "—"}</td><td><div class="inline-actions"><button class="text-button" data-action="open-message" data-recipient-id="${esc(item.user_id)}" data-recipient-name="${esc(item.candidate_name)}" data-app-id="${esc(item.id)}" data-job-id="${esc(item.job_id)}" title="Message Candidate">💬 Message</button><button class="text-button" data-action="view-ai-summary" data-id="${esc(item.id)}" title="Synthesize AI screening evaluation">⚡ AI Summary</button><button class="text-button" data-action="application-history" data-id="${esc(item.id)}">History</button><button class="text-button" data-action="edit-note" data-id="${esc(item.id)}">Notes</button>${item.assessment_id && ["Completed", "Pending Recruiter Decision"].includes(assessmentStatus) ? `<button class="text-button" data-action="review-assessment" data-id="${esc(item.assessment_id)}">Review & Decide</button>` : ""}${interviewAction}</div></td></tr>`;
     }).join("")}</tbody></table></div>` : empty("No applicants yet", "Candidate applications for your jobs will appear here.", "♙")}
     </section>`;
 }
@@ -2276,7 +2505,7 @@ function interviewListPage() {
   return `${heading("Meet face to face", "Interviews", "Review interview invitations and join scheduled meetings.", state.user.role === "recruiter" ? `<button class="btn btn-primary" data-page="Applicants">＋ Schedule interview</button>` : "")}
     <section class="interview-list">${rows.map(item => `<article class="card interview-card">
       <div><span class="eyebrow">${esc(item.company)}</span><h2>${esc(item.title)}</h2><p>${canManage ? `Candidate: ${esc(item.candidate_name)}` : `Interviewer: ${esc(item.recruiter_name)}`}</p><p>${dateTimeLabel(item.scheduled_at)} · ${canManage ? esc(item.timezone) : `Your local time (${esc(localTimeZone())})`} · ${esc(item.duration_minutes)} minutes</p><p><span class="badge ${item.status === "Cancelled" ? "badge-red" : item.status === "Completed" ? "badge-green" : "badge-amber"}">${canManage ? esc(item.status) : interviewDisplayStatus(item)}</span> · ${esc(item.meeting_platform)}</p>${item.recruiter_message ? `<p>${esc(item.recruiter_message)}</p>` : ""}${canManage ? `<p>Invitation viewed: ${item.candidate_viewed_at ? dateTimeLabel(item.candidate_viewed_at) : "Not yet"}</p>` : ""}</div>
-      <div class="interview-actions">${interviewDisplayStatus(item) === "Interview Scheduled" && /^https:\/\//i.test(item.meeting_url || "") ? `<a class="btn btn-primary btn-small" href="${esc(item.meeting_url)}" target="_blank" rel="noopener noreferrer">Join Interview ↗</a>` : ""}${state.user.role !== "admin" ? `<button class="btn btn-quiet btn-small" data-action="open-interview" data-id="${esc(item.id)}">Open coding room</button>` : ""}${canManage && ["Scheduled", "Rescheduled"].includes(item.status) ? `<button class="btn btn-quiet btn-small" data-action="edit-interview" data-id="${esc(item.id)}">Reschedule Interview</button><button class="text-button" data-action="cancel-interview" data-id="${esc(item.id)}">Cancel</button><button class="text-button" data-action="complete-interview" data-id="${esc(item.id)}">Mark completed</button>` : ""}</div>
+      <div class="interview-actions">${interviewDisplayStatus(item) === "Interview Scheduled" && /^https:\/\//i.test(item.meeting_url || "") ? `<a class="btn btn-primary btn-small" href="${esc(item.meeting_url)}" target="_blank" rel="noopener noreferrer">Join Interview ↗</a>` : ""}${canManage ? `<button class="btn btn-quiet btn-small" data-action="open-candidate-dossier" data-id="${esc(item.id)}">Candidate Dossier</button><button class="btn btn-quiet btn-small" data-action="open-scorecard" data-id="${esc(item.id)}">Scorecard</button>` : ""}${state.user.role !== "admin" ? `<button class="btn btn-quiet btn-small" data-action="open-interview" data-id="${esc(item.id)}">Open coding room</button>` : ""}${canManage && ["Scheduled", "Rescheduled"].includes(item.status) ? `<button class="btn btn-quiet btn-small" data-action="edit-interview" data-id="${esc(item.id)}">Reschedule Interview</button><button class="text-button" data-action="cancel-interview" data-id="${esc(item.id)}">Cancel</button><button class="text-button" data-action="complete-interview" data-id="${esc(item.id)}">Mark completed</button>` : ""}</div>
     </article>`).join("") || empty("No interviews scheduled", canManage ? "Choose an applicant and schedule an interview to get started." : "Your recruiter will share interview details here.", "◷")}</section>`;
 }
 
@@ -2406,6 +2635,7 @@ function currentContent() {
     if (state.page === "Interviews") return interviewListPage();
     if (state.page === "Interview room") return interviewRoomPage();
     if (state.page === "Company profile") return companyProfilePage();
+    if (state.page === "Support" && window.SkillSphereViews) return window.SkillSphereViews.supportPage();
     return recruiterDashboard();
   }
   if (state.user.role === "admin") {
@@ -2415,19 +2645,43 @@ function currentContent() {
     if (state.page === "Live monitoring") return liveMonitoringPage();
     if (state.page === "Question bank") return questionBankPage();
     if (state.page === "Interviews") return interviewListPage();
+    if (state.page === "Support" && window.SkillSphereViews) return window.SkillSphereViews.supportPage();
+    if (state.page === "Audit logs" && window.SkillSphereViews) return window.SkillSphereViews.adminAuditLogsPage();
     return adminDashboard();
   }
   if (state.page === "Find jobs") return jobsPage();
   if (state.page === "Applications") return applicationsPage();
   if (state.page === "Assessments") return assessmentsPage();
+  if (state.page === "Practice" && window.SkillSphereViews) return window.SkillSphereViews.practicePage();
   if (state.page === "Interviews") return interviewListPage();
   if (state.page === "Interview room") return interviewRoomPage();
   if (state.page === "My profile") return profilePage();
   if (state.page === "Career Assistant" || state.page === "AI Career Assistant") return aiAssistantPage();
+  if (state.page === "Support" && window.SkillSphereViews) return window.SkillSphereViews.supportPage();
   return candidateDashboard();
 }
 
 function renderModal() {
+  if (window.SkillSphereViews) {
+    const extModal = window.SkillSphereViews.renderModals();
+    if (extModal) return extModal;
+  }
+  if (state.modal === "email-preferences") {
+    const prefs = state.notificationPrefs || { messages_enabled: true, account_activity_enabled: true, system_alerts_enabled: true };
+    return `<div class="modal-backdrop" data-action="close-modal"><section class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+      <div class="modal-head"><div><span class="eyebrow">Email notifications</span><h2 id="modal-title">Notification preferences</h2><p>Essential transactional emails remain enabled for security, applications, assessments, and interviews.</p></div><button class="icon-button" aria-label="Close dialog" data-action="close-modal">×</button></div>
+      <form id="email-preferences-form" class="profile-form">
+        <div class="field span-2" style="padding:10px 12px;background:#f8fafc;border-radius:8px;border:1px solid #e2e8f0;">
+          <strong>Essential transactional emails (Always On)</strong>
+          <small style="display:block;color:#64748b;margin-top:4px;">Account verification, security alerts, application status updates, Round 1 assessments, and interview invitations.</small>
+        </div>
+        <label class="checkbox-field span-2" style="display:flex;align-items:center;gap:8px;cursor:pointer;"><input type="checkbox" name="messages_enabled" ${prefs.messages_enabled ? "checked" : ""} /> Direct messages &amp; recruiter replies</label>
+        <label class="checkbox-field span-2" style="display:flex;align-items:center;gap:8px;cursor:pointer;"><input type="checkbox" name="account_activity_enabled" ${prefs.account_activity_enabled ? "checked" : ""} /> Account &amp; job activity updates</label>
+        <label class="checkbox-field span-2" style="display:flex;align-items:center;gap:8px;cursor:pointer;"><input type="checkbox" name="system_alerts_enabled" ${prefs.system_alerts_enabled ? "checked" : ""} /> General system alerts &amp; tips</label>
+        <div class="modal-actions span-2"><button type="button" class="btn btn-quiet" data-action="close-modal">Cancel</button><button class="btn btn-primary" type="submit">Save preferences</button></div>
+      </form>
+    </section></div>`;
+  }
   if (state.modal === "new-job") return `<div class="modal-backdrop" data-action="close-modal"><section class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
     <div class="modal-head"><div><span class="eyebrow">Grow your team</span><h2 id="modal-title">Post a new role</h2><p>Share the details that help the right people find you.</p></div><button class="icon-button" aria-label="Close dialog" data-action="close-modal">×</button></div>
     <form id="job-form" class="profile-form"><div class="field span-2"><label>Role title</label><input class="input" name="title" placeholder="e.g. Product Designer" required minlength="2" maxlength="120" /></div>
@@ -2448,7 +2702,7 @@ function renderModal() {
       <p style="color:#706966;font-size:12px;line-height:1.75">${esc(job.description)}</p><div class="skills">${(job.skills || []).map(skill => `<span class="skill">${esc(skill)}</span>`).join("")}</div>
       ${state.user.role === "candidate" ? `<div class="match-score"><div><strong>Ready to apply?</strong><p>${state.resume ? "Your resume is on file and ready to share." : "Upload a resume from your profile before applying."}</p></div><button class="btn btn-primary btn-small" data-action="apply-job" data-id="${esc(job.id)}">Apply now →</button></div>` : ""}
       ${state.user.role === "candidate" ? `<div class="match-score"><div><strong>See how your skills line up</strong><p>Compare your resume with this role’s requirements.</p></div><button class="btn btn-quiet btn-small" data-action="check-match" data-id="${esc(job.id)}">Check match</button></div>${state.match?.job_id === job.id ? `<div class="resume-panel"><div class="card-heading"><div><h2>Skills match</h2><p>${esc(state.match.recommendation)}</p></div><div class="score-ring">${esc(state.match.match_percentage)}%</div></div><strong style="font-size:10px">Matched skills</strong><div class="skills">${state.match.matched_skills.map(skill => `<span class="skill" style="background:#e9f7f0;color:#308366">${esc(skill)}</span>`).join("") || `<span class="skill">No exact matches found</span>`}</div><strong style="display:block;margin-top:12px;font-size:10px">Skills to explore</strong><div class="skills">${state.match.missing_skills.map(skill => `<span class="skill">${esc(skill)}</span>`).join("") || `<span class="skill">You match every listed skill</span>`}</div></div>` : ""}` : ""}
-      ${["recruiter", "admin"].includes(state.user.role) ? `<div style="margin-top:20px;padding-top:12px;border-top:1px solid #e2e8f0;display:flex;justify-content:space-between;align-items:center;"><button class="btn btn-quiet btn-small" data-action="manage-question-bank" data-id="${esc(job.id)}">Question Bank</button><button class="btn btn-danger btn-small" data-action="delete-job" data-id="${esc(job.id)}" data-title="${esc(job.title)}" style="color:#dc2626;border-color:#fca5a5;background:transparent;cursor:pointer;">Delete job posting</button></div>` : ""}
+      ${["recruiter", "admin"].includes(state.user.role) ? `<div style="margin-top:20px;padding-top:12px;border-top:1px solid #e2e8f0;display:flex;justify-content:flex-end;align-items:center;"><button class="btn btn-quiet btn-small" data-action="manage-question-bank" data-id="${esc(job.id)}">Question Bank</button></div>` : ""}
     </section></div>`;
   }
   if (state.modal?.startsWith("interview:")) {
@@ -2681,6 +2935,12 @@ function renderModal() {
           }).join("")}
         </div>
       </section>
+      ${!isCandidate ? `
+        <div style="margin-top:16px;padding-top:14px;border-top:1px solid #e2e8f0;display:flex;justify-content:flex-end;gap:10px;">
+          <button class="btn btn-quiet btn-small" data-action="open-adjust-score" data-id="${esc(review.id)}" data-score="${esc(review.score)}">⚖ Adjust Score</button>
+          <button class="btn btn-quiet btn-small" data-action="retry-assessment" data-id="${esc(review.id)}">↻ Re-invite (Retry)</button>
+        </div>
+      ` : ""}
     </section></div>`;
   }
   if (state.modal === "ai-questions") {
@@ -3088,56 +3348,114 @@ async function loadProctoring() {
 async function loadWorkspace() {
   if (!state.user) return;
   try {
-    const jobsPath = state.user.role === "recruiter" ? "/jobs?mine=true&page_size=100" : "/jobs?page_size=6";
-    const [jobData, applicationData, interviewData, upcomingData, assessmentData, notificationData] = await Promise.all([
-      api(jobsPath),
-      state.user.role === "admin" ? Promise.resolve({ items: [] }) : api("/applications"),
-      api("/interviews"),
-      state.user.role === "candidate" ? api("/interviews/upcoming") : Promise.resolve({ items: [] }),
-      api(assessmentListPath()),
-      api("/notifications")
-    ]);
-    state.jobs = jobData.items || [];
-    state.jobTotal = jobData.total ?? state.jobs.length;
-    state.applications = applicationData.items || [];
-    state.interviews = interviewData.items || [];
-    state.upcomingInterviews = upcomingData.items || [];
-    state.assessments = assessmentData.items || [];
-    state.notifications = notificationData.items || [];
-    state.unreadNotifications = notificationData.unread_count || 0;
-    if (state.user.role === "candidate") {
-      const [resume, candidateAnalytics] = await Promise.all([
-        api("/resume"),
-        api("/candidate/analytics").catch(() => null)
+    let bootstrapped = false;
+    try {
+      const boot = await api("/workspace/bootstrap");
+      if (boot && boot.jobs) {
+        state.jobs = boot.jobs.items || [];
+        state.jobTotal = boot.jobs.total ?? state.jobs.length;
+        state.applications = boot.applications?.items || [];
+        state.interviews = boot.interviews?.items || [];
+        state.upcomingInterviews = boot.upcoming_interviews?.items || [];
+        state.assessments = boot.assessments?.items || [];
+        state.notifications = boot.notifications?.items || [];
+        state.unreadNotifications = boot.notifications?.unread_count || 0;
+        if (state.user.role === "candidate") {
+          state.resume = boot.resume;
+          state.candidateAnalytics = boot.candidate_analytics;
+          if (state.page === "Career Assistant" || state.page === "AI Career Assistant") {
+            await loadAiSessions();
+            await loadMockInterviewsHistory();
+          }
+        } else if (state.user.role === "recruiter") {
+          state.recruiterAnalytics = boot.recruiter_analytics;
+          state.liveMonitoringAssessments = boot.live_assessments?.items || [];
+        } else if (state.user.role === "admin") {
+          state.analytics = boot.analytics;
+          state.adminJobs = boot.admin_jobs?.items || [];
+          try {
+            state.proctoringItems = (await api(proctoringListPath())).items || [];
+          } catch (e) {}
+        }
+        bootstrapped = true;
+      }
+    } catch (bootError) {
+      bootstrapped = false;
+    }
+
+    if (!bootstrapped) {
+      const jobsPath = state.user.role === "recruiter" ? "/jobs?mine=true&page_size=100" : "/jobs?page_size=6";
+      const [jobData, applicationData, interviewData, upcomingData, assessmentData, notificationData] = await Promise.all([
+        api(jobsPath),
+        state.user.role === "admin" ? Promise.resolve({ items: [] }) : api("/applications"),
+        api("/interviews"),
+        state.user.role === "candidate" ? api("/interviews/upcoming") : Promise.resolve({ items: [] }),
+        api(assessmentListPath()),
+        api("/notifications")
       ]);
-      state.resume = resume;
-      state.candidateAnalytics = candidateAnalytics;
-      if (state.page === "Career Assistant" || state.page === "AI Career Assistant") {
-        await loadAiSessions();
-        await loadMockInterviewsHistory();
+      state.jobs = jobData.items || [];
+      state.jobTotal = jobData.total ?? state.jobs.length;
+      state.applications = applicationData.items || [];
+      state.interviews = interviewData.items || [];
+      state.upcomingInterviews = upcomingData.items || [];
+      state.assessments = assessmentData.items || [];
+      state.notifications = notificationData.items || [];
+      state.unreadNotifications = notificationData.unread_count || 0;
+      if (state.user.role === "candidate") {
+        const [resume, candidateAnalytics] = await Promise.all([
+          api("/resume"),
+          api("/candidate/analytics").catch(() => null)
+        ]);
+        state.resume = resume;
+        state.candidateAnalytics = candidateAnalytics;
+        if (state.page === "Career Assistant" || state.page === "AI Career Assistant") {
+          await loadAiSessions();
+          await loadMockInterviewsHistory();
+        }
+      }
+      if (state.user.role === "recruiter") {
+        try {
+          state.recruiterAnalytics = await api(`/recruiter/analytics?report_range=${encodeURIComponent(state.recruiterAnalyticsRange || "this_week")}`);
+        } catch (e) { state.recruiterAnalytics = null; }
+      }
+      if (state.user.role === "admin") {
+        const [analytics, adminJobs] = await Promise.all([
+          api(`/admin/analytics?report_range=${encodeURIComponent(state.analyticsRange)}`),
+          api("/admin/jobs")
+        ]);
+        state.analytics = analytics;
+        state.adminJobs = adminJobs.items || [];
+        state.proctoringItems = (await api(proctoringListPath())).items || [];
+      }
+      if (state.user.role === "recruiter" || state.user.role === "admin") {
+        try {
+          const liveData = await api("/recruiter/live-assessments");
+          state.liveMonitoringAssessments = liveData.items || [];
+        } catch (e) {
+          state.liveMonitoringAssessments = [];
+        }
       }
     }
-    if (state.user.role === "recruiter") {
-      try {
-        state.recruiterAnalytics = await api(`/recruiter/analytics?report_range=${encodeURIComponent(state.recruiterAnalyticsRange || "this_week")}`);
-      } catch (e) { state.recruiterAnalytics = null; }
-    }
-    if (state.user.role === "admin") {
-      const [analytics, adminJobs] = await Promise.all([
-        api(`/admin/analytics?report_range=${encodeURIComponent(state.analyticsRange)}`),
-        api("/admin/jobs")
-      ]);
-      state.analytics = analytics;
-      state.adminJobs = adminJobs.items || [];
-      state.proctoringItems = (await api(proctoringListPath())).items || [];
-    }
-    if (state.user.role === "recruiter" || state.user.role === "admin") {
-      try {
-        const liveData = await api("/recruiter/live-assessments");
-        state.liveMonitoringAssessments = liveData.items || [];
-      } catch (e) {
-        state.liveMonitoringAssessments = [];
+    // Load feature extensions data
+    if (window.SkillSphereFeatures) {
+      if (state.user.role === "candidate") {
+        await Promise.all([
+          window.SkillSphereFeatures.loadSavedJobs(),
+          window.SkillSphereFeatures.loadRecommendedJobs(),
+          window.SkillSphereFeatures.loadResumeAnalysis(),
+          window.SkillSphereFeatures.loadResumeVersions()
+        ]).catch(() => {});
       }
+      if (state.page === "Support") {
+        await window.SkillSphereFeatures.loadTickets().catch(() => {});
+      }
+      if (state.page === "Practice" && state.user.role === "candidate") {
+        await window.SkillSphereFeatures.loadPracticeDashboard().catch(() => {});
+      }
+      if (state.page === "Audit logs" && state.user.role === "admin") {
+        await window.SkillSphereFeatures.loadAdminAuditLogs().catch(() => {});
+      }
+      await window.SkillSphereFeatures.updateUnreadMessagesCount().catch(() => {});
     }
   } catch (error) {
     showToast(error.message, true);
@@ -3456,6 +3774,7 @@ async function signOut(announce = true) {
 
 async function authenticate(email, password, register, name, role) {
   state.busy = true;
+  state.verificationBanner = null;
   renderAuth(register);
   try {
     const result = await api(register ? "/auth/register" : "/auth/login", {
@@ -3463,23 +3782,49 @@ async function authenticate(email, password, register, name, role) {
       body: JSON.stringify(register ? { name, email, password, role } : { email, password })
     });
     state.busy = false;
+    if (result.verification_required || !result.access_token) {
+      state.pendingVerification = {
+        email: result.user?.email || email,
+        devOtp: result.dev_otp || "",
+        changingEmail: false,
+      };
+      state.verificationBanner = { text: result.message || "Please verify your email address to continue.", error: false };
+      renderAuth(false);
+      showToast("Verification email sent. Check your inbox.");
+      return;
+    }
+    state.pendingVerification = null;
     saveToken(result.access_token);
     state.user = result.user;
     state.page = "Dashboard";
     await loadWorkspace();
-    showToast(register ? "Your SkillSphere account is ready." : "Welcome back!");
+    showToast("Welcome back!");
   } catch (error) {
     state.busy = false;
+    if (!register && /verify your email/i.test(error.message || "")) {
+      state.pendingVerification = { email, changingEmail: false };
+      state.verificationBanner = { text: error.message, error: true };
+      renderAuth(false);
+      showToast(error.message, true);
+      return;
+    }
     renderAuth(register);
     showToast(error.message, true);
   }
 }
 
 async function searchJobs() {
+  const experienceInput = document.querySelector("#job-experience");
+  const rawExperience = (experienceInput?.value || "").trim();
+  if (rawExperience && !/^\d+$/.test(rawExperience)) {
+    showToast("Experience must be an integer (e.g. 2).", true);
+    if (experienceInput) experienceInput.focus();
+    return;
+  }
   state.query = document.querySelector("#job-query")?.value.trim() || "";
   state.location = document.querySelector("#job-location")?.value.trim() || "";
   state.jobType = document.querySelector("#job-type")?.value || "";
-  state.experience = document.querySelector("#job-experience")?.value.trim() || "";
+  state.experience = rawExperience;
   state.skill = document.querySelector("#job-skill")?.value.trim() || "";
   state.sortBy = document.querySelector("#job-sort")?.value || "newest";
   state.jobPage = 1;
@@ -3532,18 +3877,32 @@ async function downloadApplicantResume(id) {
     if (!response.ok) {
       let payload = {};
       try { payload = await response.json(); } catch { payload = {}; }
-      throw new Error(payload.detail || `Resume download failed (${response.status})`);
+      if (response.status === 404) {
+        showToast("No resume on file for this candidate, or you do not have access.", true);
+      } else {
+        showToast(payload.detail || `Could not open resume (${response.status})`, true);
+      }
+      return;
     }
+    const contentType = response.headers.get("Content-Type") || "";
     const disposition = response.headers.get("Content-Disposition") || "";
     const filename = disposition.match(/filename="?([^";]+)"?/i)?.[1] || "candidate-resume";
-    const url = URL.createObjectURL(await response.blob());
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = filename;
-    document.body.append(link);
-    link.click();
-    link.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 30_000);
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    if (contentType.includes("pdf")) {
+      // Open PDF inline in a new browser tab
+      window.open(url, "_blank", "noopener,noreferrer");
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    } else {
+      // Download DOCX / other file types
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = filename;
+      document.body.append(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 30_000);
+    }
   } catch (error) { showToast(error.message, true); }
 }
 
@@ -3569,6 +3928,75 @@ async function uploadResume(file) {
 app.addEventListener("submit", async event => {
   event.preventDefault();
   const form = event.target;
+  // Feature Extensions Form Submissions
+  if (form.id === "forgot-password-form") {
+    const email = form.querySelector('[name="email"]')?.value.trim();
+    if (email && window.SkillSphereFeatures) await window.SkillSphereFeatures.submitForgotPassword(email);
+    return;
+  }
+  if (form.id === "reset-password-form") {
+    const token = form.querySelector('[name="token"]')?.value.trim();
+    const newPwd = form.querySelector('[name="new_password"]')?.value;
+    if (token && newPwd && window.SkillSphereFeatures) await window.SkillSphereFeatures.submitResetPassword(token, newPwd);
+    return;
+  }
+  if (form.id === "edit-job-form") {
+    const jobId = form.dataset.jobId;
+    const values = Object.fromEntries(new FormData(form));
+    values.skills = (values.skills || "").split(",").map(s => s.trim()).filter(Boolean);
+    if (window.SkillSphereFeatures) await window.SkillSphereFeatures.updateJob(jobId, values);
+    return;
+  }
+  if (form.id === "direct-message-form") {
+    const input = form.querySelector("#direct-message-input");
+    const msg = input ? input.value : "";
+    if (msg && window.SkillSphereFeatures) {
+      input.value = "";
+      await window.SkillSphereFeatures.sendMessageInThread(msg);
+    }
+    return;
+  }
+  if (form.id === "adjust-score-form") {
+    const assessmentId = form.dataset.assessmentId;
+    const values = Object.fromEntries(new FormData(form));
+    if (window.SkillSphereFeatures) await window.SkillSphereFeatures.submitScoreAdjustment(assessmentId, values.new_score, values.reason);
+    return;
+  }
+  if (form.id === "interview-scorecard-form") {
+    const interviewId = form.dataset.interviewId;
+    const values = Object.fromEntries(new FormData(form));
+    values.technical_score = Number(values.technical_score);
+    values.communication_score = Number(values.communication_score);
+    values.problem_solving_score = Number(values.problem_solving_score);
+    values.culture_fit_score = Number(values.culture_fit_score);
+    if (window.SkillSphereFeatures) await window.SkillSphereFeatures.submitScorecard(interviewId, values);
+    return;
+  }
+  if (form.id === "new-ticket-form") {
+    const values = Object.fromEntries(new FormData(form));
+    if (window.SkillSphereFeatures) await window.SkillSphereFeatures.createTicket(values.subject, values.category, values.priority, values.message);
+    return;
+  }
+  if (form.id === "ticket-reply-form") {
+    const ticketId = form.dataset.ticketId;
+    const input = form.querySelector("#ticket-reply-input");
+    const isInternal = form.querySelector("#ticket-reply-internal")?.checked || false;
+    const msg = input ? input.value : "";
+    if (msg && window.SkillSphereFeatures) {
+      input.value = "";
+      await window.SkillSphereFeatures.sendTicketReply(ticketId, msg, isInternal);
+    }
+    return;
+  }
+  if (form.id === "add-practice-tech-form") {
+    const input = form.querySelector("#new-practice-tech");
+    const tech = input ? input.value.trim() : "";
+    if (tech && window.SkillSphereFeatures) {
+      input.value = "";
+      await window.SkillSphereFeatures.addPracticeTechnology(tech);
+    }
+    return;
+  }
   if (form.id === "ai-chat-form") {
     const input = form.querySelector("#ai-chat-input");
     const msg = input ? input.value.trim() : "";
@@ -3645,6 +4073,87 @@ app.addEventListener("submit", async event => {
   }
   if (form.id === "question-import-review-form") {
     await confirmQuestionImport(form);
+    return;
+  }
+  if (form.id === "hero-search-form") {
+    const fd = new FormData(form);
+    state.query = String(fd.get("q") || "").trim();
+    state.location = String(fd.get("location") || "").trim();
+    state.jobType = String(fd.get("job_type") || "");
+    document.querySelector("#auth-card")?.scrollIntoView({ behavior: "smooth", block: "center" });
+    document.querySelector("#auth-email")?.focus();
+    showToast("Sign in or create an account to explore matching roles.");
+    return;
+  }
+  if (form.id === "verify-otp-form") {
+    const values = new FormData(form);
+    const otp = String(values.get("otp") || "").trim();
+    const email = state.pendingVerification?.email || "";
+    state.busy = true;
+    renderAuth(false);
+    try {
+      const res = await api("/auth/verify-email", {
+        method: "POST",
+        body: JSON.stringify({ email, otp }),
+      });
+      state.busy = false;
+      state.pendingVerification = null;
+      state.verificationBanner = { text: res.message || "Email verified! You can now sign in.", error: false };
+      renderAuth(false);
+      showToast(res.message || "Email verified! You can now sign in.");
+    } catch (error) {
+      state.busy = false;
+      state.verificationBanner = { text: error.message, error: true };
+      renderAuth(false);
+      showToast(error.message, true);
+    }
+    return;
+  }
+  if (form.id === "change-verification-email-form") {
+    const values = new FormData(form);
+    const new_email = String(values.get("new_email") || "").trim();
+    const password = String(values.get("password") || "");
+    const current_email = state.pendingVerification?.email || "";
+    state.busy = true;
+    renderAuth(false);
+    try {
+      const res = await api("/auth/change-verification-email", {
+        method: "POST",
+        body: JSON.stringify({ current_email, password, new_email }),
+      });
+      state.busy = false;
+      state.pendingVerification = {
+        email: res.email || new_email,
+        devOtp: res.dev_otp || "",
+        changingEmail: false,
+      };
+      state.verificationBanner = { text: res.message || "Verification email updated.", error: false };
+      renderAuth(false);
+      showToast(res.message || "Verification email updated.");
+    } catch (error) {
+      state.busy = false;
+      state.verificationBanner = { text: error.message, error: true };
+      renderAuth(false);
+      showToast(error.message, true);
+    }
+    return;
+  }
+  if (form.id === "email-preferences-form") {
+    const fd = new FormData(form);
+    const payload = {
+      messages_enabled: fd.get("messages_enabled") !== null,
+      account_activity_enabled: fd.get("account_activity_enabled") !== null,
+      system_alerts_enabled: fd.get("system_alerts_enabled") !== null,
+    };
+    try {
+      state.notificationPrefs = await api("/notifications/preferences", {
+        method: "PUT",
+        body: JSON.stringify(payload),
+      });
+      state.modal = "";
+      renderWorkspace();
+      showToast("Email notification preferences saved.");
+    } catch (error) { showToast(error.message, true); }
     return;
   }
   if (form.id === "auth-form") {
@@ -3759,6 +4268,13 @@ app.addEventListener("submit", async event => {
   }
 });
 
+app.addEventListener("input", event => {
+  if (event.target.id === "job-experience") {
+    const cleaned = event.target.value.replace(/\D+/g, "");
+    if (event.target.value !== cleaned) event.target.value = cleaned;
+  }
+});
+
 app.addEventListener("change", async event => {
   if (event.target.matches("[data-recording-consent]")) {
     if (state.publicAssessment?.proctor) {
@@ -3842,6 +4358,9 @@ app.addEventListener("change", async event => {
       renderWorkspace();
       showToast(`Listing ${job.status.toLowerCase()}.`);
     } catch (error) { showToast(error.message, true); await loadWorkspace(); }
+  }
+  if (event.target.id === "assistant-language-select" && window.SkillSphereFeatures) {
+    window.SkillSphereFeatures.setAssistantLanguage(event.target.value);
   }
   if (event.target.id === "editor-language") {
     state.editorDirty = true;
@@ -4026,6 +4545,114 @@ app.addEventListener("click", async event => {
         state.jobTotal = result.total;
       } catch (error) { showToast(error.message, true); }
     }
+    if (state.page === "Practice" && state.user.role === "candidate" && window.SkillSphereFeatures) {
+      await window.SkillSphereFeatures.loadPracticeDashboard();
+    }
+    if (state.page === "Support" && window.SkillSphereFeatures) {
+      await window.SkillSphereFeatures.loadTickets();
+    }
+    if (state.page === "Audit logs" && state.user.role === "admin" && window.SkillSphereFeatures) {
+      await window.SkillSphereFeatures.loadAdminAuditLogs();
+    }
+    renderWorkspace();
+    return;
+  }
+  // Feature Extension Click Actions
+  if (target.dataset.action === "open-forgot-password") {
+    if (window.SkillSphereFeatures) window.SkillSphereFeatures.openForgotPasswordModal();
+    return;
+  }
+  if (target.dataset.action === "toggle-save-job") {
+    if (window.SkillSphereFeatures) await window.SkillSphereFeatures.toggleSaveJob(target.dataset.id);
+    return;
+  }
+  if (target.dataset.action === "open-edit-job") {
+    if (window.SkillSphereFeatures) window.SkillSphereFeatures.openEditJobModal(target.dataset.id);
+    return;
+  }
+  if (target.dataset.action === "open-message") {
+    if (window.SkillSphereFeatures) {
+      await window.SkillSphereFeatures.openMessageThread(
+        Number(target.dataset.recipientId),
+        target.dataset.recipientName,
+        target.dataset.appId ? Number(target.dataset.appId) : null,
+        target.dataset.jobId ? Number(target.dataset.jobId) : null
+      );
+    }
+    return;
+  }
+  if (target.dataset.action === "duplicate-question") {
+    if (window.SkillSphereFeatures && state.questionBankJob) {
+      await window.SkillSphereFeatures.duplicateQuestion(state.questionBankJob.id, target.dataset.id);
+    }
+    return;
+  }
+  if (target.dataset.action === "open-adjust-score") {
+    if (window.SkillSphereFeatures) window.SkillSphereFeatures.openAdjustScoreModal(target.dataset.id, target.dataset.score);
+    return;
+  }
+  if (target.dataset.action === "retry-assessment") {
+    if (window.SkillSphereFeatures) await window.SkillSphereFeatures.retryAssessment(target.dataset.id);
+    return;
+  }
+  if (target.dataset.action === "open-scorecard") {
+    if (window.SkillSphereFeatures) window.SkillSphereFeatures.openScorecardModal(target.dataset.id);
+    return;
+  }
+  if (target.dataset.action === "open-candidate-dossier") {
+    if (window.SkillSphereFeatures) await window.SkillSphereFeatures.openCandidateDossier(target.dataset.id);
+    return;
+  }
+  if (target.dataset.action === "open-new-ticket") {
+    if (window.SkillSphereFeatures) window.SkillSphereFeatures.openNewTicketModal();
+    return;
+  }
+  if (target.dataset.action === "escalate-support") {
+    if (window.SkillSphereFeatures) window.SkillSphereFeatures.openNewTicketModal("Career Assistant Escalation", "General", "Candidate requested live human / support assistance from Career Assistant.");
+    return;
+  }
+  if (target.dataset.action === "view-ticket-detail") {
+    if (window.SkillSphereFeatures) await window.SkillSphereFeatures.openTicketDetail(target.dataset.id);
+    return;
+  }
+  if (target.dataset.action === "update-ticket-status") {
+    const sel = document.getElementById("admin-ticket-status-select");
+    if (sel && window.SkillSphereFeatures) await window.SkillSphereFeatures.updateTicketStatus(target.dataset.id, sel.value);
+    return;
+  }
+  if (target.dataset.action === "refresh-audit-logs") {
+    if (window.SkillSphereFeatures) await window.SkillSphereFeatures.loadAdminAuditLogs();
+    renderWorkspace();
+    return;
+  }
+  if (target.dataset.action === "start-quick-practice") {
+    if (window.SkillSphereFeatures) await window.SkillSphereFeatures.startPracticeSession();
+    return;
+  }
+  if (target.dataset.action === "quick-practice-tech") {
+    if (window.SkillSphereFeatures) await window.SkillSphereFeatures.startPracticeSession(target.dataset.tech);
+    return;
+  }
+  if (target.dataset.action === "remove-practice-tech") {
+    if (window.SkillSphereFeatures) await window.SkillSphereFeatures.removePracticeTechnology(target.dataset.tech);
+    return;
+  }
+  if (target.dataset.action === "select-practice-option") {
+    state.practiceSelectedOption = Number(target.dataset.index);
+    renderWorkspace();
+    return;
+  }
+  if (target.dataset.action === "submit-practice-answer") {
+    if (window.SkillSphereFeatures) await window.SkillSphereFeatures.submitPracticeAnswer();
+    return;
+  }
+  if (target.dataset.action === "next-practice-question") {
+    if (window.SkillSphereFeatures) window.SkillSphereFeatures.nextPracticeQuestion();
+    return;
+  }
+  if (target.dataset.action === "finish-practice-drill") {
+    state.practiceQuestions = [];
+    state.page = "Practice";
     renderWorkspace();
     return;
   }
@@ -4157,7 +4784,11 @@ app.addEventListener("click", async event => {
       state.modal = "";
       state.aiGeneratedQuestions = [];
       await loadQuestionBank(state.questionBankJob.id);
-      showToast(`Added ${result.count ?? result.created ?? 0} questions to the question bank.`);
+      const addedCount = result.created ?? result.count ?? 0;
+      let msg = `Added ${addedCount} question${addedCount === 1 ? "" : "s"} to the question bank.`;
+      if (result.skipped) msg += ` (${result.skipped} duplicate${result.skipped === 1 ? "" : "s"} skipped)`;
+      if (result.invalid) msg += ` (${result.invalid} invalid question${result.invalid === 1 ? "" : "s"} omitted)`;
+      showToast(msg);
     } catch (error) {
       showToast(error.message, true);
     }
@@ -4167,7 +4798,7 @@ app.addEventListener("click", async event => {
     const jobId = target.dataset.id;
     const title = target.dataset.title || "this job";
     if (!jobId) return;
-    if (!confirm(`Are you sure you want to remove the job posting for "${title}"? This will permanently delete the role and associated applications.`)) {
+    if (!confirm(`Are you sure you want to remove the job posting for "${title}"? This will archive the role and remove it from active listings while preserving historical applications and assessments.`)) {
       return;
     }
     try {
@@ -4389,14 +5020,95 @@ app.addEventListener("click", async event => {
     return;
   }
   if (target.dataset.action === "send-assessment" || target.dataset.action === "reissue-assessment") {
-    const action = target.dataset.action === "send-assessment" ? "send" : "reissue";
+    if (target.disabled) return;
+    const isSend = target.dataset.action === "send-assessment";
+    const action = isSend ? "send" : "reissue";
+    const candidateName = target.closest("tr, .application-row")?.querySelector("strong")?.textContent || "this candidate";
+    const confirmed = window.confirm(isSend
+      ? `Send Round 1 Assessment invitation to ${candidateName}?`
+      : `Resend Round 1 Assessment invitation to ${candidateName}? The previous link will be invalidated.`);
+    if (!confirmed) return;
+    const originalText = target.textContent;
+    target.disabled = true;
+    target.textContent = isSend ? "Sending…" : "Resending…";
     try {
       const result = await api(`/applications/${encodeURIComponent(target.dataset.id)}/assessment/${action}`, { method: "POST" });
       await loadWorkspace();
       showToast(result.delivery === "development"
-        ? "Assessment link is available to the candidate in their notifications."
-        : "Assessment email sent to the candidate.");
-    } catch (error) { showToast(error.message, true); }
+        ? "Round 1 Assessment link is available to the candidate in their notifications."
+        : "Round 1 Assessment email sent to the candidate.");
+    } catch (error) {
+      target.disabled = false;
+      target.textContent = originalText;
+      showToast(error.message, true);
+    }
+    return;
+  }
+  if (target.dataset.action === "toggle-public-menu") {
+    state.publicMenuOpen = !state.publicMenuOpen;
+    document.querySelector("#public-mobile-menu")?.classList.toggle("open", state.publicMenuOpen);
+    return;
+  }
+  if (target.dataset.action === "public-signin" || target.dataset.action === "public-register") {
+    state.publicMenuOpen = false;
+    state.pendingVerification = null;
+    renderAuth(target.dataset.action === "public-register");
+    document.querySelector("#auth-card")?.scrollIntoView({ behavior: "smooth", block: "center" });
+    document.querySelector(target.dataset.action === "public-register" ? "#auth-name" : "#auth-email")?.focus();
+    return;
+  }
+  if (target.dataset.action === "clear-job-filters") {
+    state.query = ""; state.location = ""; state.jobType = ""; state.experience = ""; state.skill = ""; state.sortBy = "newest"; state.jobPage = 1;
+    await loadJobsPage();
+    return;
+  }
+  if (target.dataset.action === "resend-verification") {
+    const email = state.pendingVerification?.email || "";
+    if (!email || state.busy) return;
+    state.busy = true;
+    renderAuth(false);
+    try {
+      const res = await api("/auth/resend-verification", {
+        method: "POST",
+        body: JSON.stringify({ email }),
+      });
+      state.busy = false;
+      if (state.pendingVerification) {
+        state.pendingVerification.devOtp = res.dev_otp || state.pendingVerification.devOtp || "";
+      }
+      state.verificationBanner = { text: res.message || "Verification email resent.", error: false };
+      renderAuth(false);
+      showToast(res.message || "Verification email resent.");
+    } catch (error) {
+      state.busy = false;
+      state.verificationBanner = { text: error.message, error: true };
+      renderAuth(false);
+      showToast(error.message, true);
+    }
+    return;
+  }
+  if (target.dataset.action === "toggle-change-email") {
+    if (state.pendingVerification) {
+      state.pendingVerification.changingEmail = !state.pendingVerification.changingEmail;
+      renderAuth(false);
+    }
+    return;
+  }
+  if (target.dataset.action === "back-to-signin") {
+    state.pendingVerification = null;
+    state.verificationBanner = null;
+    renderAuth(false);
+    return;
+  }
+  if (target.dataset.action === "open-email-preferences") {
+    state.notificationsOpen = false;
+    try {
+      state.notificationPrefs = await api("/notifications/preferences");
+    } catch {
+      state.notificationPrefs = { messages_enabled: true, account_activity_enabled: true, system_alerts_enabled: true };
+    }
+    state.modal = "email-preferences";
+    renderWorkspace();
     return;
   }
   if (target.dataset.action === "open-interview") {
@@ -4542,6 +5254,7 @@ app.addEventListener("keydown", event => {
 
 if (!window._liveMonitoringPollInterval) {
   window._liveMonitoringPollInterval = setInterval(async () => {
+    if (document.hidden) return;
     if (state.user && (state.user.role === "recruiter" || state.user.role === "admin") && !state.modal && (state.page === "Live monitoring" || state.page === "Dashboard")) {
       try {
         const data = await api("/recruiter/live-assessments");
@@ -4549,17 +5262,40 @@ if (!window._liveMonitoringPollInterval) {
         const next = JSON.stringify(data.items || []);
         if (prev !== next) {
           state.liveMonitoringAssessments = data.items || [];
-          renderWorkspace();
+          const container = document.getElementById("live-monitoring-container");
+          if (container && typeof liveAssessmentMonitoringSection === "function") {
+            container.outerHTML = liveAssessmentMonitoringSection(state.liveMonitoringAssessments);
+          } else {
+            renderWorkspace();
+          }
         }
       } catch (e) {}
     }
-  }, 6000);
+  }, 8000);
 }
 
 async function start() {
-  const assessmentToken = new URLSearchParams(window.location.search).get("assessment");
+  const params = new URLSearchParams(window.location.search);
+  const assessmentToken = params.get("assessment");
   if (assessmentToken) {
     await loadPublicAssessment(assessmentToken);
+    return;
+  }
+  const verifyToken = params.get("verify_email");
+  if (verifyToken) {
+    try {
+      const res = await api("/auth/verify-email", {
+        method: "POST",
+        body: JSON.stringify({ token: verifyToken }),
+      });
+      state.verificationBanner = { text: res.message || "Email address verified successfully. You can now sign in.", error: false };
+      showToast(res.message || "Email verified!");
+    } catch (error) {
+      state.verificationBanner = { text: error.message, error: true };
+      showToast(error.message, true);
+    }
+    window.history.replaceState({}, document.title, window.location.pathname);
+    renderAuth(false);
     return;
   }
   if (!state.token) { renderAuth(); return; }

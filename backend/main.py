@@ -11,6 +11,7 @@ import re
 import secrets
 import smtplib
 import sqlite3
+import threading
 import time
 import uuid
 from contextlib import asynccontextmanager, contextmanager
@@ -28,7 +29,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, EmailStr, Field, field_validator
+from pydantic import BaseModel, EmailStr, Field, field_validator, model_validator
 try:
     from slowapi import Limiter, _rate_limit_exceeded_handler
     from slowapi.errors import RateLimitExceeded
@@ -61,6 +62,8 @@ try:
     import cloudinary.utils
     HAS_CLOUDINARY = True
 except ImportError:
+    from unittest.mock import MagicMock
+    cloudinary = MagicMock()
     HAS_CLOUDINARY = False
 
 try:
@@ -248,6 +251,311 @@ def now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+ESSENTIAL_NOTIFICATION_CATEGORIES = {
+    "verification",
+    "security",
+    "application",
+    "assessment",
+    "interview",
+}
+
+NON_ESSENTIAL_PREF_COLUMNS = {
+    "messages": "messages_enabled",
+    "account_activity": "account_activity_enabled",
+    "system_alerts": "system_alerts_enabled",
+}
+
+MAX_EMAIL_RETRIES = 3
+
+
+def is_valid_email_address(email: str | None) -> bool:
+    value = (email or "").strip()
+    if not value or " " in value or "@" not in value:
+        return False
+    local, _, domain = value.partition("@")
+    return bool(local) and "." in domain and not domain.startswith(".") and not domain.endswith(".")
+
+
+def notification_category_for_type(notification_type: str) -> str:
+    nt = (notification_type or "").lower()
+    if "verif" in nt:
+        return "verification"
+    if "password" in nt or "security" in nt:
+        return "security"
+    if "assessment" in nt or "question_bank" in nt or "proctor" in nt:
+        return "assessment"
+    if "interview" in nt:
+        return "interview"
+    if "application" in nt or "round" in nt or "status" in nt:
+        return "application"
+    if "message" in nt:
+        return "messages"
+    if any(k in nt for k in ("job", "resume", "profile", "ticket", "account")):
+        return "account_activity"
+    return "system_alerts"
+
+
+def build_notification_email(
+    title: str,
+    message: str,
+    action_url: str = "",
+    category: str = "system_alerts",
+) -> tuple[str, str]:
+    subject = f"SkillSphere: {title}"
+    link = f"{PUBLIC_BASE_URL}{action_url}" if action_url.startswith("/") else (action_url or f"{PUBLIC_BASE_URL}/")
+    body = (
+        f"{title}\n"
+        f"{'-' * min(len(title), 60)}\n\n"
+        f"{message}\n\n"
+        f"View details in SkillSphere: {link}\n\n"
+        f"Category: {category.replace('_', ' ').title()}\n"
+        f"You are receiving this email because you have a verified SkillSphere account."
+    )
+    return subject, body
+
+
+def get_user_notification_preferences(db: sqlite3.Connection, user_id: int) -> dict[str, Any]:
+    row = db.execute(
+        "SELECT messages_enabled, account_activity_enabled, system_alerts_enabled, updated_at FROM notification_preferences WHERE user_id = ?",
+        (user_id,),
+    ).fetchone()
+    if not row:
+        return {
+            "messages_enabled": True,
+            "account_activity_enabled": True,
+            "system_alerts_enabled": True,
+            "updated_at": None,
+        }
+    return {
+        "messages_enabled": bool(row["messages_enabled"]),
+        "account_activity_enabled": bool(row["account_activity_enabled"]),
+        "system_alerts_enabled": bool(row["system_alerts_enabled"]),
+        "updated_at": row["updated_at"],
+    }
+
+
+def _record_email_log(
+    db: sqlite3.Connection,
+    *,
+    notification_id: int | None,
+    user_id: int,
+    recipient_email: str,
+    category: str,
+    subject: str,
+    body_text: str,
+    status: str,
+    attempts: int = 1,
+    last_error: str = "",
+    event_key: str = "",
+    next_retry_at: str | None = None,
+    sent_at: str | None = None,
+) -> int:
+    ts = now()
+    cursor = db.execute(
+        """INSERT INTO email_delivery_logs
+        (notification_id, user_id, recipient_email, category, subject, body_text,
+         status, attempts, last_error, event_key, next_retry_at, sent_at, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            notification_id, user_id, recipient_email, category, subject, body_text,
+            status, attempts, last_error, event_key, next_retry_at, sent_at, ts, ts,
+        ),
+    )
+    return cursor.lastrowid
+
+
+def deliver_notification_email(
+    db: sqlite3.Connection,
+    *,
+    notification_id: int,
+    user_id: int,
+    notification_type: str,
+    title: str,
+    message: str,
+    action_url: str = "",
+    event_key: str = "",
+) -> str:
+    category = notification_category_for_type(notification_type)
+    subject, body_text = build_notification_email(title, message, action_url, category)
+    ts = now()
+
+    user = db.execute(
+        "SELECT id, email, active, email_verified FROM users WHERE id = ?",
+        (user_id,),
+    ).fetchone()
+    if not user or not user["active"]:
+        _record_email_log(
+            db, notification_id=notification_id, user_id=user_id, recipient_email="",
+            category=category, subject=subject, body_text=body_text,
+            status="Failed", attempts=0, last_error="Recipient account not found or inactive",
+            event_key=event_key,
+        )
+        db.execute(
+            "UPDATE notifications SET email_delivery_status = 'Failed', email_last_error = ? WHERE id = ?",
+            ("Recipient account not found or inactive", notification_id),
+        )
+        return "Failed"
+
+    recipient_email = (user["email"] or "").strip()
+    verified = bool(user["email_verified"]) if "email_verified" in user.keys() else True
+    if not verified or not is_valid_email_address(recipient_email):
+        reason = "Email address is not verified" if not verified else "Invalid recipient email address"
+        _record_email_log(
+            db, notification_id=notification_id, user_id=user_id, recipient_email=recipient_email,
+            category=category, subject=subject, body_text=body_text,
+            status="Skipped_Unverified", attempts=0, last_error=reason, event_key=event_key,
+        )
+        db.execute(
+            "UPDATE notifications SET email_delivery_status = 'Skipped_Unverified', email_last_error = ? WHERE id = ?",
+            (reason, notification_id),
+        )
+        return "Skipped_Unverified"
+
+    if event_key:
+        existing_delivery = db.execute(
+            """SELECT id FROM email_delivery_logs
+            WHERE user_id = ? AND event_key = ? AND status IN ('Sent', 'Development') LIMIT 1""",
+            (user_id, event_key),
+        ).fetchone()
+        if existing_delivery:
+            db.execute(
+                "UPDATE notifications SET email_delivery_status = 'Duplicate_Skipped' WHERE id = ?",
+                (notification_id,),
+            )
+            return "Duplicate_Skipped"
+
+    if category not in ESSENTIAL_NOTIFICATION_CATEGORIES:
+        prefs = get_user_notification_preferences(db, user_id)
+        pref_col = NON_ESSENTIAL_PREF_COLUMNS.get(category)
+        if pref_col and not prefs.get(pref_col, True):
+            _record_email_log(
+                db, notification_id=notification_id, user_id=user_id, recipient_email=recipient_email,
+                category=category, subject=subject, body_text=body_text,
+                status="Skipped_Preference", attempts=0,
+                last_error=f"User disabled {category} email notifications", event_key=event_key,
+            )
+            db.execute(
+                "UPDATE notifications SET email_delivery_status = 'Skipped_Preference' WHERE id = ?",
+                (notification_id,),
+            )
+            return "Skipped_Preference"
+
+    try:
+        delivery = send_email_message(recipient_email, subject, body_text)
+    except Exception as exc:
+        logger.exception("Unexpected error delivering notification email")
+        delivery = "Failed"
+        err_msg = str(exc)[:300]
+    else:
+        err_msg = "" if delivery != "Failed" else "Email provider delivery failed"
+
+    if delivery in {"Sent", "Development"}:
+        _record_email_log(
+            db, notification_id=notification_id, user_id=user_id, recipient_email=recipient_email,
+            category=category, subject=subject, body_text=body_text,
+            status=delivery, attempts=1, event_key=event_key, sent_at=ts,
+        )
+        db.execute(
+            """UPDATE notifications
+            SET email_delivery_status = ?, email_attempts = 1, email_last_error = '', email_sent_at = ?
+            WHERE id = ?""",
+            (delivery, ts, notification_id),
+        )
+    else:
+        next_retry = (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat()
+        _record_email_log(
+            db, notification_id=notification_id, user_id=user_id, recipient_email=recipient_email,
+            category=category, subject=subject, body_text=body_text,
+            status="Failed", attempts=1, last_error=err_msg, event_key=event_key,
+            next_retry_at=next_retry,
+        )
+        db.execute(
+            """UPDATE notifications
+            SET email_delivery_status = 'Failed', email_attempts = 1, email_last_error = ?
+            WHERE id = ?""",
+            (err_msg, notification_id),
+        )
+    return delivery
+
+
+def retry_failed_email_deliveries(db: sqlite3.Connection, limit: int = 20) -> dict[str, int]:
+    rows = db.execute(
+        """SELECT d.*, u.email AS current_email, u.active, u.email_verified
+        FROM email_delivery_logs d
+        JOIN users u ON u.id = d.user_id
+        WHERE d.status = 'Failed' AND d.attempts < ?
+        ORDER BY d.created_at ASC LIMIT ?""",
+        (MAX_EMAIL_RETRIES, limit),
+    ).fetchall()
+    retried = 0
+    succeeded = 0
+    failed = 0
+    skipped = 0
+    for row in rows:
+        retried += 1
+        ts = now()
+        attempts = (row["attempts"] or 0) + 1
+        recipient = (row["current_email"] or "").strip()
+        if not row["active"] or not row["email_verified"] or not is_valid_email_address(recipient):
+            db.execute(
+                """UPDATE email_delivery_logs
+                SET status = 'Skipped_Unverified', attempts = ?, last_error = 'Unverified or invalid email', updated_at = ?
+                WHERE id = ?""",
+                (attempts, ts, row["id"]),
+            )
+            if row["notification_id"]:
+                db.execute(
+                    "UPDATE notifications SET email_delivery_status = 'Skipped_Unverified', email_attempts = ? WHERE id = ?",
+                    (attempts, row["notification_id"]),
+                )
+            skipped += 1
+            continue
+        try:
+            delivery = send_email_message(recipient, row["subject"], row["body_text"])
+        except Exception as exc:
+            delivery = "Failed"
+            err = str(exc)[:300]
+        else:
+            err = "" if delivery != "Failed" else "Email provider delivery failed"
+
+        if delivery in {"Sent", "Development"}:
+            db.execute(
+                """UPDATE email_delivery_logs
+                SET status = ?, recipient_email = ?, attempts = ?, last_error = '',
+                    next_retry_at = NULL, sent_at = ?, updated_at = ?
+                WHERE id = ?""",
+                (delivery, recipient, attempts, ts, ts, row["id"]),
+            )
+            if row["notification_id"]:
+                db.execute(
+                    """UPDATE notifications
+                    SET email_delivery_status = ?, email_attempts = ?, email_last_error = '', email_sent_at = ?
+                    WHERE id = ?""",
+                    (delivery, attempts, ts, row["notification_id"]),
+                )
+            succeeded += 1
+        else:
+            next_retry = (
+                (datetime.now(timezone.utc) + timedelta(minutes=5 * attempts)).isoformat()
+                if attempts < MAX_EMAIL_RETRIES else None
+            )
+            db.execute(
+                """UPDATE email_delivery_logs
+                SET status = 'Failed', attempts = ?, last_error = ?, next_retry_at = ?, updated_at = ?
+                WHERE id = ?""",
+                (attempts, err, next_retry, ts, row["id"]),
+            )
+            if row["notification_id"]:
+                db.execute(
+                    """UPDATE notifications
+                    SET email_delivery_status = 'Failed', email_attempts = ?, email_last_error = ?
+                    WHERE id = ?""",
+                    (attempts, err, row["notification_id"]),
+                )
+            failed += 1
+    return {"retried": retried, "succeeded": succeeded, "failed": failed, "skipped": skipped}
+
+
 def add_notification(
     db: sqlite3.Connection,
     user_id: int,
@@ -259,6 +567,8 @@ def add_notification(
     assessment_id: int | None = None,
     action_url: str = "",
     email_delivery_status: str = "Not Sent",
+    send_email: bool = True,
+    event_key: str = "",
 ) -> int:
     cursor = db.execute(
         """INSERT INTO notifications
@@ -270,49 +580,121 @@ def add_notification(
             assessment_id, action_url, email_delivery_status, now(),
         ),
     )
-    return cursor.lastrowid
+    notification_id = cursor.lastrowid
+    if email_delivery_status != "Not Sent":
+        user_row = db.execute("SELECT email FROM users WHERE id = ?", (user_id,)).fetchone()
+        _record_email_log(
+            db, notification_id=notification_id, user_id=user_id,
+            recipient_email=user_row["email"] if user_row else "",
+            category=notification_category_for_type(notification_type),
+            subject=f"SkillSphere: {title}", body_text=message,
+            status=email_delivery_status, attempts=1, event_key=event_key,
+            sent_at=now() if email_delivery_status in {"Sent", "Development"} else None,
+        )
+    elif send_email and notification_type != "email_failure":
+        deliver_notification_email(
+            db,
+            notification_id=notification_id,
+            user_id=user_id,
+            notification_type=notification_type,
+            title=title,
+            message=message,
+            action_url=action_url,
+            event_key=event_key,
+        )
+    return notification_id
+
+
+def send_email_message(recipient: str, subject: str, body_text: str) -> str:
+    resend_key = os.environ.get("RESEND_API_KEY", "").strip()
+    sender = os.environ.get("SKILLSPHERE_EMAIL_FROM") or os.environ.get("SKILLSPHERE_SMTP_FROM") or os.environ.get("SKILLSPHERE_SMTP_USERNAME") or "noreply@skillsphere.dev"
+    if resend_key:
+        try:
+            with httpx.Client(timeout=10.0) as client:
+                res = client.post(
+                    "https://api.resend.com/emails",
+                    headers={"Authorization": f"Bearer {resend_key}", "Content-Type": "application/json"},
+                    json={
+                        "from": sender,
+                        "to": [recipient],
+                        "subject": subject,
+                        "text": body_text,
+                    },
+                )
+                if res.status_code in (200, 201):
+                    return "Sent"
+                logger.error("Resend API delivery error: %s %s", res.status_code, res.text)
+        except Exception as exc:
+            logger.error("Resend API connection error: %s", exc)
+
+    sendgrid_key = os.environ.get("SENDGRID_API_KEY", "").strip()
+    if sendgrid_key:
+        try:
+            with httpx.Client(timeout=10.0) as client:
+                res = client.post(
+                    "https://api.sendgrid.com/v3/mail/send",
+                    headers={"Authorization": f"Bearer {sendgrid_key}", "Content-Type": "application/json"},
+                    json={
+                        "personalizations": [{"to": [{"email": recipient}]}],
+                        "from": {"email": sender},
+                        "subject": subject,
+                        "content": [{"type": "text/plain", "value": body_text}],
+                    },
+                )
+                if res.status_code in (200, 202):
+                    return "Sent"
+                logger.error("SendGrid API delivery error: %s %s", res.status_code, res.text)
+        except Exception as exc:
+            logger.error("SendGrid API connection error: %s", exc)
+
+    smtp_host = os.environ.get("SKILLSPHERE_SMTP_HOST", "").strip()
+    if smtp_host:
+        username = os.environ.get("SKILLSPHERE_SMTP_USERNAME", "").strip()
+        password = os.environ.get("SKILLSPHERE_SMTP_PASSWORD", "").strip()
+        if not sender or (username and not password):
+            logger.error("Notification email SMTP configuration is incomplete")
+            return "Failed"
+        email = EmailMessage()
+        email["Subject"] = subject
+        email["From"] = sender
+        email["To"] = recipient
+        email.set_content(body_text)
+        try:
+            port = int(os.environ.get("SKILLSPHERE_SMTP_PORT", "587"))
+            if port == 465:
+                with smtplib.SMTP_SSL(smtp_host, port, timeout=20) as server:
+                    if username:
+                        server.login(username, password)
+                    server.send_message(email)
+            else:
+                with smtplib.SMTP(smtp_host, port, timeout=20) as server:
+                    server.ehlo()
+                    server.starttls()
+                    server.ehlo()
+                    if username:
+                        server.login(username, password)
+                    server.send_message(email)
+            return "Sent"
+        except (OSError, smtplib.SMTPException):
+            logger.exception("Could not send email via SMTP")
+            return "Failed"
+
+    if not IS_PRODUCTION:
+        logger.info("Development mock email to %s: %s", recipient, subject)
+        return "Development"
+
+    logger.error("Notification email delivery is unavailable because no email provider or SMTP is configured")
+    return "Failed"
 
 
 def email_notification(db: sqlite3.Connection, user_id: int, title: str, message: str) -> str:
-    user = db.execute("SELECT email FROM users WHERE id = ?", (user_id,)).fetchone()
-    if not user:
+    user = db.execute("SELECT email, active, email_verified FROM users WHERE id = ?", (user_id,)).fetchone()
+    if not user or not user["active"]:
         return "Failed"
-    host = os.environ.get("SKILLSPHERE_SMTP_HOST", "")
-    if not host:
-        if IS_PRODUCTION:
-            logger.error("Notification email delivery is unavailable because SMTP is not configured")
-            return "Failed"
-        return "Development"
-    sender = os.environ.get("SKILLSPHERE_SMTP_FROM") or os.environ.get("SKILLSPHERE_SMTP_USERNAME")
-    username = os.environ.get("SKILLSPHERE_SMTP_USERNAME", "")
-    password = os.environ.get("SKILLSPHERE_SMTP_PASSWORD", "")
-    if not sender or (username and not password):
-        logger.error("Notification email configuration is incomplete")
-        return "Failed"
-    email = EmailMessage()
-    email["Subject"] = title
-    email["From"] = sender
-    email["To"] = user["email"]
-    email.set_content(message)
-    try:
-        port = int(os.environ.get("SKILLSPHERE_SMTP_PORT", "587"))
-        if port == 465:
-            with smtplib.SMTP_SSL(host, port, timeout=20) as server:
-                if username:
-                    server.login(username, password)
-                server.send_message(email)
-        else:
-            with smtplib.SMTP(host, port, timeout=20) as server:
-                server.ehlo()
-                server.starttls()
-                server.ehlo()
-                if username:
-                    server.login(username, password)
-                server.send_message(email)
-        return "Sent"
-    except (OSError, smtplib.SMTPException):
-        logger.exception("Could not send notification email")
-        return "Failed"
+    verified = bool(user["email_verified"]) if "email_verified" in user.keys() else True
+    if not verified or not is_valid_email_address(user["email"]):
+        return "Skipped_Unverified"
+    return send_email_message(user["email"], title, message)
 
 
 def notify_user(
@@ -324,15 +706,17 @@ def notify_user(
     *,
     application_id: int | None = None,
     assessment_id: int | None = None,
-    email: bool = False,
+    email: bool = True,
     action_url: str = "",
+    event_key: str = "",
 ) -> int:
-    delivery = email_notification(db, user_id, title, message) if email else "Not Sent"
     notification_id = add_notification(
         db, user_id, notification_type, title, message,
         application_id=application_id, assessment_id=assessment_id,
-        email_delivery_status=delivery, action_url=action_url,
+        action_url=action_url, send_email=True, event_key=event_key,
     )
+    row = db.execute("SELECT email_delivery_status FROM notifications WHERE id = ?", (notification_id,)).fetchone()
+    delivery = row["email_delivery_status"] if row else "Not Sent"
     if delivery == "Failed":
         admins = db.execute("SELECT id FROM users WHERE role = 'admin' AND active = 1").fetchall()
         for admin in admins:
@@ -340,6 +724,7 @@ def notify_user(
                 db, admin["id"], "email_failure", "Notification email failed",
                 f"Email notification delivery failed for a {notification_type} update.",
                 application_id=application_id, assessment_id=assessment_id,
+                send_email=False,
             )
     return notification_id
 
@@ -543,24 +928,57 @@ def create_turso_connection() -> Any:
         return libsql.connect(TURSO_DATABASE_URL, auth_token=TURSO_AUTH_TOKEN)
 
 
+_TURSO_CACHED_CONN: Any = None
+_TURSO_LOCK = threading.Lock()
+
+
+def get_turso_connection() -> Any:
+    global _TURSO_CACHED_CONN
+    with _TURSO_LOCK:
+        if _TURSO_CACHED_CONN is not None:
+            return _TURSO_CACHED_CONN
+        _TURSO_CACHED_CONN = create_turso_connection()
+        return _TURSO_CACHED_CONN
+
+
+def reset_turso_connection() -> None:
+    global _TURSO_CACHED_CONN
+    with _TURSO_LOCK:
+        if _TURSO_CACHED_CONN is not None:
+            try:
+                _TURSO_CACHED_CONN.close()
+            except Exception:
+                pass
+            _TURSO_CACHED_CONN = None
+
+
 @contextmanager
-def connect() -> Iterator[Any]:
+def connect(write: bool = True) -> Iterator[Any]:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     if TURSO_DATABASE_URL and HAS_TURSO:
-        raw_conn = create_turso_connection()
-        wrapped = TursoConnectionWrapper(raw_conn)
+        try:
+            raw_conn = get_turso_connection()
+            wrapped = TursoConnectionWrapper(raw_conn)
+        except Exception as e:
+            logger.warning("Turso connection error: %s, recreating connection", e)
+            reset_turso_connection()
+            raw_conn = create_turso_connection()
+            wrapped = TursoConnectionWrapper(raw_conn)
+
         try:
             yield wrapped
-            wrapped.commit()
-            try:
-                wrapped.sync()
-            except Exception as se:
-                logger.warning("Turso sync warning on commit: %s", se)
+            if write:
+                wrapped.commit()
+                try:
+                    wrapped.sync()
+                except Exception as se:
+                    logger.warning("Turso sync warning on write: %s", se)
         except Exception:
-            wrapped.rollback()
+            try:
+                wrapped.rollback()
+            except Exception:
+                pass
             raise
-        finally:
-            wrapped.close()
     else:
         connection = sqlite3.connect(DB_PATH, timeout=10)
         connection.row_factory = sqlite3.Row
@@ -571,7 +989,8 @@ def connect() -> Iterator[Any]:
         connection.execute("PRAGMA temp_store=MEMORY")
         try:
             yield connection
-            connection.commit()
+            if write:
+                connection.commit()
         except Exception:
             connection.rollback()
             raise
@@ -644,6 +1063,8 @@ def get_current_user(authorization: str | None = None) -> dict[str, Any]:
         row = db.execute("SELECT * FROM users WHERE id = ?", (payload.get("sub"),)).fetchone()
     if not row or not row["active"]:
         raise HTTPException(status_code=401, detail="Account no longer exists")
+    if "email_verified" in row.keys() and not row["email_verified"]:
+        raise HTTPException(status_code=403, detail="Please verify your email address before accessing this feature.")
     return public_user(row)
 
 
@@ -791,7 +1212,70 @@ class AIQuestionGenerateBody(BaseModel):
 
 
 class QuestionBatchBody(BaseModel):
-    questions: list[QuestionBody] = Field(min_length=1, max_length=50)
+    questions: list[Any] = Field(min_length=1, max_length=50)
+
+
+def validate_question_data(data: Any) -> tuple[dict[str, Any] | None, str | None]:
+    """Strictly validates a question item for batch insertion.
+    Returns (cleaned_dict, None) on success or (None, reason) on failure.
+    """
+    if isinstance(data, QuestionBody):
+        tech = data.technology.strip()
+        q_text = data.question.strip()
+        opts = [str(o).strip() for o in data.options]
+        c_idx = data.correct_index
+        diff = data.difficulty.strip().capitalize()
+        act = int(data.active)
+        expl = (data.explanation or "").strip()[:2000]
+        url = (data.learning_resource_url or "").strip()[:1000]
+        sub = (data.subtopic or "").strip()[:100]
+    elif isinstance(data, dict):
+        tech = str(data.get("technology") or "").strip()
+        q_text = str(data.get("question") or "").strip()
+        raw_opts = data.get("options")
+        if not isinstance(raw_opts, (list, tuple)):
+            return None, "options must be a list"
+        opts = [str(o).strip() for o in raw_opts]
+        try:
+            c_idx = int(data.get("correct_index", 0))
+        except (ValueError, TypeError):
+            return None, "correct_index must be an integer"
+        diff = str(data.get("difficulty") or "Medium").strip().capitalize()
+        act = 1 if data.get("active", True) else 0
+        expl = str(data.get("explanation") or "").strip()[:2000]
+        url = str(data.get("learning_resource_url") or "").strip()[:1000]
+        sub = str(data.get("subtopic") or "").strip()[:100]
+    else:
+        return None, "invalid question payload format"
+
+    # Strict server-side validation rules:
+    # 1. Valid technology: 1-50 chars
+    if not (1 <= len(tech) <= 50):
+        return None, "technology must be between 1 and 50 characters"
+    # 2. Question length: 10-1000 chars
+    if not (10 <= len(q_text) <= 1000):
+        return None, "question length must be between 10 and 1000 characters"
+    # 3. Exactly four distinct non-empty options
+    if len(opts) != 4 or any(not o for o in opts) or len({o.casefold() for o in opts}) != 4:
+        return None, "must provide exactly four distinct non-empty options"
+    # 4. Correct index from 0 to 3
+    if not (0 <= c_idx <= 3):
+        return None, "correct_index must be between 0 and 3"
+    # 5. Valid difficulty
+    if diff not in ("Easy", "Medium", "Hard"):
+        return None, "difficulty must be Easy, Medium, or Hard"
+
+    return {
+        "technology": tech,
+        "question": q_text,
+        "options": opts,
+        "correct_index": c_idx,
+        "difficulty": diff,
+        "active": act,
+        "explanation": expl,
+        "learning_resource_url": url,
+        "subtopic": sub,
+    }, None
 
 
 class QuestionImportItem(BaseModel):
@@ -879,6 +1363,312 @@ class InterviewUpdateBody(BaseModel):
 class InterviewWorkspaceBody(BaseModel):
     code: str = Field(max_length=50_000)
     language: str = Field(default="python", pattern="^(python|javascript|typescript|java|cpp)$")
+
+
+class ForgotPasswordBody(BaseModel):
+    email: EmailStr
+
+
+class ResetPasswordBody(BaseModel):
+    token: str = Field(min_length=10, max_length=128)
+    new_password: str = Field(min_length=8, max_length=128)
+
+
+class VerifyEmailBody(BaseModel):
+    token: str = Field(default="", max_length=128)
+    email: EmailStr | None = None
+    otp: str = Field(default="", max_length=12)
+
+
+class ResendVerificationBody(BaseModel):
+    email: EmailStr | None = None
+
+
+class ChangeVerificationEmailBody(BaseModel):
+    current_email: EmailStr
+    password: str = Field(min_length=1, max_length=128)
+    new_email: EmailStr
+
+
+class NotificationPreferencesBody(BaseModel):
+    messages_enabled: bool = True
+    account_activity_enabled: bool = True
+    system_alerts_enabled: bool = True
+
+
+class JobUpdateBody(BaseModel):
+    title: str | None = Field(default=None, min_length=2, max_length=100)
+    company: str | None = Field(default=None, min_length=2, max_length=100)
+    description: str | None = Field(default=None, min_length=20, max_length=10_000)
+    location: str | None = Field(default=None, min_length=2, max_length=100)
+    experience: str | None = Field(default=None, min_length=1, max_length=50)
+    job_type: str | None = Field(default=None, min_length=1, max_length=50)
+    salary: str | None = Field(default=None, max_length=50)
+    skills: list[str] | None = None
+    status: str | None = Field(default=None, pattern="^(Open|Closed)$")
+
+
+class CompanyProfileBody(BaseModel):
+    company: str = Field(min_length=1, max_length=100)
+    website: str | None = Field(default="", max_length=255)
+    logo_url: str | None = Field(default="", max_length=500)
+    industry: str | None = Field(default="", max_length=100)
+    company_size: str | None = Field(default="", max_length=50)
+    description: str | None = Field(default="", max_length=2000)
+
+
+class MessageSendBody(BaseModel):
+    recipient_id: int
+    content: str = Field(min_length=1, max_length=4000)
+    application_id: int | None = None
+
+
+class QuestionCollectionCreateBody(BaseModel):
+    name: str = Field(min_length=2, max_length=100)
+    description: str | None = Field(default="", max_length=500)
+    technology: str | None = Field(default="", max_length=50)
+
+
+class PracticeTechBody(BaseModel):
+    technology: str = Field(min_length=1, max_length=50)
+    proficiency: str | None = Field(default="Intermediate", max_length=50)
+
+
+class PracticeSubmitBody(BaseModel):
+    question_id: int
+    selected_index: int | None = Field(default=None, ge=0, le=3)
+    selected_option_index: int | None = Field(default=None, ge=0, le=3)
+
+
+class AssessmentScoreAdjustBody(BaseModel):
+    new_score: float = Field(ge=0.0, le=100.0)
+    new_result: str | None = Field(default=None, pattern="^(Passed|Failed)$")
+    reason: str = Field(min_length=5, max_length=1000)
+
+
+class VideoAssessmentCreateBody(BaseModel):
+    job_id: int
+    title: str = Field(min_length=2, max_length=100)
+    description: str | None = Field(default="", max_length=1000)
+    time_limit_seconds: int = Field(default=120, ge=30, le=600)
+    questions: list[dict[str, Any]] = Field(min_length=1, max_length=10)
+
+
+class VideoResponseSubmitBody(BaseModel):
+    responses: list[dict[str, Any]] = Field(min_length=1)
+
+
+class VideoEvaluateBody(BaseModel):
+    score: int = Field(ge=0, le=100)
+    feedback: str = Field(default="", max_length=2000)
+
+
+class InterviewScorecardBody(BaseModel):
+    technical_rating: int = Field(default=3, ge=1, le=5)
+    communication_rating: int = Field(default=3, ge=1, le=5)
+    problem_solving_rating: int = Field(default=3, ge=1, le=5)
+    culture_fit_rating: int = Field(default=3, ge=1, le=5)
+    overall_recommendation: str = Field(default="Neutral")
+    strengths: str | None = Field(default="", max_length=2000)
+    areas_for_growth: str | None = Field(default="", max_length=2000)
+    notes: str | None = Field(default="", max_length=2000)
+
+    @model_validator(mode="before")
+    @classmethod
+    def populate_aliases(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            mapped = dict(data)
+            if "technical_score" in mapped and "technical_rating" not in mapped:
+                mapped["technical_rating"] = mapped["technical_score"]
+            if "communication_score" in mapped and "communication_rating" not in mapped:
+                mapped["communication_rating"] = mapped["communication_score"]
+            if "problem_solving_score" in mapped and "problem_solving_rating" not in mapped:
+                mapped["problem_solving_rating"] = mapped["problem_solving_score"]
+            if "culture_fit_score" in mapped and "culture_fit_rating" not in mapped:
+                mapped["culture_fit_rating"] = mapped["culture_fit_score"]
+            if "recommendation" in mapped and "overall_recommendation" not in mapped:
+                mapped["overall_recommendation"] = mapped["recommendation"]
+            rec = mapped.get("overall_recommendation")
+            if rec in ("Strong Yes", "Strong Hire"):
+                mapped["overall_recommendation"] = "Strong Hire"
+            elif rec in ("Yes", "Hire"):
+                mapped["overall_recommendation"] = "Hire"
+            elif rec in ("No", "No Hire"):
+                mapped["overall_recommendation"] = "No Hire"
+            elif rec in ("Strong No", "Strong No Hire"):
+                mapped["overall_recommendation"] = "Strong No Hire"
+            else:
+                mapped["overall_recommendation"] = "Neutral"
+            return mapped
+        return data
+
+
+class TicketCreateBody(BaseModel):
+    subject: str = Field(min_length=3, max_length=200)
+    category: str = Field(pattern="^(Account|Assessment|Interview|Technical|Billing|General)$")
+    priority: str = Field(default="Medium", pattern="^(Low|Medium|High|Urgent)$")
+    message: str = Field(min_length=5, max_length=5000)
+
+
+class TicketMessageBody(BaseModel):
+    message: str = Field(min_length=1, max_length=5000)
+    is_internal_note: bool = False
+
+
+class TicketStatusUpdateBody(BaseModel):
+    status: str | None = Field(default=None, pattern="^(Open|In Progress|Waiting Customer|Resolved|Closed)$")
+    priority: str | None = Field(default=None, pattern="^(Low|Medium|High|Urgent)$")
+    assigned_admin_id: int | None = None
+
+
+class JobModerateBody(BaseModel):
+    action: str = Field(pattern="^(flag|unflag|archive|restore)$")
+    note: str | None = Field(default="", max_length=500)
+
+
+class MultilingualChatBody(BaseModel):
+    message: str = Field(min_length=1, max_length=2000)
+    session_id: int | None = None
+    preferred_language: str | None = None
+
+
+def log_audit(
+    db: sqlite3.Connection,
+    user_id: int | None,
+    role: str | None,
+    action: str,
+    target_type: str,
+    target_id: int | None,
+    details: dict[str, Any] | None = None,
+    ip_address: str | None = None,
+) -> None:
+    try:
+        db.execute(
+            """INSERT INTO audit_logs
+            (user_id, role, action, target_type, target_id, details_json, ip_address, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                user_id,
+                role or "system",
+                action,
+                target_type,
+                target_id,
+                json.dumps(details or {}),
+                ip_address or "",
+                now(),
+            ),
+        )
+    except Exception as e:
+        logger.warning("Audit log recording failed: %s", e)
+
+
+def calculate_resume_quality(extracted_text: str, profile: dict[str, Any]) -> dict[str, Any]:
+    score = 100
+    warnings = []
+    suggestions = []
+
+    text_len = len(extracted_text.strip())
+    if text_len < 100:
+        score -= 40
+        warnings.append("Resume contains very little text. Ensure this is not a low-contrast image scan.")
+        suggestions.append("Upload a standard text-based PDF or DOCX file with readable text content.")
+    elif text_len < 300:
+        score -= 20
+        warnings.append("Resume appears concise. Detailed project descriptions increase recruiter engagement.")
+        suggestions.append("Add bullet points explaining your concrete responsibilities and outcomes.")
+
+    name = profile.get("name", "").strip()
+    if not name or len(name) < 2:
+        score -= 15
+        warnings.append("Candidate name could not be automatically verified.")
+        suggestions.append("Ensure your full name is prominently displayed at the top of your resume.")
+
+    email = profile.get("email", "").strip()
+    if not email or "@" not in email:
+        score -= 20
+        warnings.append("No standard contact email address detected.")
+        suggestions.append("Include an accessible professional email address.")
+
+    phone = profile.get("phone", "").strip()
+    if not phone or len(phone) < 7:
+        score -= 10
+        warnings.append("Phone number is missing or incomplete.")
+        suggestions.append("Include your contact phone number with country/area code.")
+
+    skills = profile.get("skills", [])
+    if not skills:
+        score -= 25
+        warnings.append("No recognized industry skills were detected.")
+        suggestions.append("Add a dedicated 'Skills' section listing relevant technical languages, frameworks, and tools.")
+    elif len(skills) < 5:
+        score -= 10
+        warnings.append(f"Only {len(skills)} skills detected. Aim for at least 6-10 core competencies.")
+        suggestions.append("Expand your skills section with modern tools and methodologies you use.")
+
+    score = max(10, min(100, score))
+
+    level = "Excellent" if score >= 85 else "Good" if score >= 70 else "Needs Improvement" if score >= 50 else "Critical"
+
+    return {
+        "score": score,
+        "level": level,
+        "warnings": warnings,
+        "suggestions": suggestions,
+        "detected_contact": {
+            "has_name": bool(name and len(name) >= 2),
+            "has_email": bool(email and "@" in email),
+            "has_phone": bool(phone and len(phone) >= 7),
+        },
+        "skill_count": len(skills),
+        "text_length": text_len,
+    }
+
+
+class SupportChatManager:
+    def __init__(self):
+        # ticket_id -> dict of connection_id -> {ws, user_id, role, name}
+        self.rooms: dict[int, dict[str, dict[str, Any]]] = {}
+
+    async def connect(self, ticket_id: int, conn_id: str, websocket: WebSocket, user_id: int, role: str, name: str) -> None:
+        await websocket.accept()
+        if ticket_id not in self.rooms:
+            self.rooms[ticket_id] = {}
+        self.rooms[ticket_id][conn_id] = {
+            "ws": websocket,
+            "user_id": user_id,
+            "role": role,
+            "name": name,
+        }
+        await self.broadcast(
+            ticket_id,
+            {
+                "type": "presence",
+                "event": "user_joined",
+                "user_name": name,
+                "role": role,
+                "occupancy": len(self.rooms[ticket_id]),
+            },
+            is_internal=False,
+        )
+
+    def disconnect(self, ticket_id: int, conn_id: str) -> None:
+        if ticket_id in self.rooms and conn_id in self.rooms[ticket_id]:
+            del self.rooms[ticket_id][conn_id]
+            if not self.rooms[ticket_id]:
+                del self.rooms[ticket_id]
+
+    async def broadcast(self, ticket_id: int, data: dict[str, Any], is_internal: bool = False) -> None:
+        room = self.rooms.get(ticket_id, {})
+        for conn_id, conn in list(room.items()):
+            if is_internal and conn["role"] != "admin":
+                continue
+            try:
+                await conn["ws"].send_json(data)
+            except Exception:
+                pass
+
+
+support_chat_manager = SupportChatManager()
 
 
 ASSESSMENT_QUESTION_BANK: dict[str, list[tuple[str, str, str, str, str, str]]] = {
@@ -1056,9 +1846,11 @@ def initialize_database() -> None:
                 job_type TEXT NOT NULL,
                 salary TEXT NOT NULL DEFAULT '',
                 skills_json TEXT NOT NULL,
-                status TEXT NOT NULL DEFAULT 'Open' CHECK(status IN ('Open', 'Closed')),
+                status TEXT NOT NULL DEFAULT 'Open' CHECK(status IN ('Open', 'Closed', 'Archived')),
                 assessment_question_count INTEGER NOT NULL DEFAULT 20,
                 allow_detailed_results INTEGER NOT NULL DEFAULT 1,
+                archived_at TEXT,
+                is_archived INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS resumes (
@@ -1348,11 +2140,271 @@ def initialize_database() -> None:
             CREATE INDEX IF NOT EXISTS idx_assessment_events_assessment ON assessment_proctoring_events(assessment_id);
             CREATE INDEX IF NOT EXISTS idx_interviews_application ON interviews(application_id);
             CREATE INDEX IF NOT EXISTS idx_interviews_recruiter ON interviews(recruiter_id);
+            CREATE TABLE IF NOT EXISTS email_verification_tokens (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                token_hash TEXT NOT NULL UNIQUE,
+                otp_hash TEXT NOT NULL DEFAULT '',
+                used INTEGER NOT NULL DEFAULT 0,
+                attempts INTEGER NOT NULL DEFAULT 0,
+                email_sent_to TEXT NOT NULL DEFAULT '',
+                expires_at TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS notification_preferences (
+                user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+                messages_enabled INTEGER NOT NULL DEFAULT 1,
+                account_activity_enabled INTEGER NOT NULL DEFAULT 1,
+                system_alerts_enabled INTEGER NOT NULL DEFAULT 1,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS email_delivery_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                notification_id INTEGER REFERENCES notifications(id) ON DELETE CASCADE,
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                recipient_email TEXT NOT NULL,
+                category TEXT NOT NULL,
+                subject TEXT NOT NULL,
+                body_text TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL,
+                attempts INTEGER NOT NULL DEFAULT 1,
+                last_error TEXT NOT NULL DEFAULT '',
+                event_key TEXT NOT NULL DEFAULT '',
+                next_retry_at TEXT,
+                sent_at TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_email_delivery_logs_status ON email_delivery_logs(status, next_retry_at);
+            CREATE INDEX IF NOT EXISTS idx_email_delivery_logs_event ON email_delivery_logs(user_id, event_key);
+            CREATE TABLE IF NOT EXISTS password_reset_tokens (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                token_hash TEXT NOT NULL UNIQUE,
+                expires_at TEXT NOT NULL,
+                used INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS saved_jobs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                candidate_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                job_id INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+                created_at TEXT NOT NULL,
+                UNIQUE(candidate_id, job_id)
+            );
+            CREATE TABLE IF NOT EXISTS resume_versions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                candidate_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                filename TEXT NOT NULL,
+                storage_path TEXT NOT NULL,
+                content_type TEXT NOT NULL,
+                extracted_text TEXT,
+                parsed_profile_json TEXT,
+                version_number INTEGER NOT NULL DEFAULT 1,
+                is_active INTEGER NOT NULL DEFAULT 1,
+                uploaded_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                application_id INTEGER REFERENCES applications(id) ON DELETE CASCADE,
+                job_id INTEGER REFERENCES jobs(id) ON DELETE CASCADE,
+                sender_id INTEGER NOT NULL REFERENCES users(id),
+                recipient_id INTEGER NOT NULL REFERENCES users(id),
+                content TEXT NOT NULL,
+                read_at TEXT,
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS question_collections (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                recruiter_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                name TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                technology TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS question_collection_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                collection_id INTEGER NOT NULL REFERENCES question_collections(id) ON DELETE CASCADE,
+                technology TEXT NOT NULL,
+                question TEXT NOT NULL,
+                options_json TEXT NOT NULL,
+                correct_index INTEGER NOT NULL,
+                difficulty TEXT NOT NULL,
+                explanation TEXT NOT NULL DEFAULT '',
+                learning_resource_url TEXT NOT NULL DEFAULT '',
+                subtopic TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS candidate_technologies (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                candidate_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                technology TEXT NOT NULL,
+                proficiency TEXT NOT NULL DEFAULT 'Intermediate',
+                created_at TEXT NOT NULL,
+                UNIQUE(candidate_id, technology)
+            );
+            CREATE TABLE IF NOT EXISTS practice_questions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                technology TEXT NOT NULL,
+                question TEXT NOT NULL,
+                options_json TEXT NOT NULL,
+                correct_index INTEGER NOT NULL,
+                difficulty TEXT NOT NULL,
+                explanation TEXT NOT NULL DEFAULT '',
+                subtopic TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS practice_attempts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                candidate_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                question_id INTEGER NOT NULL REFERENCES practice_questions(id) ON DELETE CASCADE,
+                selected_index INTEGER NOT NULL,
+                is_correct INTEGER NOT NULL,
+                attempted_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS assessment_score_adjustments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                assessment_id INTEGER NOT NULL REFERENCES assessments(id) ON DELETE CASCADE,
+                recruiter_id INTEGER NOT NULL REFERENCES users(id),
+                original_score REAL,
+                new_score REAL NOT NULL,
+                original_result TEXT,
+                new_result TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS video_assessments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                job_id INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+                recruiter_id INTEGER NOT NULL REFERENCES users(id),
+                title TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                time_limit_seconds INTEGER NOT NULL DEFAULT 120,
+                status TEXT NOT NULL DEFAULT 'Draft',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS video_assessment_questions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                video_assessment_id INTEGER NOT NULL REFERENCES video_assessments(id) ON DELETE CASCADE,
+                question_order INTEGER NOT NULL DEFAULT 1,
+                question_text TEXT NOT NULL,
+                max_duration_seconds INTEGER NOT NULL DEFAULT 120,
+                prep_time_seconds INTEGER NOT NULL DEFAULT 30,
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS video_assignments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                video_assessment_id INTEGER NOT NULL REFERENCES video_assessments(id) ON DELETE CASCADE,
+                application_id INTEGER NOT NULL REFERENCES applications(id) ON DELETE CASCADE,
+                candidate_id INTEGER NOT NULL REFERENCES users(id),
+                token TEXT NOT NULL UNIQUE,
+                status TEXT NOT NULL DEFAULT 'Invited',
+                deadline_at TEXT,
+                invited_at TEXT NOT NULL,
+                completed_at TEXT
+            );
+            CREATE TABLE IF NOT EXISTS video_responses (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                assignment_id INTEGER NOT NULL REFERENCES video_assignments(id) ON DELETE CASCADE,
+                question_id INTEGER NOT NULL REFERENCES video_assessment_questions(id) ON DELETE CASCADE,
+                video_url TEXT NOT NULL,
+                duration_seconds INTEGER NOT NULL DEFAULT 0,
+                score INTEGER,
+                recruiter_feedback TEXT NOT NULL DEFAULT '',
+                evaluated_at TEXT,
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS interview_scorecards (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                interview_id INTEGER NOT NULL REFERENCES interviews(id) ON DELETE CASCADE,
+                application_id INTEGER NOT NULL REFERENCES applications(id) ON DELETE CASCADE,
+                recruiter_id INTEGER NOT NULL REFERENCES users(id),
+                technical_rating INTEGER NOT NULL DEFAULT 0,
+                communication_rating INTEGER NOT NULL DEFAULT 0,
+                problem_solving_rating INTEGER NOT NULL DEFAULT 0,
+                culture_fit_rating INTEGER NOT NULL DEFAULT 0,
+                overall_recommendation TEXT NOT NULL DEFAULT 'Neutral',
+                strengths TEXT NOT NULL DEFAULT '',
+                areas_for_growth TEXT NOT NULL DEFAULT '',
+                notes TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(interview_id)
+            );
+            CREATE TABLE IF NOT EXISTS support_tickets (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ticket_number TEXT NOT NULL UNIQUE,
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                subject TEXT NOT NULL,
+                category TEXT NOT NULL,
+                priority TEXT NOT NULL DEFAULT 'Medium',
+                status TEXT NOT NULL DEFAULT 'Open',
+                assigned_admin_id INTEGER REFERENCES users(id),
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS ticket_messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ticket_id INTEGER NOT NULL REFERENCES support_tickets(id) ON DELETE CASCADE,
+                sender_id INTEGER NOT NULL REFERENCES users(id),
+                is_admin INTEGER NOT NULL DEFAULT 0,
+                is_internal_note INTEGER NOT NULL DEFAULT 0,
+                message TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS ticket_audit_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ticket_id INTEGER NOT NULL REFERENCES support_tickets(id) ON DELETE CASCADE,
+                admin_id INTEGER NOT NULL REFERENCES users(id),
+                action TEXT NOT NULL,
+                details_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS admin_availability (
+                admin_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+                is_online INTEGER NOT NULL DEFAULT 0,
+                active_chats_count INTEGER NOT NULL DEFAULT 0,
+                max_concurrent_chats INTEGER NOT NULL DEFAULT 5,
+                last_heartbeat_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS websocket_auth_tickets (
+                ticket_id TEXT PRIMARY KEY,
+                user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                role TEXT NOT NULL,
+                support_ticket_id INTEGER,
+                expires_at TEXT NOT NULL,
+                used INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS audit_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER REFERENCES users(id),
+                role TEXT,
+                action TEXT NOT NULL,
+                target_type TEXT NOT NULL,
+                target_id INTEGER,
+                details_json TEXT NOT NULL DEFAULT '{}',
+                ip_address TEXT,
+                created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_saved_jobs_cand ON saved_jobs(candidate_id);
+            CREATE INDEX IF NOT EXISTS idx_messages_app ON messages(application_id);
+            CREATE INDEX IF NOT EXISTS idx_messages_recip ON messages(recipient_id, read_at);
+            CREATE INDEX IF NOT EXISTS idx_practice_tech ON practice_questions(technology);
+            CREATE INDEX IF NOT EXISTS idx_practice_att_cand ON practice_attempts(candidate_id);
+            CREATE INDEX IF NOT EXISTS idx_support_tickets_user ON support_tickets(user_id);
+            CREATE INDEX IF NOT EXISTS idx_support_tickets_status ON support_tickets(status);
+            CREATE INDEX IF NOT EXISTS idx_ticket_msgs_ticket ON ticket_messages(ticket_id);
+            CREATE INDEX IF NOT EXISTS idx_audit_logs_action ON audit_logs(action, created_at);
             """
         )
         user_columns = {row["name"] for row in db.execute("PRAGMA table_info(users)")}
         if "active" not in user_columns:
             db.execute("ALTER TABLE users ADD COLUMN active INTEGER NOT NULL DEFAULT 1")
+        if "email_verified" not in user_columns:
+            db.execute("ALTER TABLE users ADD COLUMN email_verified INTEGER NOT NULL DEFAULT 1")
         chat_msg_columns = {row["name"] for row in db.execute("PRAGMA table_info(chat_messages)")}
         if "intent" not in chat_msg_columns:
             db.execute("ALTER TABLE chat_messages ADD COLUMN intent TEXT NOT NULL DEFAULT ''")
@@ -1365,9 +2417,46 @@ def initialize_database() -> None:
         for column, definition in (
             ("assessment_question_count", "INTEGER NOT NULL DEFAULT 20"),
             ("allow_detailed_results", "INTEGER NOT NULL DEFAULT 1"),
+            ("archived_at", "TEXT"),
+            ("is_archived", "INTEGER NOT NULL DEFAULT 0"),
+            ("flagged", "INTEGER NOT NULL DEFAULT 0"),
+            ("moderation_note", "TEXT NOT NULL DEFAULT ''"),
         ):
             if column not in job_columns:
                 db.execute(f"ALTER TABLE jobs ADD COLUMN {column} {definition}")
+        jobs_row = db.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='jobs'").fetchone()
+        jobs_sql = (jobs_row[0] if jobs_row else "") or ""
+        if "CHECK(status IN ('Open', 'Closed'))" in jobs_sql and "Archived" not in jobs_sql:
+            cols = [r[1] for r in db.execute("PRAGMA table_info(jobs)").fetchall()]
+            cols_joined = ", ".join(f'"{c}"' for c in cols)
+            db.execute("PRAGMA foreign_keys = OFF")
+            db.execute("DROP TABLE IF EXISTS jobs_new")
+            db.execute("""
+                CREATE TABLE jobs_new (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    recruiter_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    title TEXT NOT NULL,
+                    company TEXT NOT NULL,
+                    description TEXT NOT NULL,
+                    location TEXT NOT NULL,
+                    experience TEXT NOT NULL,
+                    job_type TEXT NOT NULL,
+                    salary TEXT NOT NULL DEFAULT '',
+                    skills_json TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'Open' CHECK(status IN ('Open', 'Closed', 'Archived')),
+                    assessment_question_count INTEGER NOT NULL DEFAULT 20,
+                    allow_detailed_results INTEGER NOT NULL DEFAULT 1,
+                    archived_at TEXT,
+                    is_archived INTEGER NOT NULL DEFAULT 0,
+                    flagged INTEGER NOT NULL DEFAULT 0,
+                    moderation_note TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL
+                )
+            """)
+            db.execute(f"INSERT INTO jobs_new ({cols_joined}) SELECT {cols_joined} FROM jobs")
+            db.execute("DROP TABLE jobs")
+            db.execute("ALTER TABLE jobs_new RENAME TO jobs")
+            db.execute("PRAGMA foreign_keys = ON")
         application_columns = {row["name"] for row in db.execute("PRAGMA table_info(applications)")}
         if "match_percentage" not in application_columns:
             db.execute("ALTER TABLE applications ADD COLUMN match_percentage INTEGER")
@@ -1530,6 +2619,23 @@ def initialize_database() -> None:
         db.execute(
             "CREATE INDEX IF NOT EXISTS idx_interviews_application_schedule ON interviews(application_id, scheduled_at)"
         )
+        evt_columns = {row["name"] for row in db.execute("PRAGMA table_info(email_verification_tokens)")}
+        for column, definition in (
+            ("otp_hash", "TEXT NOT NULL DEFAULT ''"),
+            ("used", "INTEGER NOT NULL DEFAULT 0"),
+            ("attempts", "INTEGER NOT NULL DEFAULT 0"),
+            ("email_sent_to", "TEXT NOT NULL DEFAULT ''"),
+        ):
+            if column not in evt_columns:
+                db.execute(f"ALTER TABLE email_verification_tokens ADD COLUMN {column} {definition}")
+        notif_columns = {row["name"] for row in db.execute("PRAGMA table_info(notifications)")}
+        for column, definition in (
+            ("email_attempts", "INTEGER NOT NULL DEFAULT 0"),
+            ("email_last_error", "TEXT NOT NULL DEFAULT ''"),
+            ("email_sent_at", "TEXT"),
+        ):
+            if column not in notif_columns:
+                db.execute(f"ALTER TABLE notifications ADD COLUMN {column} {definition}")
         db.execute(
             """INSERT INTO application_status_history
             (application_id, status, actor_role, created_at)
@@ -1660,6 +2766,30 @@ def initialize_database() -> None:
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     [(recruiter_id, *job[:7], json.dumps(job[7]), seeded_at) for job in jobs],
                 )
+
+        # Seed practice questions if table is empty
+        if not db.execute("SELECT COUNT(*) FROM practice_questions").fetchone()[0]:
+            practice_seed = [
+                ("Python", "What is the primary difference between a list and a tuple in Python?", json.dumps(["Lists are mutable, tuples are immutable", "Lists cannot store strings, tuples can", "Tuples are always faster than lists for indexing", "Lists have fixed length, tuples do not"]), 0, "Easy", "Lists can be modified in-place whereas tuples cannot be altered after creation.", "Data Structures"),
+                ("Python", "Which built-in function returns both the index and value during loop iteration?", json.dumps(["range()", "enumerate()", "zip()", "map()"]), 1, "Easy", "enumerate() generates tuples containing (index, element).", "Built-ins"),
+                ("Python", "What does the '@' symbol signify when placed above a function definition?", json.dumps(["Decorator", "Async generator", "Global variable", "Macro"]), 0, "Medium", "The @ syntax in Python denotes a decorator that wraps function behavior.", "Functions"),
+                ("Python", "How does a Python generator function yield values lazily?", json.dumps(["Using the 'return' statement", "Using the 'yield' statement", "Using a while loop only", "Using an inline lambda"]), 1, "Medium", "The 'yield' expression pauses function execution and returns an intermediate value.", "Generators"),
+                ("JavaScript", "Which keyword defines a block-scoped variable that cannot be reassigned?", json.dumps(["var", "let", "const", "static"]), 2, "Easy", "const binds a block-scoped identifier that cannot be reassigned.", "Variables"),
+                ("JavaScript", "What is the return type of the 'typeof null' operator in JavaScript?", json.dumps(["'null'", "'undefined'", "'object'", "'boolean'"]), 2, "Medium", "In JavaScript, typeof null returns 'object' due to a historical design decision.", "Types"),
+                ("JavaScript", "What does Promise.all() do when one of the passed promises rejects?", json.dumps(["Waits for all others to settle", "Immediately rejects with that reason", "Ignores the error and returns partial results", "Retries the rejected promise"]), 1, "Medium", "Promise.all() rejects immediately upon the first rejected promise (fail-fast).", "Async"),
+                ("React", "Which hook should be used to perform side effects such as data fetching in functional components?", json.dumps(["useState", "useEffect", "useMemo", "useRef"]), 1, "Easy", "useEffect runs side effects after component render cycles.", "Hooks"),
+                ("React", "What is the primary benefit of the 'key' prop when rendering lists in React?", json.dumps(["Styles the list element", "Helps React identify which items have changed, been added, or removed", "Enforces unique CSS classes", "Enables Redux state tracking"]), 1, "Easy", "Keys provide a stable identity across renders for efficient DOM reconciliation.", "Reconciliation"),
+                ("SQL", "Which clause is used to filter records based on aggregated group conditions?", json.dumps(["WHERE", "GROUP BY", "HAVING", "ORDER BY"]), 2, "Medium", "HAVING filters groups created by GROUP BY, unlike WHERE which filters individual rows.", "Queries"),
+                ("SQL", "What is the effect of an INNER JOIN between Table A and Table B?", json.dumps(["Returns all rows from both tables", "Returns rows that have matching values in both tables", "Returns all rows from Table A and only matching from Table B", "Returns Cartesian product"]), 1, "Easy", "INNER JOIN selects records that have matching values in both datasets.", "Joins"),
+                ("HTML/CSS", "What does CSS Flexbox 'justify-content: space-between' do?", json.dumps(["Centers all flex items", "Evenly distributes items with first item at start and last at end", "Stacks items vertically", "Adds margin around the container"]), 1, "Easy", "Items are evenly distributed along the main axis; first item touches start, last touches end.", "Flexbox"),
+            ]
+            now_iso = now()
+            db.executemany(
+                """INSERT INTO practice_questions
+                (technology, question, options_json, correct_index, difficulty, explanation, subtopic, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                [(*item, now_iso) for item in practice_seed],
+            )
 
 
 def public_job(row: sqlite3.Row) -> dict[str, Any]:
@@ -2047,8 +3177,6 @@ def assessment_for_match(
     saved_profile_json: str,
     match_percentage: int,
 ) -> None:
-    if match_percentage < 70:
-        return
     questions = db.execute(
         """SELECT id, technology, question, options_json, correct_index, difficulty
         FROM job_questions WHERE job_id = ? AND active = 1 ORDER BY id""",
@@ -2434,23 +3562,91 @@ def health() -> dict[str, Any]:
     return {"status": status, "database": "ok" if db_ok else "unavailable", "version": "1.0.0"}
 
 
+def issue_verification_challenge(
+    db: sqlite3.Connection,
+    user_id: int,
+    name: str,
+    email: str,
+) -> tuple[str, str]:
+    db.execute(
+        "UPDATE email_verification_tokens SET used = 1 WHERE user_id = ? AND used = 0",
+        (user_id,),
+    )
+    raw_token = secrets.token_urlsafe(32)
+    otp = f"{secrets.randbelow(900000) + 100000}"
+    token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
+    otp_hash = hashlib.sha256(otp.encode()).hexdigest()
+    expires_at = (datetime.now(timezone.utc) + timedelta(hours=24)).isoformat()
+    ts = now()
+    db.execute(
+        """INSERT INTO email_verification_tokens
+        (user_id, token_hash, otp_hash, used, attempts, email_sent_to, expires_at, created_at)
+        VALUES (?, ?, ?, 0, 0, ?, ?, ?)""",
+        (user_id, token_hash, otp_hash, email.lower(), expires_at, ts),
+    )
+    verify_link = f"{PUBLIC_BASE_URL}/?{urlencode({'verify_email': raw_token})}"
+    subject = "SkillSphere: Verify your email address"
+    content = (
+        f"Hello {name},\n\n"
+        f"Welcome to SkillSphere! Please verify your email address to activate your account.\n\n"
+        f"Verification code (OTP): {otp}\n"
+        f"Or verify using this secure link: {verify_link}\n\n"
+        f"This link and code are single-use and expire in 24 hours."
+    )
+    try:
+        delivery = send_email_message(email.lower(), subject, content)
+    except Exception as exc:
+        logger.warning("Could not send verification email: %s", exc)
+        delivery = "Failed"
+    _record_email_log(
+        db,
+        notification_id=None,
+        user_id=user_id,
+        recipient_email=email.lower(),
+        category="verification",
+        subject=subject,
+        body_text=content,
+        status=delivery,
+        attempts=1,
+        sent_at=ts if delivery in {"Sent", "Development"} else None,
+        last_error="" if delivery != "Failed" else "Failed to send verification email",
+    )
+    return raw_token, otp
+
+
 @app.post("/api/auth/register", status_code=201)
 @limiter.limit("10/minute")
 def register(request: Request, body: RegisterBody) -> dict[str, Any]:
     role = body.role.lower()
     if role not in {"candidate", "recruiter"}:
         raise HTTPException(status_code=422, detail="Choose a job seeker or recruiter account")
+    email = str(body.email).strip().lower()
+    if not is_valid_email_address(email):
+        raise HTTPException(status_code=422, detail="Enter a valid email address")
     try:
         with connect() as db:
             cursor = db.execute(
-                "INSERT INTO users (name, email, password_hash, role, created_at) VALUES (?, ?, ?, ?, ?)",
-                (body.name.strip(), body.email.lower(), password_hash(body.password), role, now()),
+                "INSERT INTO users (name, email, password_hash, role, email_verified, created_at) VALUES (?, ?, ?, ?, 0, ?)",
+                (body.name.strip(), email, password_hash(body.password), role, now()),
             )
-            row = db.execute("SELECT * FROM users WHERE id = ?", (cursor.lastrowid,)).fetchone()
+            user_id = cursor.lastrowid
+            row = db.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+            raw_token, otp = issue_verification_challenge(db, user_id, body.name.strip(), email)
+            log_audit(db, user_id, role, "ACCOUNT_REGISTERED", "user", user_id)
     except sqlite3.IntegrityError as error:
         raise HTTPException(status_code=409, detail="An account with this email already exists") from error
     user = public_user(row)
-    return {"access_token": encode_token(row), "token_type": "bearer", "user": user}
+    resp: dict[str, Any] = {
+        "verification_required": True,
+        "access_token": None,
+        "token_type": "bearer",
+        "user": user,
+        "message": "Account created. Please check your email for your verification link or 6-digit code.",
+    }
+    if os.environ.get("SKILLSPHERE_ENABLE_DEMO", "true").lower() not in {"false", "0", "no"}:
+        resp["dev_token"] = raw_token
+        resp["dev_otp"] = otp
+    return resp
 
 
 @app.post("/api/auth/login")
@@ -2460,6 +3656,11 @@ def login(request: Request, body: LoginBody) -> dict[str, Any]:
         row = db.execute("SELECT * FROM users WHERE email = ?", (body.email.lower(),)).fetchone()
     if not row or not row["active"] or not check_password(body.password, row["password_hash"]):
         raise HTTPException(status_code=401, detail="Email or password is incorrect")
+    if "email_verified" in row.keys() and not row["email_verified"]:
+        raise HTTPException(
+            status_code=403,
+            detail="Please verify your email address before signing in.",
+        )
     return {"access_token": encode_token(row), "token_type": "bearer", "user": public_user(row)}
 
 
@@ -2488,8 +3689,8 @@ def list_jobs(
     if mine:
         if user["role"] != "recruiter":
             raise HTTPException(status_code=403, detail="Only recruiters can view their own job listings")
-        clauses.append("j.recruiter_id = ?")
-        values.append(user["id"])
+        clauses = ["j.recruiter_id = ?", "j.status != 'Archived'"]
+        values = [user["id"]]
     if q.strip():
         like = f"%{q.strip()}%"
         clauses.append("(j.title LIKE ? OR j.company LIKE ? OR j.description LIKE ? OR j.skills_json LIKE ?)")
@@ -2523,6 +3724,47 @@ def list_jobs(
     return {"items": [public_job(row) for row in rows], "total": total, "page": page, "page_size": page_size}
 
 
+@app.get("/api/jobs/saved")
+def list_saved_jobs(user: dict[str, Any] = Depends(require_role("candidate"))) -> dict[str, Any]:
+    with connect() as db:
+        rows = db.execute(
+            """SELECT j.*, s.created_at AS saved_at
+            FROM saved_jobs s JOIN jobs j ON j.id = s.job_id
+            WHERE s.candidate_id = ? AND j.status = 'Open'
+            ORDER BY s.created_at DESC""",
+            (user["id"],),
+        ).fetchall()
+    return {"items": [public_job(r) for r in rows], "total": len(rows)}
+
+
+@app.get("/api/jobs/recommended")
+def recommended_jobs(user: dict[str, Any] = Depends(require_role("candidate"))) -> dict[str, Any]:
+    with connect() as db:
+        resume_row = db.execute("SELECT * FROM resumes WHERE candidate_id = ?", (user["id"],)).fetchone()
+        jobs_rows = db.execute("SELECT * FROM jobs WHERE status = 'Open' ORDER BY created_at DESC LIMIT 50").fetchall()
+        user_profile = json.dumps(user.get("profile") or {})
+        recommendations = []
+        for j_row in jobs_rows:
+            job = public_job(j_row)
+            if resume_row:
+                match = calculate_match(job, resume_row, user_profile)
+                score = match.get("match_percentage", 0)
+                matched_skills = match.get("matched_skills", [])
+                missing_skills = match.get("missing_skills", [])
+            else:
+                score = 50
+                matched_skills = []
+                missing_skills = job.get("skills", [])
+            recommendations.append({
+                **job,
+                "match_percentage": score,
+                "matched_skills": matched_skills,
+                "missing_skills": missing_skills,
+            })
+        recommendations.sort(key=lambda x: x["match_percentage"], reverse=True)
+    return {"items": recommendations[:10], "total": len(recommendations[:10])}
+
+
 @app.get("/api/jobs/{job_id}")
 def get_job(job_id: int, user: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
     del user
@@ -2540,32 +3782,13 @@ def delete_job(
 ) -> dict[str, Any]:
     with connect() as db:
         job = owned_job(db, job_id, user)
-        # Clean up all related tables to maintain relational integrity
-        app_rows = db.execute("SELECT id FROM applications WHERE job_id = ?", (job_id,)).fetchall()
-        app_ids = [r["id"] for r in app_rows]
-        if app_ids:
-            placeholders = ",".join("?" for _ in app_ids)
-            db.execute(f"DELETE FROM status_history WHERE application_id IN ({placeholders})", tuple(app_ids))
-            db.execute(f"DELETE FROM interviews WHERE application_id IN ({placeholders})", tuple(app_ids))
-            db.execute(f"DELETE FROM candidate_ai_summaries WHERE application_id IN ({placeholders})", tuple(app_ids))
-            db.execute(f"DELETE FROM internal_notes WHERE application_id IN ({placeholders})", tuple(app_ids))
-
-            assess_rows = db.execute(f"SELECT id FROM assessments WHERE application_id IN ({placeholders})", tuple(app_ids)).fetchall()
-            assess_ids = [r["id"] for r in assess_rows]
-            if assess_ids:
-                a_placeholders = ",".join("?" for _ in assess_ids)
-                db.execute(f"DELETE FROM assessment_questions WHERE assessment_id IN ({a_placeholders})", tuple(assess_ids))
-                db.execute(f"DELETE FROM assessment_proctoring_events WHERE assessment_id IN ({a_placeholders})", tuple(assess_ids))
-                db.execute(f"DELETE FROM assessment_sessions WHERE assessment_id IN ({a_placeholders})", tuple(assess_ids))
-                db.execute(f"DELETE FROM assessment_recordings WHERE assessment_id IN ({a_placeholders})", tuple(assess_ids))
-            db.execute(f"DELETE FROM assessments WHERE application_id IN ({placeholders})", tuple(app_ids))
-            db.execute("DELETE FROM applications WHERE job_id = ?", (job_id,))
-
-        db.execute("DELETE FROM job_questions WHERE job_id = ?", (job_id,))
-        db.execute("DELETE FROM question_bank_imports WHERE job_id = ?", (job_id,))
-        db.execute("DELETE FROM assessments WHERE job_id = ?", (job_id,))
-        db.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
-    return {"deleted": True, "job_id": job_id, "detail": "Job posting and related records removed successfully"}
+        now_iso = now()
+        db.execute(
+            "UPDATE jobs SET status = 'Archived', is_archived = 1, archived_at = ? WHERE id = ?",
+            (now_iso, job_id),
+        )
+    logger.info("Job %s soft-archived by %s %s", job_id, user.get("role"), user.get("id"))
+    return {"deleted": True, "archived": True, "job_id": job_id, "detail": "Job posting removed and archived successfully"}
 
 
 @app.post("/api/jobs", status_code=201)
@@ -3897,35 +5120,79 @@ def batch_create_job_questions(
     with connect() as db:
         job = owned_job(db, job_id, user)
         rec_id = job["recruiter_id"] if "recruiter_id" in job.keys() and job["recruiter_id"] else user["id"]
-        created_ids = []
-        now_iso = now()
+
+        existing_rows = db.execute(
+            "SELECT lower(trim(question)) as q, lower(trim(technology)) as t FROM job_questions WHERE job_id = ?",
+            (job_id,),
+        ).fetchall()
+        existing_set = {(r["t"], r["q"]) for r in existing_rows}
+
+        valid_items: list[dict[str, Any]] = []
+        invalid_count = 0
+        skipped_count = 0
+
         for q in body.questions:
-            try:
-                technology, question, options, correct_index, difficulty, active, explanation, learning_resource_url, subtopic = validated_question(q)
-            except HTTPException:
-                continue
-            try:
-                cursor = db.execute(
-                    """INSERT INTO job_questions
-                    (job_id, owner_id, recruiter_id, technology, question, options_json, correct_index,
-                     difficulty, active, source_type, explanation, learning_resource_url, subtopic, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual', ?, ?, ?, ?, ?)""",
-                    (
-                        job_id, rec_id, rec_id, technology, question, json.dumps(options),
-                        correct_index, difficulty, active, explanation, learning_resource_url, subtopic, now_iso, now_iso,
-                    ),
+            item, err = validate_question_data(q)
+            if not item:
+                invalid_count += 1
+                logger.info(
+                    "Job %s question batch invalid question: reason=%s user=%s",
+                    job_id, err, user.get("id"),
                 )
-                if cursor and getattr(cursor, "lastrowid", None):
-                    created_ids.append(cursor.lastrowid)
+                continue
+            key = (item["technology"].casefold(), item["question"].casefold())
+            if key in existing_set:
+                skipped_count += 1
+                continue
+            existing_set.add(key)
+            valid_items.append(item)
+
+        created_count = 0
+        if valid_items:
+            now_iso = now()
+            try:
+                for item in valid_items:
+                    db.execute(
+                        """INSERT INTO job_questions
+                        (job_id, owner_id, recruiter_id, technology, question, options_json, correct_index,
+                         difficulty, active, source_type, explanation, learning_resource_url, subtopic, created_at, updated_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual', ?, ?, ?, ?, ?)""",
+                        (
+                            job_id, rec_id, rec_id, item["technology"], item["question"],
+                            json.dumps(item["options"]), item["correct_index"], item["difficulty"],
+                            item["active"], item["explanation"], item["learning_resource_url"],
+                            item["subtopic"], now_iso, now_iso,
+                        ),
+                    )
+                    created_count += 1
             except Exception as e:
-                logger.warning("Could not insert job question for job %s: %s", job_id, e)
+                logger.error(
+                    "Transaction error saving batch questions for job %s, user %s: %s",
+                    job_id, user.get("id"), e, exc_info=True,
+                )
+                raise HTTPException(status_code=500, detail="Failed to save questions batch due to a database error")
+
         summary = job_question_summary(db, job_id)
-    if summary["ready"]:
+
+    if summary.get("ready"):
         try:
             auto_send_ready_assessments(job_id)
         except Exception as e:
             logger.error("Auto-send ready assessments failed for job %s: %s", job_id, e)
-    return {"created": len(created_ids), "count": len(created_ids), "summary": summary}
+
+    logger.info(
+        "Batch question save complete for job %s by user %s: created=%d, skipped=%d, invalid=%d",
+        job_id, user.get("id"), created_count, skipped_count, invalid_count,
+    )
+    return {
+        "created": created_count,
+        "count": created_count,
+        "skipped": skipped_count,
+        "duplicates": skipped_count,
+        "invalid": invalid_count,
+        "total": len(body.questions),
+        "summary": summary,
+    }
 
 
 @app.get("/api/jobs/{job_id}/question-bank-summary")
@@ -4554,57 +5821,34 @@ def assessment_delivery(
     expires_at: str,
     assessment_url: str,
 ) -> str:
-    smtp_host = os.environ.get("SKILLSPHERE_SMTP_HOST", "")
-    if not smtp_host:
+    resend_key = os.environ.get("RESEND_API_KEY", "").strip()
+    sendgrid_key = os.environ.get("SENDGRID_API_KEY", "").strip()
+    smtp_host = os.environ.get("SKILLSPHERE_SMTP_HOST", "").strip()
+
+    if not (resend_key or sendgrid_key or smtp_host):
         if IS_PRODUCTION:
             raise HTTPException(status_code=503, detail="Assessment email is not configured on this server")
         logger.warning("Development assessment email for %s: %s", recipient, assessment_url)
         return "development"
 
-    sender = os.environ.get("SKILLSPHERE_SMTP_FROM") or os.environ.get("SKILLSPHERE_SMTP_USERNAME")
-    username = os.environ.get("SKILLSPHERE_SMTP_USERNAME", "")
-    password = os.environ.get("SKILLSPHERE_SMTP_PASSWORD", "")
-    if not sender or (username and not password):
-        raise HTTPException(status_code=503, detail="SMTP sender or credentials are incomplete")
     if IS_PRODUCTION and not os.environ.get("SKILLSPHERE_PUBLIC_BASE_URL"):
         raise HTTPException(status_code=503, detail="Set SKILLSPHERE_PUBLIC_BASE_URL before sending assessment links")
 
-    message = EmailMessage()
-    message["Subject"] = f"Technical assessment: {job_title}"
-    message["From"] = sender
-    message["To"] = recipient
+    subject = f"Technical assessment: {job_title}"
     expiry_label = datetime.fromisoformat(expires_at).astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-    message.set_content(
-        f"""You have been shortlisted for {job_title} at {company}.
-
-Please complete this 20-question {technology} assessment. You will have
-{ASSESSMENT_DURATION_MINUTES} minutes after starting, and this link expires
-on {expiry_label}.
-
-Start your assessment: {assessment_url}
-
-The assessment is individual and can only be submitted once.
-"""
+    body_text = (
+        f"You have been shortlisted for {job_title} at {company}.\n\n"
+        f"Please complete this 20-question {technology} assessment. You will have\n"
+        f"{ASSESSMENT_DURATION_MINUTES} minutes after starting, and this link expires\n"
+        f"on {expiry_label}.\n\n"
+        f"Start your assessment: {assessment_url}\n\n"
+        f"The assessment is individual and can only be submitted once.\n"
     )
-    port = int(os.environ.get("SKILLSPHERE_SMTP_PORT", "587"))
-    try:
-        if port == 465:
-            with smtplib.SMTP_SSL(smtp_host, port, timeout=20) as server:
-                if username:
-                    server.login(username, password)
-                server.send_message(message)
-        else:
-            with smtplib.SMTP(smtp_host, port, timeout=20) as server:
-                server.ehlo()
-                server.starttls()
-                server.ehlo()
-                if username:
-                    server.login(username, password)
-                server.send_message(message)
-    except (OSError, smtplib.SMTPException) as error:
-        logger.exception("Could not send technical assessment email")
-        raise HTTPException(status_code=502, detail="Could not send the assessment email") from error
-    return "email"
+
+    result = send_email_message(recipient, subject, body_text)
+    if result in ("Sent", "Development"):
+        return "email"
+    raise HTTPException(status_code=502, detail="Could not send the assessment email")
 
 
 def managed_assessment(
@@ -4703,8 +5947,6 @@ def issue_assessment_link(
 ) -> dict[str, Any]:
     if managed["application_status"] in {"Withdrawn", "Rejected", "Accepted", "Selected"}:
         raise HTTPException(status_code=409, detail="This application is no longer eligible for an assessment")
-    if managed["match_percentage"] is None or managed["match_percentage"] < 70:
-        raise HTTPException(status_code=409, detail="Only candidates with a match of 70% or higher are eligible")
     if not managed["assessment_id"]:
         raise HTTPException(status_code=409, detail="Assessment data is unavailable for this application")
     if not managed["technology"]:
@@ -4753,8 +5995,14 @@ def issue_assessment_link(
     expires_at = (created.timestamp() + ASSESSMENT_TTL_HOURS * 3600)
     expiry = datetime.fromtimestamp(expires_at, timezone.utc).isoformat()
     assessment_url = f"{PUBLIC_BASE_URL}/?{urlencode({'assessment': token})}"
+    candidate_email = (managed["candidate_email"] or "").strip() if "candidate_email" in managed.keys() else ""
+    if not candidate_email or "@" not in candidate_email or "." not in candidate_email.split("@")[-1]:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot send assessment: candidate does not have a valid registered email address.",
+        )
     delivery = assessment_delivery(
-        managed["candidate_email"], managed["title"], managed["company"], managed["technology"], expiry, assessment_url
+        candidate_email, managed["title"], managed["company"], managed["technology"], expiry, assessment_url
     )
 
     db.execute("DELETE FROM assessment_questions WHERE assessment_id = ?", (managed["assessment_id"],))
@@ -4916,6 +6164,34 @@ def send_assessment(
                         f"Add {summary['additional_needed']} more active questions."
                     ),
                 )
+            # Question bank is ready but no assessment record exists yet (e.g., candidate
+            # applied without a parsed resume). Create a minimal assessment record now so
+            # the recruiter's manual send can proceed.
+            topics_info = summary.get("topics", [])
+            best_topic = topics_info[0]["technology"] if topics_info else None
+            if not best_topic:
+                raise HTTPException(
+                    status_code=409,
+                    detail="No assessment topic available. Add questions to the question bank first.",
+                )
+            db.execute(
+                """INSERT INTO assessments
+                (application_id, candidate_id, job_id, technology, status, match_percentage,
+                 total_questions, assessment_name, assessment_round, pass_percentage,
+                 duration_minutes, question_topics_json, question_topic_weights_json,
+                 selection_reasoning, proctoring_required, created_at)
+                VALUES (?, ?, ?, ?, 'Not Sent', ?, 20, ?, 'Round 1', ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    application_id, managed["candidate_id"], managed["job_id"], best_topic,
+                    managed["match_percentage"] or 0,
+                    ROUND1_ASSESSMENT_NAME, ROUND1_PASS_PERCENTAGE,
+                    ASSESSMENT_DURATION_MINUTES,
+                    json.dumps([best_topic]), json.dumps({}),
+                    "Manual: recruiter-initiated for candidate without parsed profile",
+                    int(PROCTORING_REQUIRED), now(),
+                ),
+            )
+            managed = managed_assessment(db, application_id, user)
         result = issue_assessment_link(db, managed, reissue=False)
     return result
 
@@ -5607,8 +6883,6 @@ def select_assessment_topic(
 ) -> dict[str, Any]:
     with connect() as db:
         managed = managed_assessment(db, application_id, user)
-        if managed["match_percentage"] is None or managed["match_percentage"] < 70:
-            raise HTTPException(status_code=409, detail="Only candidates with a match of 70% or higher are eligible")
         if managed["application_status"] in {"Withdrawn", "Rejected", "Accepted", "Selected"}:
             raise HTTPException(status_code=409, detail="This application is no longer eligible for an assessment")
         if managed["assessment_status"] != "Manual Topic Required":
@@ -7628,18 +8902,38 @@ def download_application_resume(
     user: dict[str, Any] = Depends(require_role("recruiter", "admin")),
 ) -> FileResponse:
     with connect() as db:
+        # Try resume linked directly to this application first
         row = db.execute(
             """SELECT r.storage_path, r.filename, r.content_type FROM applications a
             JOIN jobs j ON j.id = a.job_id JOIN resumes r ON r.id = a.resume_id
             WHERE a.id = ? AND (? = 'admin' OR j.recruiter_id = ?)""",
             (application_id, user["role"], user["id"]),
         ).fetchone()
+        if not row:
+            # Fallback: look up latest resume for the candidate who made the application
+            row = db.execute(
+                """SELECT r.storage_path, r.filename, r.content_type
+                FROM applications a
+                JOIN jobs j ON j.id = a.job_id
+                JOIN resumes r ON r.candidate_id = a.candidate_id
+                WHERE a.id = ? AND (? = 'admin' OR j.recruiter_id = ?)
+                ORDER BY r.uploaded_at DESC LIMIT 1""",
+                (application_id, user["role"], user["id"]),
+            ).fetchone()
     if not row:
-        raise HTTPException(status_code=404, detail="Resume not found for your job listings")
+        raise HTTPException(status_code=404, detail="Resume not found for this application")
     path = Path(row["storage_path"]).resolve()
     if not path.is_relative_to(UPLOAD_DIR.resolve()) or not path.is_file():
-        raise HTTPException(status_code=404, detail="Resume file is unavailable")
-    return FileResponse(path, filename=row["filename"], media_type=row["content_type"])
+        raise HTTPException(status_code=404, detail="Resume file is currently unavailable on the server")
+    # Serve inline for PDF so browsers can open it in a new tab; download for DOCX/images
+    content_type = row["content_type"] or "application/octet-stream"
+    disposition = "inline" if content_type == "application/pdf" else "attachment"
+    return FileResponse(
+        path,
+        filename=row["filename"],
+        media_type=content_type,
+        headers={"Content-Disposition": f'{disposition}; filename="{row["filename"]}"'},
+    )
 
 
 @app.post("/api/resume/upload", status_code=201)
@@ -8533,6 +9827,1635 @@ def analytics(
             ORDER BY a.applied_at DESC LIMIT 5"""
         )]
     return counts
+
+
+# ---------------------------------------------------------------------------
+# 1. Account & Security: Email Verification & Password Reset
+# ---------------------------------------------------------------------------
+
+@app.post("/api/auth/forgot-password")
+@limiter.limit("5/minute")
+def forgot_password(request: Request, body: ForgotPasswordBody) -> dict[str, Any]:
+    raw_token = None
+    with connect() as db:
+        user_row = db.execute("SELECT id, name, email FROM users WHERE lower(email) = ?", (body.email.lower(),)).fetchone()
+        if user_row:
+            raw_token = secrets.token_urlsafe(32)
+            token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
+            expires_at = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+            db.execute(
+                "INSERT INTO password_reset_tokens (user_id, token_hash, expires_at, created_at) VALUES (?, ?, ?, ?)",
+                (user_row["id"], token_hash, expires_at, now()),
+            )
+            log_audit(db, user_row["id"], "user", "FORGOT_PASSWORD_REQUEST", "user", user_row["id"], {"email": body.email.lower()})
+            subject = "SkillSphere: Password Reset Instructions"
+            content = (
+                f"Hello {user_row['name']},\n\n"
+                f"We received a request to reset your SkillSphere password.\n"
+                f"Your reset token is: {raw_token}\n"
+                f"Use this token on the reset password screen within 1 hour.\n\n"
+                f"If you did not request this, please ignore this email."
+            )
+            try:
+                send_email_message(user_row["email"], subject, content)
+            except Exception as e:
+                logger.warning("Could not send password reset email: %s", e)
+    resp: dict[str, Any] = {"ok": True, "message": "If this email is registered, you will receive password reset instructions shortly."}
+    if raw_token and os.environ.get("SKILLSPHERE_ENABLE_DEMO", "true").lower() not in {"false", "0", "no"}:
+        resp["dev_token"] = raw_token
+    return resp
+
+
+@app.post("/api/auth/reset-password")
+@limiter.limit("10/minute")
+def reset_password(request: Request, body: ResetPasswordBody) -> dict[str, Any]:
+    token_hash = hashlib.sha256(body.token.strip().encode()).hexdigest()
+    now_iso = now()
+    with connect() as db:
+        token_row = db.execute(
+            "SELECT id, user_id, expires_at, used FROM password_reset_tokens WHERE token_hash = ?",
+            (token_hash,),
+        ).fetchone()
+        if not token_row or token_row["used"] or token_row["expires_at"] < now_iso:
+            raise HTTPException(status_code=400, detail="Invalid or expired password reset token")
+        user_id = token_row["user_id"]
+        db.execute("UPDATE users SET password_hash = ? WHERE id = ?", (password_hash(body.new_password), user_id))
+        db.execute("UPDATE password_reset_tokens SET used = 1 WHERE id = ?", (token_row["id"],))
+        log_audit(db, user_id, "user", "PASSWORD_RESET_SUCCESS", "user", user_id)
+    return {"ok": True, "message": "Password has been successfully updated. You may now sign in."}
+
+
+@app.post("/api/auth/verify-email")
+@limiter.limit("20/minute")
+def verify_email(request: Request, body: VerifyEmailBody) -> dict[str, Any]:
+    raw_token = body.token.strip()
+    raw_otp = body.otp.strip()
+    email = str(body.email).strip().lower() if body.email else ""
+    if not raw_token and not (raw_otp and email):
+        raise HTTPException(status_code=422, detail="Provide a verification link token or email and 6-digit code.")
+
+    now_iso = now()
+    with connect() as db:
+        token_row = None
+        if raw_token:
+            token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
+            token_row = db.execute(
+                "SELECT * FROM email_verification_tokens WHERE token_hash = ?",
+                (token_hash,),
+            ).fetchone()
+            if not token_row:
+                raise HTTPException(status_code=400, detail="Invalid verification link or code.")
+        else:
+            user_row = db.execute("SELECT id, email_verified FROM users WHERE email = ?", (email,)).fetchone()
+            if not user_row:
+                raise HTTPException(status_code=400, detail="Invalid verification link or code.")
+            if user_row["email_verified"]:
+                raise HTTPException(status_code=400, detail="This email address is already verified. You can sign in.")
+            otp_hash = hashlib.sha256(raw_otp.encode()).hexdigest()
+            token_row = db.execute(
+                """SELECT * FROM email_verification_tokens
+                WHERE user_id = ? AND otp_hash = ?
+                ORDER BY id DESC LIMIT 1""",
+                (user_row["id"], otp_hash),
+            ).fetchone()
+            if not token_row:
+                latest = db.execute(
+                    """SELECT id, attempts FROM email_verification_tokens
+                    WHERE user_id = ? AND used = 0 ORDER BY id DESC LIMIT 1""",
+                    (user_row["id"],),
+                ).fetchone()
+                if latest:
+                    new_attempts = (latest["attempts"] or 0) + 1
+                    db.execute(
+                        "UPDATE email_verification_tokens SET attempts = ? WHERE id = ?",
+                        (new_attempts, latest["id"]),
+                    )
+                    if new_attempts >= 5:
+                        db.execute(
+                            "UPDATE email_verification_tokens SET used = 1 WHERE id = ?",
+                            (latest["id"],),
+                        )
+                        raise HTTPException(
+                            status_code=429,
+                            detail="Too many invalid verification attempts. Please request a new verification email.",
+                        )
+                raise HTTPException(status_code=400, detail="Invalid verification link or code.")
+
+        if token_row["used"]:
+            raise HTTPException(status_code=400, detail="This verification link or code has already been used.")
+        if (token_row["attempts"] or 0) >= 5:
+            raise HTTPException(
+                status_code=429,
+                detail="Too many invalid verification attempts. Please request a new verification email.",
+            )
+        if token_row["expires_at"] < now_iso:
+            raise HTTPException(
+                status_code=400,
+                detail="This verification link or code has expired. Please request a new one.",
+            )
+
+        user_id = token_row["user_id"]
+        user_check = db.execute("SELECT id, email, email_verified FROM users WHERE id = ?", (user_id,)).fetchone()
+        if not user_check:
+            raise HTTPException(status_code=404, detail="Account not found.")
+        if token_row["email_sent_to"] and token_row["email_sent_to"].lower() != user_check["email"].lower():
+            raise HTTPException(
+                status_code=400,
+                detail="This verification link is no longer valid because the email address was changed.",
+            )
+        if user_check["email_verified"]:
+            db.execute("UPDATE email_verification_tokens SET used = 1 WHERE user_id = ?", (user_id,))
+            raise HTTPException(status_code=400, detail="This verification link or code has already been used.")
+
+        db.execute("UPDATE users SET email_verified = 1 WHERE id = ?", (user_id,))
+        db.execute("UPDATE email_verification_tokens SET used = 1 WHERE user_id = ?", (user_id,))
+        log_audit(db, user_id, "user", "EMAIL_VERIFIED", "user", user_id)
+    return {"ok": True, "message": "Email address verified successfully. You can now sign in."}
+
+
+@app.post("/api/auth/resend-verification")
+@limiter.limit("5/minute")
+def resend_verification(
+    request: Request,
+    body: ResendVerificationBody | None = None,
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    target_email = str(body.email).strip().lower() if (body and body.email) else ""
+    user_id_from_token: int | None = None
+    if not target_email and authorization and authorization.startswith("Bearer "):
+        payload = decode_token(authorization[7:])
+        user_id_from_token = payload.get("sub")
+
+    if not target_email and not user_id_from_token:
+        raise HTTPException(status_code=422, detail="Provide your email address to resend verification.")
+
+    with connect() as db:
+        if target_email:
+            row = db.execute("SELECT id, name, email, email_verified, active FROM users WHERE email = ?", (target_email,)).fetchone()
+        else:
+            row = db.execute("SELECT id, name, email, email_verified, active FROM users WHERE id = ?", (user_id_from_token,)).fetchone()
+        if not row or not row["active"]:
+            raise HTTPException(status_code=404, detail="Account not found for this email address.")
+        if row["email_verified"]:
+            return {"ok": True, "already_verified": True, "message": "Your email address is already verified."}
+
+        window_start = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
+        recent_count = db.execute(
+            """SELECT COUNT(*) FROM email_verification_tokens
+            WHERE user_id = ? AND created_at >= ?""",
+            (row["id"], window_start),
+        ).fetchone()[0]
+        if recent_count >= 3:
+            raise HTTPException(
+                status_code=429,
+                detail="Too many verification emails requested. Please wait a few minutes before trying again.",
+            )
+        raw_token, otp = issue_verification_challenge(db, row["id"], row["name"], row["email"])
+    resp: dict[str, Any] = {
+        "ok": True,
+        "email": row["email"],
+        "message": "Verification link and code sent to your email.",
+    }
+    if os.environ.get("SKILLSPHERE_ENABLE_DEMO", "true").lower() not in {"false", "0", "no"}:
+        resp["dev_token"] = raw_token
+        resp["dev_otp"] = otp
+    return resp
+
+
+@app.post("/api/auth/change-verification-email")
+@limiter.limit("5/minute")
+def change_verification_email(request: Request, body: ChangeVerificationEmailBody) -> dict[str, Any]:
+    current_email = str(body.current_email).strip().lower()
+    new_email = str(body.new_email).strip().lower()
+    if not is_valid_email_address(new_email):
+        raise HTTPException(status_code=422, detail="Enter a valid new email address.")
+    if current_email == new_email:
+        raise HTTPException(status_code=422, detail="New email address must be different from your current email.")
+
+    with connect() as db:
+        row = db.execute("SELECT * FROM users WHERE email = ?", (current_email,)).fetchone()
+        if not row or not row["active"] or not check_password(body.password, row["password_hash"]):
+            raise HTTPException(status_code=401, detail="Current email or password is incorrect.")
+        if row["email_verified"]:
+            raise HTTPException(status_code=409, detail="This account is already verified.")
+        conflict = db.execute("SELECT id FROM users WHERE email = ? AND id != ?", (new_email, row["id"])).fetchone()
+        if conflict:
+            raise HTTPException(status_code=409, detail="An account with this new email already exists.")
+        db.execute("UPDATE users SET email = ? WHERE id = ?", (new_email, row["id"]))
+        raw_token, otp = issue_verification_challenge(db, row["id"], row["name"], new_email)
+        log_audit(db, row["id"], row["role"], "VERIFICATION_EMAIL_CHANGED", "user", row["id"])
+    resp: dict[str, Any] = {
+        "ok": True,
+        "email": new_email,
+        "message": f"Email updated to {new_email}. A new verification link and code have been sent.",
+    }
+    if os.environ.get("SKILLSPHERE_ENABLE_DEMO", "true").lower() not in {"false", "0", "no"}:
+        resp["dev_token"] = raw_token
+        resp["dev_otp"] = otp
+    return resp
+
+
+@app.get("/api/auth/verification-status")
+def verification_status(user: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
+    with connect() as db:
+        row = db.execute("SELECT email_verified FROM users WHERE id = ?", (user["id"],)).fetchone()
+    verified = bool(row["email_verified"]) if row and "email_verified" in row.keys() else True
+    return {"verified": verified, "email": user["email"]}
+
+
+@app.get("/api/notifications/preferences")
+def get_notification_preferences(user: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
+    with connect() as db:
+        prefs = get_user_notification_preferences(db, user["id"])
+    return {
+        "essential_categories": sorted(ESSENTIAL_NOTIFICATION_CATEGORIES),
+        "messages_enabled": prefs["messages_enabled"],
+        "account_activity_enabled": prefs["account_activity_enabled"],
+        "system_alerts_enabled": prefs["system_alerts_enabled"],
+        "updated_at": prefs["updated_at"],
+    }
+
+
+@app.put("/api/notifications/preferences")
+def update_notification_preferences(
+    body: NotificationPreferencesBody,
+    user: dict[str, Any] = Depends(current_user),
+) -> dict[str, Any]:
+    ts = now()
+    with connect() as db:
+        db.execute(
+            """INSERT INTO notification_preferences
+            (user_id, messages_enabled, account_activity_enabled, system_alerts_enabled, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET
+                messages_enabled = excluded.messages_enabled,
+                account_activity_enabled = excluded.account_activity_enabled,
+                system_alerts_enabled = excluded.system_alerts_enabled,
+                updated_at = excluded.updated_at""",
+            (
+                user["id"],
+                int(body.messages_enabled),
+                int(body.account_activity_enabled),
+                int(body.system_alerts_enabled),
+                ts,
+            ),
+        )
+    return {
+        "essential_categories": sorted(ESSENTIAL_NOTIFICATION_CATEGORIES),
+        "messages_enabled": body.messages_enabled,
+        "account_activity_enabled": body.account_activity_enabled,
+        "system_alerts_enabled": body.system_alerts_enabled,
+        "updated_at": ts,
+    }
+
+
+@app.get("/api/notifications/deliveries")
+def list_notification_deliveries(
+    limit: int = 50,
+    user: dict[str, Any] = Depends(current_user),
+) -> dict[str, Any]:
+    with connect() as db:
+        if user["role"] == "admin":
+            rows = db.execute(
+                """SELECT id, notification_id, user_id, recipient_email, category, subject,
+                status, attempts, last_error, next_retry_at, sent_at, created_at, updated_at
+                FROM email_delivery_logs ORDER BY id DESC LIMIT ?""",
+                (min(max(limit, 1), 200),),
+            ).fetchall()
+        else:
+            rows = db.execute(
+                """SELECT id, notification_id, user_id, recipient_email, category, subject,
+                status, attempts, last_error, next_retry_at, sent_at, created_at, updated_at
+                FROM email_delivery_logs WHERE user_id = ? ORDER BY id DESC LIMIT ?""",
+                (user["id"], min(max(limit, 1), 200)),
+            ).fetchall()
+    return {"items": [dict(row) for row in rows]}
+
+
+@app.post("/api/notifications/retry-emails")
+def trigger_retry_failed_emails(
+    user: dict[str, Any] = Depends(require_role("admin")),
+) -> dict[str, Any]:
+    with connect() as db:
+        result = retry_failed_email_deliveries(db)
+    return result
+
+
+# ---------------------------------------------------------------------------
+# 2. Candidate Job Discovery: Saved Jobs & Recommendations
+# ---------------------------------------------------------------------------
+
+@app.post("/api/jobs/{job_id}/save")
+def save_job(job_id: int, user: dict[str, Any] = Depends(require_role("candidate"))) -> dict[str, Any]:
+    with connect() as db:
+        job = db.execute("SELECT id, status FROM jobs WHERE id = ?", (job_id,)).fetchone()
+        if not job or job["status"] != "Open":
+            raise HTTPException(status_code=404, detail="Job opening not found or is closed")
+        db.execute(
+            "INSERT OR IGNORE INTO saved_jobs (candidate_id, job_id, created_at) VALUES (?, ?, ?)",
+            (user["id"], job_id, now()),
+        )
+    return {"saved": True, "job_id": job_id}
+
+
+@app.delete("/api/jobs/{job_id}/save")
+def unsave_job(job_id: int, user: dict[str, Any] = Depends(require_role("candidate"))) -> dict[str, Any]:
+    with connect() as db:
+        db.execute("DELETE FROM saved_jobs WHERE candidate_id = ? AND job_id = ?", (user["id"], job_id))
+    return {"saved": False, "job_id": job_id}
+
+
+# ---------------------------------------------------------------------------
+# 3. Candidate Resume & Profile Improvements: Versions & Quality Analysis
+# ---------------------------------------------------------------------------
+
+@app.get("/api/resume/versions")
+def list_resume_versions(user: dict[str, Any] = Depends(require_role("candidate"))) -> dict[str, Any]:
+    with connect() as db:
+        rows = db.execute(
+            """SELECT id, filename, content_type, version_number, is_active, uploaded_at
+            FROM resume_versions WHERE candidate_id = ?
+            ORDER BY version_number DESC""",
+            (user["id"],),
+        ).fetchall()
+    return {"items": [dict(r) for r in rows]}
+
+
+@app.get("/api/resume/analysis")
+def resume_analysis(user: dict[str, Any] = Depends(require_role("candidate"))) -> dict[str, Any]:
+    with connect() as db:
+        resume = db.execute("SELECT * FROM resumes WHERE candidate_id = ?", (user["id"],)).fetchone()
+    if not resume:
+        return {
+            "has_resume": False,
+            "score": 0,
+            "level": "No Resume",
+            "warnings": ["No resume uploaded yet."],
+            "suggestions": ["Upload your resume in PDF or DOCX format to receive tailored recommendations."],
+            "detected_contact": {"has_name": False, "has_email": False, "has_phone": False},
+            "skill_count": 0,
+            "text_length": 0,
+        }
+    parsed = json.loads(resume["parsed_profile_json"] or "{}")
+    quality = calculate_resume_quality(resume["extracted_text"] or "", parsed)
+    return {**quality, "has_resume": True, "filename": resume["filename"], "uploaded_at": resume["uploaded_at"]}
+
+
+# ---------------------------------------------------------------------------
+# 4. Recruiter Job Management: Job Editing & Extended Company Profile
+# ---------------------------------------------------------------------------
+
+@app.patch("/api/jobs/{job_id}")
+def update_job(
+    job_id: int,
+    body: JobUpdateBody,
+    user: dict[str, Any] = Depends(require_role("recruiter", "admin")),
+) -> dict[str, Any]:
+    with connect() as db:
+        job = owned_job(db, job_id, user)
+        updates = {}
+        if body.title is not None:
+            updates["title"] = body.title.strip()
+        if body.company is not None:
+            updates["company"] = body.company.strip()
+        if body.description is not None:
+            updates["description"] = body.description.strip()
+        if body.location is not None:
+            updates["location"] = body.location.strip()
+        if body.experience is not None:
+            updates["experience"] = body.experience.strip()
+        if body.job_type is not None:
+            updates["job_type"] = body.job_type.strip()
+        if body.salary is not None:
+            updates["salary"] = body.salary.strip()
+        if body.skills is not None:
+            updates["skills_json"] = json.dumps([str(s).strip() for s in body.skills if s])
+        if body.status is not None:
+            updates["status"] = body.status
+        if not updates:
+            return public_job(job)
+        set_clauses = ", ".join(f"{k} = ?" for k in updates.keys())
+        params = list(updates.values()) + [job_id]
+        db.execute(f"UPDATE jobs SET {set_clauses} WHERE id = ?", params)
+        log_audit(db, user["id"], user["role"], "UPDATE_JOB", "job", job_id, details=updates)
+        updated = db.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
+    return public_job(updated)
+
+
+@app.get("/api/company/profile")
+def get_company_profile(user: dict[str, Any] = Depends(require_role("recruiter", "admin"))) -> dict[str, Any]:
+    profile = user.get("profile") or {}
+    return {
+        "company": profile.get("company", ""),
+        "website": profile.get("website", ""),
+        "logo_url": profile.get("logo_url", ""),
+        "industry": profile.get("industry", ""),
+        "company_size": profile.get("company_size", ""),
+        "description": profile.get("description", ""),
+    }
+
+
+@app.put("/api/company/profile")
+@app.patch("/api/company/profile")
+def update_company_profile(body: CompanyProfileBody, user: dict[str, Any] = Depends(require_role("recruiter", "admin"))) -> dict[str, Any]:
+    with connect() as db:
+        row = db.execute("SELECT profile_json FROM users WHERE id = ?", (user["id"],)).fetchone()
+        existing = json.loads(row["profile_json"] or "{}") if row else {}
+        existing.update({
+            "company": body.company.strip(),
+            "website": (body.website or "").strip(),
+            "logo_url": (body.logo_url or "").strip(),
+            "industry": (body.industry or "").strip(),
+            "company_size": (body.company_size or "").strip(),
+            "description": (body.description or "").strip(),
+        })
+        db.execute("UPDATE users SET profile_json = ? WHERE id = ?", (json.dumps(existing), user["id"]))
+        log_audit(db, user["id"], user["role"], "UPDATE_COMPANY_PROFILE", "user", user["id"], details=existing)
+    return existing
+
+
+# ---------------------------------------------------------------------------
+# 5. Direct Candidate-Recruiter Communication: Messaging
+# ---------------------------------------------------------------------------
+
+@app.get("/api/messages/conversations")
+def get_conversations(user: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
+    with connect() as db:
+        rows = db.execute(
+            """SELECT m.*,
+                CASE WHEN m.sender_id = ? THEN u2.name ELSE u1.name END AS partner_name,
+                CASE WHEN m.sender_id = ? THEN u2.role ELSE u1.role END AS partner_role,
+                CASE WHEN m.sender_id = ? THEN u2.email ELSE u1.email END AS partner_email,
+                CASE WHEN m.sender_id = ? THEN m.recipient_id ELSE m.sender_id END AS partner_id
+            FROM messages m
+            JOIN users u1 ON u1.id = m.sender_id
+            JOIN users u2 ON u2.id = m.recipient_id
+            WHERE m.sender_id = ? OR m.recipient_id = ?
+            ORDER BY m.created_at DESC""",
+            (user["id"], user["id"], user["id"], user["id"], user["id"], user["id"]),
+        ).fetchall()
+        conversations: dict[int, dict[str, Any]] = {}
+        for r in rows:
+            p_id = r["partner_id"]
+            if p_id not in conversations:
+                unread = db.execute(
+                    "SELECT COUNT(*) FROM messages WHERE sender_id = ? AND recipient_id = ? AND read_at IS NULL",
+                    (p_id, user["id"]),
+                ).fetchone()[0]
+                conversations[p_id] = {
+                    "partner_id": p_id,
+                    "partner_name": r["partner_name"],
+                    "partner_role": r["partner_role"],
+                    "partner_email": r["partner_email"],
+                    "last_message": r["content"],
+                    "last_message_time": r["created_at"],
+                    "unread_count": unread,
+                    "application_id": r["application_id"],
+                }
+    return {"items": list(conversations.values())}
+
+
+@app.get("/api/messages/thread/{partner_id}")
+def get_message_thread(partner_id: int, user: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
+    with connect() as db:
+        partner = db.execute("SELECT id, name, email, role FROM users WHERE id = ?", (partner_id,)).fetchone()
+        if not partner:
+            raise HTTPException(status_code=404, detail="Conversation partner not found")
+        now_iso = now()
+        db.execute(
+            "UPDATE messages SET read_at = ? WHERE sender_id = ? AND recipient_id = ? AND read_at IS NULL",
+            (now_iso, partner_id, user["id"]),
+        )
+        msgs = db.execute(
+            """SELECT m.*, u.name AS sender_name
+            FROM messages m JOIN users u ON u.id = m.sender_id
+            WHERE (m.sender_id = ? AND m.recipient_id = ?) OR (m.sender_id = ? AND m.recipient_id = ?)
+            ORDER BY m.created_at ASC""",
+            (user["id"], partner_id, partner_id, user["id"]),
+        ).fetchall()
+    return {"partner": dict(partner), "messages": [dict(m) for m in msgs]}
+
+
+@app.post("/api/messages")
+def send_message(body: MessageSendBody, user: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
+    with connect() as db:
+        recipient = db.execute("SELECT id, name, email, role FROM users WHERE id = ?", (body.recipient_id,)).fetchone()
+        if not recipient:
+            raise HTTPException(status_code=404, detail="Recipient not found")
+        now_iso = now()
+        cursor = db.execute(
+            """INSERT INTO messages (application_id, job_id, sender_id, recipient_id, content, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)""",
+            (body.application_id, None, user["id"], body.recipient_id, body.content.strip(), now_iso),
+        )
+        msg_id = cursor.lastrowid
+        add_notification(
+            db,
+            body.recipient_id,
+            "direct_message",
+            f"New message from {user['name']}",
+            body.content.strip()[:100],
+            application_id=body.application_id,
+            action_url="/?page=Dashboard",
+        )
+        row = db.execute("SELECT * FROM messages WHERE id = ?", (msg_id,)).fetchone()
+    return dict(row)
+
+
+@app.get("/api/messages/unread-count")
+def get_unread_messages_count(user: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
+    with connect() as db:
+        count = db.execute(
+            "SELECT COUNT(*) FROM messages WHERE recipient_id = ? AND read_at IS NULL",
+            (user["id"],),
+        ).fetchone()[0]
+    return {"unread_count": count}
+
+
+@app.get("/api/applications/{application_id}/messages")
+def get_application_messages(application_id: int, user: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
+    with connect() as db:
+        app_row = db.execute(
+            """SELECT a.id, a.candidate_id, j.recruiter_id, j.title, j.company
+            FROM applications a JOIN jobs j ON j.id = a.job_id
+            WHERE a.id = ?""",
+            (application_id,),
+        ).fetchone()
+        if not app_row:
+            raise HTTPException(status_code=404, detail="Application not found")
+        if user["role"] == "candidate" and app_row["candidate_id"] != user["id"]:
+            raise HTTPException(status_code=403, detail="Forbidden: You can only view messages for your own application")
+        if user["role"] == "recruiter" and app_row["recruiter_id"] != user["id"]:
+            raise HTTPException(status_code=403, detail="Forbidden: You can only view messages for your own jobs")
+        db.execute(
+            "UPDATE messages SET read_at = ? WHERE application_id = ? AND recipient_id = ? AND read_at IS NULL",
+            (now(), application_id, user["id"]),
+        )
+        rows = db.execute(
+            """SELECT m.*, u.name AS sender_name, u.role AS sender_role
+            FROM messages m JOIN users u ON u.id = m.sender_id
+            WHERE m.application_id = ?
+            ORDER BY m.created_at ASC""",
+            (application_id,),
+        ).fetchall()
+    return {"application_id": application_id, "messages": [dict(r) for r in rows]}
+
+
+@app.post("/api/applications/{application_id}/messages")
+def post_application_message(application_id: int, body: dict[str, Any], user: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
+    content = str(body.get("content") or "").strip()
+    if not content:
+        raise HTTPException(status_code=422, detail="Message content cannot be empty")
+    with connect() as db:
+        app_row = db.execute(
+            """SELECT a.id, a.candidate_id, j.recruiter_id, j.id AS job_id
+            FROM applications a JOIN jobs j ON j.id = a.job_id
+            WHERE a.id = ?""",
+            (application_id,),
+        ).fetchone()
+        if not app_row:
+            raise HTTPException(status_code=404, detail="Application not found")
+        if user["role"] == "candidate":
+            if app_row["candidate_id"] != user["id"]:
+                raise HTTPException(status_code=403, detail="Forbidden")
+            recipient_id = app_row["recruiter_id"]
+        elif user["role"] == "recruiter":
+            if app_row["recruiter_id"] != user["id"]:
+                raise HTTPException(status_code=403, detail="Forbidden")
+            recipient_id = app_row["candidate_id"]
+        else:
+            recipient_id = app_row["candidate_id"]
+        now_iso = now()
+        cursor = db.execute(
+            """INSERT INTO messages (application_id, job_id, sender_id, recipient_id, content, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)""",
+            (application_id, app_row["job_id"], user["id"], recipient_id, content, now_iso),
+        )
+        add_notification(
+            db,
+            recipient_id,
+            "direct_message",
+            f"New message from {user['name']}",
+            content[:100],
+            application_id=application_id,
+            action_url="/?page=Dashboard",
+        )
+        row = db.execute("SELECT * FROM messages WHERE id = ?", (cursor.lastrowid,)).fetchone()
+    return dict(row)
+
+
+# ---------------------------------------------------------------------------
+# 6. Question Bank Enhancements: Duplication & Reusable Collections
+# ---------------------------------------------------------------------------
+
+@app.post("/api/jobs/{job_id}/questions/{question_id}/duplicate")
+def duplicate_job_question(
+    job_id: int,
+    question_id: int,
+    user: dict[str, Any] = Depends(require_role("recruiter", "admin")),
+) -> dict[str, Any]:
+    with connect() as db:
+        owned_job(db, job_id, user)
+        orig = db.execute("SELECT * FROM job_questions WHERE id = ? AND job_id = ?", (question_id, job_id)).fetchone()
+        if not orig:
+            raise HTTPException(status_code=404, detail="Question not found")
+        now_iso = now()
+        new_q_text = f"{orig['question']} (Copy)"
+        cursor = db.execute(
+            """INSERT INTO job_questions
+            (job_id, owner_id, recruiter_id, technology, question, options_json, correct_index,
+             difficulty, active, source_type, explanation, learning_resource_url, subtopic, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 'manual', ?, ?, ?, ?, ?)""",
+            (
+                job_id, user["id"], user["id"], orig["technology"], new_q_text, orig["options_json"],
+                orig["correct_index"], orig["difficulty"], orig["explanation"], orig["learning_resource_url"],
+                orig["subtopic"], now_iso, now_iso,
+            ),
+        )
+        row = db.execute("SELECT * FROM job_questions WHERE id = ?", (cursor.lastrowid,)).fetchone()
+    return {**dict(row), "options": json.loads(row["options_json"]), "options_json": None}
+
+
+@app.get("/api/question-collections")
+def list_question_collections(user: dict[str, Any] = Depends(require_role("recruiter", "admin"))) -> dict[str, Any]:
+    with connect() as db:
+        rows = db.execute(
+            """SELECT c.*, COUNT(i.id) AS question_count
+            FROM question_collections c
+            LEFT JOIN question_collection_items i ON i.collection_id = c.id
+            WHERE c.recruiter_id = ?
+            GROUP BY c.id
+            ORDER BY c.created_at DESC""",
+            (user["id"],),
+        ).fetchall()
+    return {"items": [dict(r) for r in rows]}
+
+
+@app.post("/api/question-collections", status_code=201)
+def create_question_collection(
+    body: QuestionCollectionCreateBody,
+    user: dict[str, Any] = Depends(require_role("recruiter", "admin")),
+) -> dict[str, Any]:
+    now_iso = now()
+    with connect() as db:
+        cursor = db.execute(
+            """INSERT INTO question_collections (recruiter_id, name, description, technology, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)""",
+            (user["id"], body.name.strip(), (body.description or "").strip(), (body.technology or "").strip(), now_iso, now_iso),
+        )
+        row = db.execute("SELECT * FROM question_collections WHERE id = ?", (cursor.lastrowid,)).fetchone()
+    return dict(row)
+
+
+@app.get("/api/question-collections/{collection_id}")
+def get_question_collection(
+    collection_id: int,
+    user: dict[str, Any] = Depends(require_role("recruiter", "admin")),
+) -> dict[str, Any]:
+    with connect() as db:
+        coll = db.execute("SELECT * FROM question_collections WHERE id = ? AND recruiter_id = ?", (collection_id, user["id"])).fetchone()
+        if not coll:
+            raise HTTPException(status_code=404, detail="Question collection not found")
+        items = db.execute("SELECT * FROM question_collection_items WHERE collection_id = ?", (collection_id,)).fetchall()
+    return {
+        **dict(coll),
+        "items": [{**dict(i), "options": json.loads(i["options_json"]), "options_json": None} for i in items],
+    }
+
+
+@app.post("/api/question-collections/{collection_id}/import-to-job/{job_id}")
+def import_collection_to_job(
+    collection_id: int,
+    job_id: int,
+    user: dict[str, Any] = Depends(require_role("recruiter", "admin")),
+) -> dict[str, Any]:
+    with connect() as db:
+        owned_job(db, job_id, user)
+        items = db.execute("SELECT * FROM question_collection_items WHERE collection_id = ?", (collection_id,)).fetchall()
+        now_iso = now()
+        created = 0
+        for item in items:
+            db.execute(
+                """INSERT INTO job_questions
+                (job_id, owner_id, recruiter_id, technology, question, options_json, correct_index,
+                 difficulty, active, source_type, explanation, learning_resource_url, subtopic, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 'collection', ?, ?, ?, ?, ?)""",
+                (
+                    job_id, user["id"], user["id"], item["technology"], item["question"], item["options_json"],
+                    item["correct_index"], item["difficulty"], item["explanation"], item["learning_resource_url"],
+                    item["subtopic"], now_iso, now_iso,
+                ),
+            )
+            created += 1
+        summary = job_question_summary(db, job_id)
+    return {"created": created, "summary": summary}
+
+
+# ---------------------------------------------------------------------------
+# 7. Candidate Technical Practice Module
+# ---------------------------------------------------------------------------
+
+@app.get("/api/practice/technologies")
+def list_practice_technologies(user: dict[str, Any] = Depends(require_role("candidate"))) -> dict[str, Any]:
+    with connect() as db:
+        rows = db.execute(
+            "SELECT * FROM candidate_technologies WHERE candidate_id = ? ORDER BY technology ASC",
+            (user["id"],),
+        ).fetchall()
+        if not rows:
+            resume = db.execute("SELECT parsed_profile_json FROM resumes WHERE candidate_id = ?", (user["id"],)).fetchone()
+            if resume and resume["parsed_profile_json"]:
+                profile = json.loads(resume["parsed_profile_json"])
+                skills = profile.get("skills", [])
+                now_iso = now()
+                for s in skills[:6]:
+                    db.execute(
+                        "INSERT OR IGNORE INTO candidate_technologies (candidate_id, technology, proficiency, created_at) VALUES (?, ?, 'Intermediate', ?)",
+                        (user["id"], s.strip().title(), now_iso),
+                    )
+                rows = db.execute("SELECT * FROM candidate_technologies WHERE candidate_id = ? ORDER BY technology ASC", (user["id"],)).fetchall()
+    return {"items": [dict(r) for r in rows]}
+
+
+@app.post("/api/practice/technologies", status_code=201)
+def add_practice_technology(body: PracticeTechBody, user: dict[str, Any] = Depends(require_role("candidate"))) -> dict[str, Any]:
+    tech = body.technology.strip().title()
+    with connect() as db:
+        db.execute(
+            "INSERT OR IGNORE INTO candidate_technologies (candidate_id, technology, proficiency, created_at) VALUES (?, ?, ?, ?)",
+            (user["id"], tech, body.proficiency or "Intermediate", now()),
+        )
+        row = db.execute("SELECT * FROM candidate_technologies WHERE candidate_id = ? AND technology = ?", (user["id"], tech)).fetchone()
+    return dict(row)
+
+
+@app.delete("/api/practice/technologies/{technology}")
+def remove_practice_technology(technology: str, user: dict[str, Any] = Depends(require_role("candidate"))) -> dict[str, Any]:
+    with connect() as db:
+        db.execute("DELETE FROM candidate_technologies WHERE candidate_id = ? AND lower(technology) = lower(?)", (user["id"], technology))
+    return {"removed": True, "technology": technology}
+
+
+@app.get("/api/practice/questions")
+def get_practice_questions(
+    technology: str | None = None,
+    difficulty: str | None = None,
+    limit: int = 10,
+    user: dict[str, Any] = Depends(require_role("candidate")),
+) -> dict[str, Any]:
+    with connect() as db:
+        conditions = []
+        params = []
+        if technology:
+            conditions.append("lower(technology) = lower(?)")
+            params.append(technology)
+        if difficulty and difficulty in {"Easy", "Medium", "Hard"}:
+            conditions.append("difficulty = ?")
+            params.append(difficulty)
+        where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        query = f"SELECT id, technology, question, options_json, difficulty, explanation, subtopic FROM practice_questions {where_clause} ORDER BY RANDOM() LIMIT ?"
+        params.append(min(limit, 25))
+        rows = db.execute(query, tuple(params)).fetchall()
+        items = []
+        for r in rows:
+            opts = json.loads(r["options_json"])
+            items.append({
+                "id": r["id"],
+                "technology": r["technology"],
+                "question": r["question"],
+                "options": opts,
+                "difficulty": r["difficulty"],
+                "explanation": r["explanation"],
+                "subtopic": r["subtopic"],
+            })
+    return {"items": items, "count": len(items)}
+
+
+@app.post("/api/practice/submit")
+def submit_practice_attempt(body: PracticeSubmitBody, user: dict[str, Any] = Depends(require_role("candidate"))) -> dict[str, Any]:
+    sel_idx = body.selected_index if body.selected_index is not None else body.selected_option_index
+    if sel_idx is None:
+        raise HTTPException(status_code=422, detail="Selected option index required")
+    with connect() as db:
+        q = db.execute("SELECT * FROM practice_questions WHERE id = ?", (body.question_id,)).fetchone()
+        if not q:
+            raise HTTPException(status_code=404, detail="Question not found")
+        is_correct = 1 if sel_idx == q["correct_index"] else 0
+        db.execute(
+            """INSERT INTO practice_attempts (candidate_id, question_id, selected_index, is_correct, attempted_at)
+            VALUES (?, ?, ?, ?, ?)""",
+            (user["id"], body.question_id, sel_idx, is_correct, now()),
+        )
+    return {
+        "is_correct": bool(is_correct),
+        "correct_index": q["correct_index"],
+        "explanation": q["explanation"],
+        "technology": q["technology"],
+    }
+
+
+@app.get("/api/practice/analytics")
+def practice_analytics(user: dict[str, Any] = Depends(require_role("candidate"))) -> dict[str, Any]:
+    with connect() as db:
+        total = db.execute("SELECT COUNT(*) FROM practice_attempts WHERE candidate_id = ?", (user["id"],)).fetchone()[0]
+        correct = db.execute("SELECT COUNT(*) FROM practice_attempts WHERE candidate_id = ? AND is_correct = 1", (user["id"],)).fetchone()[0]
+        accuracy = round(correct / total * 100, 1) if total > 0 else 0
+        tech_rows = db.execute(
+            """SELECT q.technology, COUNT(a.id) AS total_attempts, SUM(a.is_correct) AS correct_attempts
+            FROM practice_attempts a JOIN practice_questions q ON q.id = a.question_id
+            WHERE a.candidate_id = ?
+            GROUP BY q.technology
+            ORDER BY total_attempts DESC""",
+            (user["id"],),
+        ).fetchall()
+        breakdown = []
+        for r in tech_rows:
+            tot = r["total_attempts"]
+            cor = r["correct_attempts"] or 0
+            breakdown.append({
+                "technology": r["technology"],
+                "attempts": tot,
+                "correct": cor,
+                "accuracy": round(cor / tot * 100, 1) if tot > 0 else 0,
+            })
+    return {
+        "total_attempts": total,
+        "correct_attempts": correct,
+        "accuracy_percentage": accuracy,
+        "breakdown": breakdown,
+    }
+
+
+# ---------------------------------------------------------------------------
+# 8. Assessment Improvements: Score Adjustments & Retry Action
+# ---------------------------------------------------------------------------
+
+@app.post("/api/assessments/{assessment_id}/adjust-score")
+def adjust_assessment_score(
+    assessment_id: int,
+    body: AssessmentScoreAdjustBody,
+    user: dict[str, Any] = Depends(require_role("recruiter", "admin")),
+) -> dict[str, Any]:
+    with connect() as db:
+        assess = db.execute(
+            """SELECT a.*, j.recruiter_id, j.title, j.company
+            FROM assessments a JOIN jobs j ON j.id = a.job_id
+            WHERE a.id = ?""",
+            (assessment_id,),
+        ).fetchone()
+        if not assess:
+            raise HTTPException(status_code=404, detail="Assessment not found")
+        if user["role"] == "recruiter" and assess["recruiter_id"] != user["id"]:
+            raise HTTPException(status_code=403, detail="Forbidden")
+        orig_score = assess["score_percentage"]
+        orig_result = assess["result"]
+        new_result = body.new_result or ("Passed" if body.new_score >= 70.0 else "Failed")
+        now_iso = now()
+        db.execute(
+            """INSERT INTO assessment_score_adjustments
+            (assessment_id, recruiter_id, original_score, new_score, original_result, new_result, reason, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (assessment_id, user["id"], orig_score, body.new_score, orig_result, new_result, body.reason.strip(), now_iso),
+        )
+        db.execute(
+            "UPDATE assessments SET score_percentage = ?, result = ? WHERE id = ?",
+            (body.new_score, new_result, assessment_id),
+        )
+        log_audit(db, user["id"], user["role"], "ADJUST_ASSESSMENT_SCORE", "assessment", assessment_id, {
+            "original_score": orig_score,
+            "new_score": body.new_score,
+            "reason": body.reason,
+        })
+        updated = db.execute("SELECT * FROM assessments WHERE id = ?", (assessment_id,)).fetchone()
+    return dict(updated)
+
+
+@app.post("/api/assessments/{assessment_id}/retry")
+def retry_assessment(
+    assessment_id: int,
+    user: dict[str, Any] = Depends(require_role("recruiter", "admin")),
+) -> dict[str, Any]:
+    with connect() as db:
+        assess = db.execute(
+            """SELECT a.*, j.recruiter_id, j.title, j.company, u.email, u.name
+            FROM assessments a JOIN jobs j ON j.id = a.job_id
+            JOIN users u ON u.id = a.candidate_id
+            WHERE a.id = ?""",
+            (assessment_id,),
+        ).fetchone()
+        if not assess:
+            raise HTTPException(status_code=404, detail="Assessment not found")
+        if user["role"] == "recruiter" and assess["recruiter_id"] != user["id"]:
+            raise HTTPException(status_code=403, detail="Forbidden")
+        new_raw_token = secrets.token_urlsafe(32)
+        new_token_hash = hashlib.sha256(new_raw_token.encode()).hexdigest()
+        now_iso = now()
+        db.execute(
+            """UPDATE assessments
+            SET token_hash = ?, status = 'Sent', result = NULL, score_percentage = NULL,
+                starts_at = NULL, submitted_at = NULL
+            WHERE id = ?""",
+            (new_token_hash, assessment_id),
+        )
+        subject = f"SkillSphere: Assessment Invitation for {assess['title']}"
+        content = (
+            f"Hello {assess['name']},\n\n"
+            f"You have been invited to retake the technical assessment for {assess['title']} at {assess['company']}.\n"
+            f"Click the link below to begin your assessment:\n"
+            f"{os.environ.get('APP_BASE_URL', 'https://skillsphere.onrender.com')}/?assessment={new_raw_token}\n\n"
+            f"Best regards,\nThe SkillSphere Team"
+        )
+        try:
+            send_email_message(assess["email"], subject, content)
+        except Exception as e:
+            logger.warning("Could not send assessment retry email: %s", e)
+        log_audit(db, user["id"], user["role"], "RETRY_ASSESSMENT", "assessment", assessment_id)
+    return {"ok": True, "token": new_raw_token, "detail": "Assessment retry link generated and candidate notified."}
+
+
+@app.get("/api/assessments/compare")
+def compare_assessments(
+    job_id: int,
+    user: dict[str, Any] = Depends(require_role("recruiter", "admin")),
+) -> dict[str, Any]:
+    with connect() as db:
+        owned_job(db, job_id, user)
+        rows = db.execute(
+            """SELECT a.id, a.candidate_id, u.name AS candidate_name, u.email AS candidate_email,
+                a.status, a.result, a.score_percentage, a.proctoring_warning_count,
+                a.submitted_at, app.match_percentage
+            FROM assessments a
+            JOIN users u ON u.id = a.candidate_id
+            LEFT JOIN applications app ON app.id = a.application_id
+            WHERE a.job_id = ?
+            ORDER BY a.score_percentage DESC NULLS LAST""",
+            (job_id,),
+        ).fetchall()
+    return {"items": [dict(r) for r in rows]}
+
+
+# ---------------------------------------------------------------------------
+# 9. Asynchronous Video Assessment Module
+# ---------------------------------------------------------------------------
+
+@app.post("/api/video-assessments", status_code=201)
+def create_video_assessment(
+    body: VideoAssessmentCreateBody,
+    user: dict[str, Any] = Depends(require_role("recruiter", "admin")),
+) -> dict[str, Any]:
+    with connect() as db:
+        owned_job(db, body.job_id, user)
+        now_iso = now()
+        cursor = db.execute(
+            """INSERT INTO video_assessments (job_id, recruiter_id, title, description, time_limit_seconds, status, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, 'Published', ?, ?)""",
+            (body.job_id, user["id"], body.title.strip(), (body.description or "").strip(), body.time_limit_seconds, now_iso, now_iso),
+        )
+        va_id = cursor.lastrowid
+        for idx, q in enumerate(body.questions, start=1):
+            db.execute(
+                """INSERT INTO video_assessment_questions (video_assessment_id, question_order, question_text, max_duration_seconds, prep_time_seconds, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)""",
+                (va_id, idx, str(q.get("question_text", "")).strip(), int(q.get("max_duration_seconds", body.time_limit_seconds)), int(q.get("prep_time_seconds", 30)), now_iso),
+            )
+        va = db.execute("SELECT * FROM video_assessments WHERE id = ?", (va_id,)).fetchone()
+        qs = db.execute("SELECT * FROM video_assessment_questions WHERE video_assessment_id = ? ORDER BY question_order ASC", (va_id,)).fetchall()
+    return {**dict(va), "questions": [dict(q) for q in qs]}
+
+
+@app.get("/api/jobs/{job_id}/video-assessment")
+def get_job_video_assessment(
+    job_id: int,
+    user: dict[str, Any] = Depends(current_user),
+) -> dict[str, Any]:
+    with connect() as db:
+        va = db.execute("SELECT * FROM video_assessments WHERE job_id = ? AND status = 'Published'", (job_id,)).fetchone()
+        if not va:
+            return {"configured": False, "assessment": None}
+        qs = db.execute("SELECT * FROM video_assessment_questions WHERE video_assessment_id = ? ORDER BY question_order ASC", (va["id"],)).fetchall()
+    return {"configured": True, "assessment": {**dict(va), "questions": [dict(q) for q in qs]}}
+
+
+@app.post("/api/video-assessments/{video_id}/assign")
+def assign_video_assessment(
+    video_id: int,
+    application_id: int,
+    user: dict[str, Any] = Depends(require_role("recruiter", "admin")),
+) -> dict[str, Any]:
+    with connect() as db:
+        va = db.execute("SELECT * FROM video_assessments WHERE id = ?", (video_id,)).fetchone()
+        if not va:
+            raise HTTPException(status_code=404, detail="Video assessment not found")
+        app_row = db.execute(
+            """SELECT a.id, a.candidate_id, u.email, u.name, j.title, j.company
+            FROM applications a JOIN users u ON u.id = a.candidate_id
+            JOIN jobs j ON j.id = a.job_id
+            WHERE a.id = ?""",
+            (application_id,),
+        ).fetchone()
+        if not app_row:
+            raise HTTPException(status_code=404, detail="Application not found")
+        raw_token = secrets.token_urlsafe(32)
+        now_iso = now()
+        deadline = (datetime.now(timezone.utc) + timedelta(days=5)).isoformat()
+        cursor = db.execute(
+            """INSERT INTO video_assignments (video_assessment_id, application_id, candidate_id, token, status, deadline_at, invited_at)
+            VALUES (?, ?, ?, ?, 'Invited', ?, ?)""",
+            (video_id, application_id, app_row["candidate_id"], raw_token, deadline, now_iso),
+        )
+        assign_id = cursor.lastrowid
+        subject = f"SkillSphere: Asynchronous Video Interview for {app_row['title']}"
+        content = (
+            f"Hello {app_row['name']},\n\n"
+            f"You have been invited to complete a video response assessment for {app_row['title']} at {app_row['company']}.\n"
+            f"Please complete your video responses by {deadline[:10]}:\n"
+            f"{os.environ.get('APP_BASE_URL', 'https://skillsphere.onrender.com')}/?video_assignment={raw_token}\n\n"
+            f"Best regards,\nThe SkillSphere Team"
+        )
+        try:
+            send_email_message(app_row["email"], subject, content)
+        except Exception as e:
+            logger.warning("Could not send video assessment email: %s", e)
+    return {"assignment_id": assign_id, "token": raw_token, "deadline": deadline}
+
+
+@app.get("/api/video-assessments/assignment/{token}")
+def get_video_assignment(token: str) -> dict[str, Any]:
+    with connect() as db:
+        assign = db.execute("SELECT * FROM video_assignments WHERE token = ?", (token,)).fetchone()
+        if not assign:
+            raise HTTPException(status_code=404, detail="Video assignment not found")
+        va = db.execute("SELECT * FROM video_assessments WHERE id = ?", (assign["video_assessment_id"],)).fetchone()
+        qs = db.execute("SELECT * FROM video_assessment_questions WHERE video_assessment_id = ? ORDER BY question_order ASC", (va["id"],)).fetchall()
+        responses = db.execute("SELECT * FROM video_responses WHERE assignment_id = ?", (assign["id"],)).fetchall()
+    return {
+        "assignment": dict(assign),
+        "assessment": dict(va),
+        "questions": [dict(q) for q in qs],
+        "responses": [dict(r) for r in responses],
+    }
+
+
+@app.post("/api/video-assessments/assignment/{token}/submit")
+def submit_video_assignment(token: str, body: VideoResponseSubmitBody) -> dict[str, Any]:
+    with connect() as db:
+        assign = db.execute("SELECT * FROM video_assignments WHERE token = ?", (token,)).fetchone()
+        if not assign or assign["status"] == "Completed":
+            raise HTTPException(status_code=400, detail="Assignment already completed or invalid")
+        now_iso = now()
+        for resp in body.responses:
+            db.execute(
+                """INSERT INTO video_responses (assignment_id, question_id, video_url, duration_seconds, created_at)
+                VALUES (?, ?, ?, ?, ?)""",
+                (assign["id"], resp["question_id"], resp["video_url"], int(resp.get("duration_seconds", 0)), now_iso),
+            )
+        db.execute("UPDATE video_assignments SET status = 'Submitted', completed_at = ? WHERE id = ?", (now_iso, assign["id"]))
+    return {"ok": True, "message": "Video assessment submitted successfully."}
+
+
+@app.post("/api/video-assessments/responses/{response_id}/evaluate")
+def evaluate_video_response(
+    response_id: int,
+    body: VideoEvaluateBody,
+    user: dict[str, Any] = Depends(require_role("recruiter", "admin")),
+) -> dict[str, Any]:
+    with connect() as db:
+        now_iso = now()
+        db.execute(
+            """UPDATE video_responses
+            SET score = ?, recruiter_feedback = ?, evaluated_at = ?
+            WHERE id = ?""",
+            (body.score, body.feedback.strip(), now_iso, response_id),
+        )
+        row = db.execute("SELECT * FROM video_responses WHERE id = ?", (response_id,)).fetchone()
+    return dict(row)
+
+
+# ---------------------------------------------------------------------------
+# 10. Interview Hub Improvements: Scorecards & Dossier
+# ---------------------------------------------------------------------------
+
+@app.get("/api/interviews/{interview_id}/scorecard")
+def get_interview_scorecard(
+    interview_id: int,
+    user: dict[str, Any] = Depends(require_role("recruiter", "admin")),
+) -> dict[str, Any]:
+    with connect() as db:
+        sc = db.execute("SELECT * FROM interview_scorecards WHERE interview_id = ?", (interview_id,)).fetchone()
+    if not sc:
+        empty = {
+            "interview_id": interview_id,
+            "technical_rating": 3,
+            "communication_rating": 3,
+            "problem_solving_rating": 3,
+            "culture_fit_rating": 3,
+            "overall_recommendation": "Neutral",
+            "recommendation": "Neutral",
+            "strengths": "",
+            "areas_for_growth": "",
+            "notes": "",
+        }
+        return {**empty, "scorecard": empty, "submitted": False}
+    sc_dict = dict(sc)
+    sc_dict["recommendation"] = "Strong Yes" if sc_dict.get("overall_recommendation") == "Strong Hire" else ("Yes" if sc_dict.get("overall_recommendation") == "Hire" else sc_dict.get("overall_recommendation"))
+    return {**sc_dict, "scorecard": sc_dict, "submitted": True}
+
+
+@app.post("/api/interviews/{interview_id}/scorecard")
+def save_interview_scorecard(
+    interview_id: int,
+    body: InterviewScorecardBody,
+    user: dict[str, Any] = Depends(require_role("recruiter", "admin")),
+) -> dict[str, Any]:
+    with connect() as db:
+        iv = db.execute("SELECT id, application_id, recruiter_id FROM interviews WHERE id = ?", (interview_id,)).fetchone()
+        if not iv:
+            raise HTTPException(status_code=404, detail="Interview not found")
+        now_iso = now()
+        db.execute(
+            """INSERT INTO interview_scorecards
+            (interview_id, application_id, recruiter_id, technical_rating, communication_rating,
+             problem_solving_rating, culture_fit_rating, overall_recommendation, strengths,
+             areas_for_growth, notes, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(interview_id) DO UPDATE SET
+            technical_rating = excluded.technical_rating,
+            communication_rating = excluded.communication_rating,
+            problem_solving_rating = excluded.problem_solving_rating,
+            culture_fit_rating = excluded.culture_fit_rating,
+            overall_recommendation = excluded.overall_recommendation,
+            strengths = excluded.strengths,
+            areas_for_growth = excluded.areas_for_growth,
+            notes = excluded.notes,
+            updated_at = excluded.updated_at""",
+            (
+                interview_id, iv["application_id"], user["id"],
+                body.technical_rating, body.communication_rating,
+                body.problem_solving_rating, body.culture_fit_rating,
+                body.overall_recommendation, (body.strengths or "").strip(),
+                (body.areas_for_growth or "").strip(), (body.notes or "").strip(),
+                now_iso, now_iso,
+            ),
+        )
+        log_audit(db, user["id"], user["role"], "SUBMIT_INTERVIEW_SCORECARD", "interview", interview_id)
+        row = db.execute("SELECT * FROM interview_scorecards WHERE interview_id = ?", (interview_id,)).fetchone()
+        row_dict = dict(row)
+        row_dict["recommendation"] = "Strong Yes" if row_dict.get("overall_recommendation") == "Strong Hire" else ("Yes" if row_dict.get("overall_recommendation") == "Hire" else row_dict.get("overall_recommendation"))
+    return {**row_dict, "scorecard": row_dict}
+
+
+@app.get("/api/interviews/{interview_id}/dossier")
+def get_candidate_dossier(
+    interview_id: int,
+    user: dict[str, Any] = Depends(require_role("recruiter", "admin")),
+) -> dict[str, Any]:
+    with connect() as db:
+        iv = db.execute(
+            """SELECT i.*, a.candidate_id, u.name AS candidate_name, u.email AS candidate_email,
+                j.title AS job_title, j.company AS job_company, a.match_percentage, a.status AS application_status
+            FROM interviews i
+            JOIN applications a ON a.id = i.application_id
+            JOIN users u ON u.id = a.candidate_id
+            JOIN jobs j ON j.id = a.job_id
+            WHERE i.id = ?""",
+            (interview_id,),
+        ).fetchone()
+        if not iv:
+            raise HTTPException(status_code=404, detail="Interview not found")
+        resume = db.execute("SELECT parsed_profile_json, extracted_text FROM resumes WHERE candidate_id = ?", (iv["candidate_id"],)).fetchone()
+        assessment = db.execute("SELECT score_percentage, result, proctoring_warning_count, starts_at, submitted_at FROM assessments WHERE application_id = ?", (iv["application_id"],)).fetchone()
+        app_note = db.execute("SELECT internal_notes FROM applications WHERE id = ?", (iv["application_id"],)).fetchone()
+        notes = [{"note": app_note["internal_notes"]}] if app_note and app_note["internal_notes"] else []
+        scorecard = db.execute("SELECT * FROM interview_scorecards WHERE interview_id = ?", (interview_id,)).fetchone()
+    return {
+        "candidate": {
+            "name": iv["candidate_name"],
+            "email": iv["candidate_email"],
+            "match_percentage": iv["match_percentage"],
+            "parsed_profile": json.loads(resume["parsed_profile_json"] or "{}") if resume else {},
+            "resume_excerpt": (resume["extracted_text"] or "")[:800] if resume else "",
+        },
+        "assessment": dict(assessment) if assessment else None,
+        "notes": [dict(n) for n in notes],
+        "scorecard": dict(scorecard) if scorecard else None,
+    }
+
+
+# ---------------------------------------------------------------------------
+# 11. Support Ticket System & Escalation
+# ---------------------------------------------------------------------------
+
+@app.post("/api/tickets", status_code=201)
+def create_support_ticket(body: TicketCreateBody, user: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
+    with connect() as db:
+        ticket_count = db.execute("SELECT COUNT(*) FROM support_tickets").fetchone()[0]
+        ticket_number = f"TICK-{1000 + ticket_count + 1}"
+        now_iso = now()
+        cursor = db.execute(
+            """INSERT INTO support_tickets (ticket_number, user_id, subject, category, priority, status, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, 'Open', ?, ?)""",
+            (ticket_number, user["id"], body.subject.strip(), body.category, body.priority, now_iso, now_iso),
+        )
+        ticket_id = cursor.lastrowid
+        db.execute(
+            """INSERT INTO ticket_messages (ticket_id, sender_id, is_admin, is_internal_note, message, created_at)
+            VALUES (?, ?, 0, 0, ?, ?)""",
+            (ticket_id, user["id"], body.message.strip(), now_iso),
+        )
+        log_audit(db, user["id"], user["role"], "CREATE_SUPPORT_TICKET", "support_ticket", ticket_id, {"ticket_number": ticket_number})
+        row = db.execute("SELECT * FROM support_tickets WHERE id = ?", (ticket_id,)).fetchone()
+    return dict(row)
+
+
+@app.get("/api/tickets")
+def list_user_tickets(user: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
+    with connect() as db:
+        rows = db.execute(
+            """SELECT t.*, COUNT(m.id) AS message_count
+            FROM support_tickets t
+            LEFT JOIN ticket_messages m ON m.ticket_id = t.id AND m.is_internal_note = 0
+            WHERE t.user_id = ?
+            GROUP BY t.id
+            ORDER BY t.updated_at DESC""",
+            (user["id"],),
+        ).fetchall()
+    return {"items": [dict(r) for r in rows], "total": len(rows)}
+
+
+@app.get("/api/tickets/{ticket_id}")
+def get_ticket_detail(ticket_id: int, user: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
+    with connect() as db:
+        t = db.execute("SELECT * FROM support_tickets WHERE id = ?", (ticket_id,)).fetchone()
+        if not t:
+            raise HTTPException(status_code=404, detail="Ticket not found")
+        if user["role"] != "admin" and t["user_id"] != user["id"]:
+            raise HTTPException(status_code=403, detail="Forbidden")
+        note_filter = "" if user["role"] == "admin" else "AND m.is_internal_note = 0"
+        msgs = db.execute(
+            f"""SELECT m.*, u.name AS sender_name, u.role AS sender_role
+            FROM ticket_messages m JOIN users u ON u.id = m.sender_id
+            WHERE m.ticket_id = ? {note_filter}
+            ORDER BY m.created_at ASC""",
+            (ticket_id,),
+        ).fetchall()
+    return {"ticket": dict(t), "messages": [dict(m) for m in msgs]}
+
+
+@app.post("/api/tickets/{ticket_id}/messages")
+def reply_to_ticket(ticket_id: int, body: TicketMessageBody, user: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
+    with connect() as db:
+        t = db.execute("SELECT * FROM support_tickets WHERE id = ?", (ticket_id,)).fetchone()
+        if not t:
+            raise HTTPException(status_code=404, detail="Ticket not found")
+        if user["role"] != "admin" and t["user_id"] != user["id"]:
+            raise HTTPException(status_code=403, detail="Forbidden")
+        is_admin = 1 if user["role"] == "admin" else 0
+        is_internal = 1 if is_admin and body.is_internal_note else 0
+        now_iso = now()
+        cursor = db.execute(
+            """INSERT INTO ticket_messages (ticket_id, sender_id, is_admin, is_internal_note, message, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)""",
+            (ticket_id, user["id"], is_admin, is_internal, body.message.strip(), now_iso),
+        )
+        new_status = t["status"]
+        if is_admin and not is_internal and t["status"] == "Open":
+            new_status = "Waiting Customer"
+        elif not is_admin and t["status"] in {"Waiting Customer", "Resolved"}:
+            new_status = "In Progress"
+        db.execute("UPDATE support_tickets SET status = ?, updated_at = ? WHERE id = ?", (new_status, now_iso, ticket_id))
+        msg_row = db.execute("SELECT * FROM ticket_messages WHERE id = ?", (cursor.lastrowid,)).fetchone()
+    try:
+        asyncio.create_task(support_chat_manager.broadcast(
+            ticket_id,
+            {"type": "message", "message": dict(msg_row), "sender_name": user["name"], "is_admin": bool(is_admin)},
+            is_internal=bool(is_internal),
+        ))
+    except Exception:
+        pass
+    return dict(msg_row)
+
+
+@app.get("/api/admin/tickets")
+def admin_list_tickets(
+    status: str | None = None,
+    priority: str | None = None,
+    category: str | None = None,
+    user: dict[str, Any] = Depends(require_role("admin")),
+) -> dict[str, Any]:
+    with connect() as db:
+        conditions = []
+        params = []
+        if status:
+            conditions.append("t.status = ?")
+            params.append(status)
+        if priority:
+            conditions.append("t.priority = ?")
+            params.append(priority)
+        if category:
+            conditions.append("t.category = ?")
+            params.append(category)
+        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        rows = db.execute(
+            f"""SELECT t.*, u.name AS user_name, u.email AS user_email, u.role AS user_role,
+                adm.name AS assigned_admin_name
+            FROM support_tickets t
+            JOIN users u ON u.id = t.user_id
+            LEFT JOIN users adm ON adm.id = t.assigned_admin_id
+            {where}
+            ORDER BY t.updated_at DESC""",
+            tuple(params),
+        ).fetchall()
+    return {"items": [dict(r) for r in rows], "total": len(rows)}
+
+
+@app.patch("/api/admin/tickets/{ticket_id}")
+def admin_update_ticket(
+    ticket_id: int,
+    body: TicketStatusUpdateBody,
+    user: dict[str, Any] = Depends(require_role("admin")),
+) -> dict[str, Any]:
+    with connect() as db:
+        t = db.execute("SELECT * FROM support_tickets WHERE id = ?", (ticket_id,)).fetchone()
+        if not t:
+            raise HTTPException(status_code=404, detail="Ticket not found")
+        updates = {}
+        if body.status:
+            updates["status"] = body.status
+        if body.priority:
+            updates["priority"] = body.priority
+        if body.assigned_admin_id is not None:
+            updates["assigned_admin_id"] = body.assigned_admin_id
+        if updates:
+            updates["updated_at"] = now()
+            set_str = ", ".join(f"{k} = ?" for k in updates.keys())
+            db.execute(f"UPDATE support_tickets SET {set_str} WHERE id = ?", list(updates.values()) + [ticket_id])
+            log_audit(db, user["id"], "admin", "UPDATE_TICKET_STATUS", "support_ticket", ticket_id, details=updates)
+        updated = db.execute("SELECT * FROM support_tickets WHERE id = ?", (ticket_id,)).fetchone()
+    return dict(updated)
+
+
+# ---------------------------------------------------------------------------
+# 12. Live Human-Agent Handoff & WebSocket Chat
+# ---------------------------------------------------------------------------
+
+@app.get("/api/admin/availability")
+def get_admin_availability(user: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
+    with connect() as db:
+        count = db.execute("SELECT COUNT(*) FROM admin_availability WHERE is_online = 1").fetchone()[0]
+    return {"online": count > 0, "available_admins": count}
+
+
+@app.post("/api/admin/availability")
+def set_admin_availability(online: bool = True, user: dict[str, Any] = Depends(require_role("admin"))) -> dict[str, Any]:
+    with connect() as db:
+        now_iso = now()
+        db.execute(
+            """INSERT INTO admin_availability (admin_id, is_online, active_chats_count, max_concurrent_chats, last_heartbeat_at)
+            VALUES (?, ?, 0, 5, ?)
+            ON CONFLICT(admin_id) DO UPDATE SET is_online = excluded.is_online, last_heartbeat_at = excluded.last_heartbeat_at""",
+            (user["id"], 1 if online else 0, now_iso),
+        )
+    return {"admin_id": user["id"], "is_online": online}
+
+
+@app.post("/api/tickets/{ticket_id}/ws-auth-ticket")
+def generate_ws_auth_ticket(ticket_id: int, user: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
+    with connect() as db:
+        t = db.execute("SELECT * FROM support_tickets WHERE id = ?", (ticket_id,)).fetchone()
+        if not t:
+            raise HTTPException(status_code=404, detail="Ticket not found")
+        if user["role"] != "admin" and t["user_id"] != user["id"]:
+            raise HTTPException(status_code=403, detail="Forbidden")
+        raw_ticket = secrets.token_urlsafe(32)
+        expires_at = (datetime.now(timezone.utc) + timedelta(seconds=60)).isoformat()
+        db.execute(
+            "INSERT INTO websocket_auth_tickets (ticket_id, user_id, role, support_ticket_id, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (raw_ticket, user["id"], user["role"], ticket_id, expires_at, now()),
+        )
+    return {"ticket": raw_ticket, "expires_in": 60}
+
+
+@app.websocket("/ws/tickets/{ticket_id}")
+async def support_ticket_websocket(websocket: WebSocket, ticket_id: int, ticket: str = "") -> None:
+    if not ticket:
+        await websocket.close(code=1008)
+        return
+    now_iso = now()
+    with connect() as db:
+        row = db.execute(
+            "SELECT * FROM websocket_auth_tickets WHERE ticket_id = ? AND used = 0 AND expires_at >= ?",
+            (ticket, now_iso),
+        ).fetchone()
+        if not row:
+            await websocket.close(code=1008)
+            return
+        user_row = db.execute("SELECT id, name, role FROM users WHERE id = ?", (row["user_id"],)).fetchone()
+        if not user_row:
+            await websocket.close(code=1008)
+            return
+        db.execute("UPDATE websocket_auth_tickets SET used = 1 WHERE ticket_id = ?", (ticket,))
+    conn_id = secrets.token_hex(8)
+    await support_chat_manager.connect(ticket_id, conn_id, websocket, user_row["id"], user_row["role"], user_row["name"])
+    try:
+        while True:
+            data = await websocket.receive_json()
+            msg_type = data.get("type", "message")
+            if msg_type == "ping":
+                await websocket.send_json({"type": "pong"})
+            elif msg_type == "typing":
+                await support_chat_manager.broadcast(ticket_id, {
+                    "type": "typing",
+                    "user_name": user_row["name"],
+                    "is_typing": bool(data.get("is_typing", True)),
+                })
+            elif msg_type == "message":
+                text = str(data.get("message", "")).strip()
+                if text:
+                    is_internal = bool(data.get("is_internal_note", False)) if user_row["role"] == "admin" else False
+                    with connect() as db:
+                        cur = db.execute(
+                            """INSERT INTO ticket_messages (ticket_id, sender_id, is_admin, is_internal_note, message, created_at)
+                            VALUES (?, ?, ?, ?, ?, ?)""",
+                            (ticket_id, user_row["id"], 1 if user_row["role"] == "admin" else 0, 1 if is_internal else 0, text, now()),
+                        )
+                        m_row = db.execute("SELECT * FROM ticket_messages WHERE id = ?", (cur.lastrowid,)).fetchone()
+                    await support_chat_manager.broadcast(
+                        ticket_id,
+                        {"type": "message", "message": dict(m_row), "sender_name": user_row["name"], "is_admin": user_row["role"] == "admin"},
+                        is_internal=is_internal,
+                    )
+    except (WebSocketDisconnect, Exception):
+        pass
+    finally:
+        support_chat_manager.disconnect(ticket_id, conn_id)
+
+
+# ---------------------------------------------------------------------------
+# 13. Administration, Moderation & Auditability
+# ---------------------------------------------------------------------------
+
+@app.get("/api/admin/audit-logs")
+def get_admin_audit_logs(
+    action: str | None = None,
+    target_type: str | None = None,
+    limit: int = 100,
+    user: dict[str, Any] = Depends(require_role("admin")),
+) -> dict[str, Any]:
+    with connect() as db:
+        conditions = []
+        params = []
+        if action:
+            conditions.append("a.action = ?")
+            params.append(action)
+        if target_type:
+            conditions.append("a.target_type = ?")
+            params.append(target_type)
+        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        query = f"""SELECT a.*, u.name AS user_name, u.email AS user_email
+            FROM audit_logs a LEFT JOIN users u ON u.id = a.user_id
+            {where}
+            ORDER BY a.created_at DESC LIMIT ?"""
+        params.append(min(limit, 200))
+        rows = db.execute(query, tuple(params)).fetchall()
+    return {"items": [dict(r) for r in rows], "total": len(rows)}
+
+
+@app.post("/api/admin/jobs/{job_id}/moderate")
+def moderate_job(
+    job_id: int,
+    body: JobModerateBody,
+    user: dict[str, Any] = Depends(require_role("admin")),
+) -> dict[str, Any]:
+    with connect() as db:
+        job = db.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
+        if not job:
+            raise HTTPException(status_code=404, detail="Job listing not found")
+        note = body.note.strip() if body.note else ""
+        if body.action == "flag":
+            db.execute("UPDATE jobs SET flagged = 1, moderation_note = ? WHERE id = ?", (note, job_id))
+        elif body.action == "unflag":
+            db.execute("UPDATE jobs SET flagged = 0, moderation_note = ? WHERE id = ?", (note, job_id))
+        elif body.action == "archive":
+            db.execute("UPDATE jobs SET status = 'Archived', is_archived = 1, archived_at = ?, moderation_note = ? WHERE id = ?", (now(), note, job_id))
+        elif body.action == "restore":
+            db.execute("UPDATE jobs SET status = 'Open', is_archived = 0, moderation_note = ? WHERE id = ?", (note, job_id))
+        log_audit(db, user["id"], "admin", f"MODERATE_JOB_{body.action.upper()}", "job", job_id, {"action": body.action, "note": note})
+        updated = db.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
+    return public_job(updated)
+
+
+# ---------------------------------------------------------------------------
+# 14. Internationalization & Multilingual Assistant
+# ---------------------------------------------------------------------------
+
+@app.post("/api/chat/multilingual")
+def multilingual_chat(body: MultilingualChatBody, user: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
+    text = body.message.strip()
+    pref_lang = body.preferred_language
+    detected = "en"
+    if any("\u0900" <= c <= "\u097f" for c in text):
+        detected = "hi"
+    elif any(w in text.lower() for w in ["kya", "kaise", "mera", "meri", "karo", "nhi", "nahi", "job", "batao", "madad"]):
+        detected = "hinglish"
+    elif any(w in text.lower() for w in ["hola", "como", "trabajo", "curriculum", "entrevista", "ayuda", "gracias", "puedo"]):
+        detected = "es"
+    elif any(w in text.lower() for w in ["bonjour", "comment", "emploi", "entretien", "merci", "aide", "cv"]):
+        detected = "fr"
+    elif any(w in text.lower() for w in ["hallo", "wie", "arbeit", "lebenslauf", "interview", "danke", "hilfe"]):
+        detected = "de"
+
+    lang = pref_lang or detected
+
+    responses = {
+        "hi": f"नमस्ते {user['name']}! मैं आपका SkillSphere करियर सहायक हूँ। मैं आपके रिज्यूम सुधारने, तकनीकी तैयारी करने और जॉब सर्च में मदद कर सकता हूँ। आप क्या जानना चाहते हैं?",
+        "hinglish": f"Hello {user['name']}! Main aapka SkillSphere career assistant hoon. Aap apne resume improve karne, interview prep aur job applications ke baare me pooch sakte hain. Main kaise madad karoon?",
+        "es": f"¡Hola {user['name']}! Soy tu asistente de carrera de SkillSphere. Puedo ayudarte a optimizar tu currículum, prepararte para entrevistas y explorar vacantes. ¿En qué puedo asistirte hoy?",
+        "fr": f"Bonjour {user['name']} ! Je suis votre assistant de carrière SkillSphere. Je peux vous aider à optimiser votre CV, préparer vos entretiens et trouver des opportunités. Que souhaitez-vous savoir ?",
+        "de": f"Hallo {user['name']}! Ich bin Ihr SkillSphere Karriere-Assistent. Ich kann Ihnen bei der Optimierung Ihres Lebenslaufs und der Vorbereitung auf Vorstellungsgespräche helfen. Wie kann ich heute helfen?",
+        "en": f"Hello {user['name']}! I am your SkillSphere Career Assistant. I can help you improve your resume, prepare for technical & HR interviews, and navigate open opportunities. What would you like help with today?",
+    }
+
+    reply = responses.get(lang, responses["en"])
+    suggest_ticket = any(kw in text.lower() for kw in ["issue", "bug", "broken", "complaint", "error", "fail", "stuck", "frustrated", "support", "ticket", "human", "agent", "problem"])
+
+    return {
+        "reply": reply,
+        "detected_language": detected,
+        "active_language": lang,
+        "suggest_ticket": suggest_ticket,
+        "ticket_prefill": {
+            "category": "Technical",
+            "subject": f"Assistance required: {text[:60]}",
+            "message": text,
+        } if suggest_ticket else None,
+    }
+
+
+@app.get("/api/workspace/bootstrap")
+def workspace_bootstrap(user: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
+    role = user.get("role")
+
+    if role == "recruiter":
+        jobs_data = list_jobs(page=1, page_size=100, mine=True, user=user)
+    else:
+        jobs_data = list_jobs(page=1, page_size=6, mine=False, user=user)
+
+    if role == "admin":
+        apps_data = {"items": [], "total": 0}
+    else:
+        apps_data = list_applications(user=user)
+
+    interviews_data = list_interviews(user=user)
+
+    upcoming_data = {"items": []}
+    if role == "candidate":
+        try:
+            upcoming_data = upcoming_interviews(user=user)
+        except Exception:
+            upcoming_data = {"items": []}
+
+    assessments_data = assessment_dashboard(user=user)
+    notifications_data = list_notifications(unread=False, limit=50, user=user)
+
+    result: dict[str, Any] = {
+        "user": user,
+        "jobs": jobs_data,
+        "applications": apps_data,
+        "interviews": interviews_data,
+        "upcoming_interviews": upcoming_data,
+        "assessments": assessments_data,
+        "notifications": notifications_data,
+    }
+
+    if role == "candidate":
+        try:
+            result["resume"] = get_resume(user=user)
+        except Exception:
+            result["resume"] = None
+        try:
+            result["candidate_analytics"] = candidate_analytics(user=user)
+        except Exception:
+            result["candidate_analytics"] = None
+    elif role == "recruiter":
+        try:
+            result["recruiter_analytics"] = recruiter_analytics(report_range="this_week", user=user)
+        except Exception:
+            result["recruiter_analytics"] = None
+        try:
+            result["live_assessments"] = get_recruiter_live_assessments(user=user)
+        except Exception:
+            result["live_assessments"] = {"items": []}
+    elif role == "admin":
+        try:
+            result["admin_jobs"] = admin_jobs(user=user)
+        except Exception:
+            result["admin_jobs"] = {"items": []}
+        try:
+            result["analytics"] = analytics(report_range="this_week", user=user)
+        except Exception:
+            result["analytics"] = None
+
+    return result
 
 
 app.mount("/", StaticFiles(directory=FRONTEND_DIR), name="frontend")

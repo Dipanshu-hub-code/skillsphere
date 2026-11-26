@@ -30,3 +30,6 @@ Thumbs.db
 .coverage
 htmlcov/
 .pytest_cache/
+
+# Reference repository
+reference_skillsphere/

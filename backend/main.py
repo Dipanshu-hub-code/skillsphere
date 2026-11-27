@@ -2472,37 +2472,50 @@ def initialize_database() -> None:
                 db.execute(f"ALTER TABLE jobs ADD COLUMN {column} {definition}")
         jobs_row = db.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='jobs'").fetchone()
         jobs_sql = (jobs_row[0] if jobs_row else "") or ""
-        if "CHECK(status IN ('Open', 'Closed'))" in jobs_sql and "Archived" not in jobs_sql:
+        if re.search(r"check\s*\(", jobs_sql, re.IGNORECASE) and "archived" not in jobs_sql.lower():
             cols = [r[1] for r in db.execute("PRAGMA table_info(jobs)").fetchall()]
             cols_joined = ", ".join(f'"{c}"' for c in cols)
-            db.execute("PRAGMA foreign_keys = OFF")
-            db.execute("DROP TABLE IF EXISTS jobs_new")
-            db.execute("""
-                CREATE TABLE jobs_new (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    recruiter_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-                    title TEXT NOT NULL,
-                    company TEXT NOT NULL,
-                    description TEXT NOT NULL,
-                    location TEXT NOT NULL,
-                    experience TEXT NOT NULL,
-                    job_type TEXT NOT NULL,
-                    salary TEXT NOT NULL DEFAULT '',
-                    skills_json TEXT NOT NULL,
-                    status TEXT NOT NULL DEFAULT 'Open' CHECK(status IN ('Open', 'Closed', 'Archived')),
-                    assessment_question_count INTEGER NOT NULL DEFAULT 20,
-                    allow_detailed_results INTEGER NOT NULL DEFAULT 1,
-                    archived_at TEXT,
-                    is_archived INTEGER NOT NULL DEFAULT 0,
-                    flagged INTEGER NOT NULL DEFAULT 0,
-                    moderation_note TEXT NOT NULL DEFAULT '',
-                    created_at TEXT NOT NULL
-                )
-            """)
-            db.execute(f"INSERT INTO jobs_new ({cols_joined}) SELECT {cols_joined} FROM jobs")
-            db.execute("DROP TABLE jobs")
-            db.execute("ALTER TABLE jobs_new RENAME TO jobs")
-            db.execute("PRAGMA foreign_keys = ON")
+            try:
+                db.commit()
+                db.execute("PRAGMA foreign_keys = OFF")
+                db.execute("DROP TABLE IF EXISTS jobs_new")
+                db.execute("""
+                    CREATE TABLE jobs_new (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        recruiter_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                        title TEXT NOT NULL,
+                        company TEXT NOT NULL,
+                        description TEXT NOT NULL,
+                        location TEXT NOT NULL,
+                        experience TEXT NOT NULL,
+                        job_type TEXT NOT NULL,
+                        salary TEXT NOT NULL DEFAULT '',
+                        skills_json TEXT NOT NULL,
+                        status TEXT NOT NULL DEFAULT 'Open' CHECK(status IN ('Open', 'Closed', 'Archived')),
+                        assessment_question_count INTEGER NOT NULL DEFAULT 20,
+                        allow_detailed_results INTEGER NOT NULL DEFAULT 1,
+                        archived_at TEXT,
+                        is_archived INTEGER NOT NULL DEFAULT 0,
+                        flagged INTEGER NOT NULL DEFAULT 0,
+                        moderation_note TEXT NOT NULL DEFAULT '',
+                        created_at TEXT NOT NULL
+                    )
+                """)
+                db.execute(f"INSERT INTO jobs_new ({cols_joined}) SELECT {cols_joined} FROM jobs")
+                db.execute("DROP TABLE jobs")
+                db.execute("ALTER TABLE jobs_new RENAME TO jobs")
+                db.commit()
+            except Exception:
+                logger.exception("Could not rebuild jobs table CHECK constraint during migration")
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
+            finally:
+                try:
+                    db.execute("PRAGMA foreign_keys = ON")
+                except Exception:
+                    pass
         application_columns = {row["name"] for row in db.execute("PRAGMA table_info(applications)")}
         if "match_percentage" not in application_columns:
             db.execute("ALTER TABLE applications ADD COLUMN match_percentage INTEGER")
@@ -3835,12 +3848,12 @@ def list_jobs(
 ) -> dict[str, Any]:
     if page < 1 or page_size < 1 or page_size > 100:
         raise HTTPException(status_code=422, detail="Page must be positive and page size must be between 1 and 100")
-    clauses = ["j.status = 'Open'"]
+    clauses = ["j.status = 'Open'", "COALESCE(j.is_archived, 0) = 0"]
     values: list[Any] = []
     if mine:
         if user["role"] != "recruiter":
             raise HTTPException(status_code=403, detail="Only recruiters can view their own job listings")
-        clauses = ["j.recruiter_id = ?", "j.status != 'Archived'"]
+        clauses = ["j.recruiter_id = ?", "j.status != 'Archived'", "COALESCE(j.is_archived, 0) = 0"]
         values = [user["id"]]
     if q.strip():
         like = f"%{q.strip()}%"
@@ -3881,7 +3894,7 @@ def list_saved_jobs(user: dict[str, Any] = Depends(require_role("candidate"))) -
         rows = db.execute(
             """SELECT j.*, s.created_at AS saved_at
             FROM saved_jobs s JOIN jobs j ON j.id = s.job_id
-            WHERE s.candidate_id = ? AND j.status = 'Open'
+            WHERE s.candidate_id = ? AND j.status = 'Open' AND COALESCE(j.is_archived, 0) = 0
             ORDER BY s.created_at DESC""",
             (user["id"],),
         ).fetchall()
@@ -3892,7 +3905,9 @@ def list_saved_jobs(user: dict[str, Any] = Depends(require_role("candidate"))) -
 def recommended_jobs(user: dict[str, Any] = Depends(require_role("candidate"))) -> dict[str, Any]:
     with connect() as db:
         resume_row = db.execute("SELECT * FROM resumes WHERE candidate_id = ?", (user["id"],)).fetchone()
-        jobs_rows = db.execute("SELECT * FROM jobs WHERE status = 'Open' ORDER BY created_at DESC LIMIT 50").fetchall()
+        jobs_rows = db.execute(
+            "SELECT * FROM jobs WHERE status = 'Open' AND COALESCE(is_archived, 0) = 0 ORDER BY created_at DESC LIMIT 50"
+        ).fetchall()
         user_profile = json.dumps(user.get("profile") or {})
         recommendations = []
         for j_row in jobs_rows:
@@ -3920,10 +3935,40 @@ def recommended_jobs(user: dict[str, Any] = Depends(require_role("candidate"))) 
 def get_job(job_id: int, user: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
     del user
     with connect() as db:
-        row = db.execute("SELECT * FROM jobs WHERE id = ? AND status = 'Open'", (job_id,)).fetchone()
+        row = db.execute(
+            "SELECT * FROM jobs WHERE id = ? AND status = 'Open' AND COALESCE(is_archived, 0) = 0",
+            (job_id,),
+        ).fetchone()
     if not row:
         raise HTTPException(status_code=404, detail="This role is no longer available")
     return public_job(row)
+
+
+def _archive_job_row(
+    db: Any,
+    job_id: int,
+    archived_at: str,
+    moderation_note: str | None = None,
+) -> None:
+    """Archive a job row, falling back to 'Closed' if a legacy CHECK constraint rejects 'Archived'."""
+    for target_status in ("Archived", "Closed"):
+        try:
+            if moderation_note is None:
+                db.execute(
+                    "UPDATE jobs SET status = ?, is_archived = 1, archived_at = ? WHERE id = ?",
+                    (target_status, archived_at, job_id),
+                )
+            else:
+                db.execute(
+                    "UPDATE jobs SET status = ?, is_archived = 1, archived_at = ?, moderation_note = ? WHERE id = ?",
+                    (target_status, archived_at, moderation_note, job_id),
+                )
+            return
+        except Exception as exc:
+            if target_status == "Archived" and is_db_integrity_or_duplicate_error(exc):
+                logger.warning("Legacy jobs CHECK constraint rejected 'Archived' for job %s; falling back to 'Closed'", job_id)
+                continue
+            raise
 
 
 @app.delete("/api/jobs/{job_id}")
@@ -3932,12 +3977,9 @@ def delete_job(
     user: dict[str, Any] = Depends(require_role("recruiter", "admin")),
 ) -> dict[str, Any]:
     with connect() as db:
-        job = owned_job(db, job_id, user)
+        owned_job(db, job_id, user)
         now_iso = now()
-        db.execute(
-            "UPDATE jobs SET status = 'Archived', is_archived = 1, archived_at = ? WHERE id = ?",
-            (now_iso, job_id),
-        )
+        _archive_job_row(db, job_id, now_iso)
     logger.info("Job %s soft-archived by %s %s", job_id, user.get("role"), user.get("id"))
     return {"deleted": True, "archived": True, "job_id": job_id, "detail": "Job posting removed and archived successfully"}
 
@@ -11992,7 +12034,7 @@ def moderate_job(
         elif body.action == "unflag":
             db.execute("UPDATE jobs SET flagged = 0, moderation_note = ? WHERE id = ?", (note, job_id))
         elif body.action == "archive":
-            db.execute("UPDATE jobs SET status = 'Archived', is_archived = 1, archived_at = ?, moderation_note = ? WHERE id = ?", (now(), note, job_id))
+            _archive_job_row(db, job_id, now(), moderation_note=note)
         elif body.action == "restore":
             db.execute("UPDATE jobs SET status = 'Open', is_archived = 0, moderation_note = ? WHERE id = ?", (note, job_id))
         log_audit(db, user["id"], "admin", f"MODERATE_JOB_{body.action.upper()}", "job", job_id, {"action": body.action, "note": note})

@@ -3200,10 +3200,30 @@ Answer: A
         res_list_after = self.client.get("/api/jobs/saved", headers=candidate)
         self.assertNotIn(job_id, [j["id"] for j in res_list_after.json()["items"]])
 
-        # Recommended jobs endpoint
+        # Recommended jobs endpoint (including after resume upload)
         res_rec = self.client.get("/api/jobs/recommended", headers=candidate)
         self.assertEqual(res_rec.status_code, 200)
         self.assertIn("items", res_rec.json())
+
+        pdf_bytes = (
+            b"%PDF-1.4\n1 0 obj<< /Type /Catalog /Pages 2 0 R >>endobj\n"
+            b"2 0 obj<< /Type /Pages /Kids [3 0 R] /Count 1 >>endobj\n"
+            b"3 0 obj<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>endobj\n"
+            b"4 0 obj<< /Length 44 >>stream\nBT /F1 12 Tf 72 720 Td (Python SQL FastAPI JavaScript) Tj ET\nendstream\nendobj\n"
+            b"5 0 obj<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>endobj\n"
+            b"xref\n0 6\n0000000000 65535 f \n0000000009 00000 n \n0000000058 00000 n \n0000000115 00000 n \n0000000241 00000 n \n0000000335 00000 n \n"
+            b"trailer<< /Size 6 /Root 1 0 R >>\nstartxref\n405\n%%EOF"
+        )
+        up = self.client.post(
+            "/api/resume/upload",
+            headers=candidate,
+            files={"file": ("rec_test.pdf", pdf_bytes, "application/pdf")},
+        )
+        self.assertIn(up.status_code, (200, 201), up.text)
+        res_rec_with_resume = self.client.get("/api/jobs/recommended", headers=candidate)
+        self.assertEqual(res_rec_with_resume.status_code, 200, res_rec_with_resume.text)
+        self.assertGreater(len(res_rec_with_resume.json()["items"]), 0)
+        self.assertIn("match_percentage", res_rec_with_resume.json()["items"][0])
 
     def test_resume_analysis_and_versions(self):
         candidate = self.login("candidate@skillsphere.dev")

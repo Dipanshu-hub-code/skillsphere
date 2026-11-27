@@ -3082,8 +3082,11 @@ def calculate_match(
     saved_profile_json: str,
 ) -> dict[str, Any]:
     try:
-        required = json.loads(job["skills_json"]) if job["skills_json"] else []
-    except (json.JSONDecodeError, TypeError):
+        if "skills_json" in job.keys() if hasattr(job, "keys") else "skills_json" in job:
+            required = json.loads(job["skills_json"]) if job["skills_json"] else []
+        else:
+            required = list(job.get("skills") or [])
+    except (json.JSONDecodeError, TypeError, KeyError):
         required = []
     try:
         resume_profile = json.loads(resume["parsed_profile_json"] or "{}")
@@ -3913,7 +3916,7 @@ def recommended_jobs(user: dict[str, Any] = Depends(require_role("candidate"))) 
         for j_row in jobs_rows:
             job = public_job(j_row)
             if resume_row:
-                match = calculate_match(job, resume_row, user_profile)
+                match = calculate_match(j_row, resume_row, user_profile)
                 score = match.get("match_percentage", 0)
                 matched_skills = match.get("matched_skills", [])
                 missing_skills = match.get("missing_skills", [])

@@ -42,6 +42,7 @@
 
 * { box-sizing: border-box; }
 *:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.btn-primary:focus-visible, button.btn-primary:focus-visible { outline: 3px solid #1e1b18; outline-offset: 2px; box-shadow: 0 0 0 5px rgba(255, 107, 61, 0.35); }
 body { margin: 0; min-width: 320px; min-height: 100vh; background: var(--bg); color: var(--ink); }
 button, input, select, textarea { font: inherit; }
 button { cursor: pointer; }
@@ -524,18 +525,19 @@ button:disabled { cursor: not-allowed; opacity: .55; transform: none; }
   .side-profile, .nav-caption, .sidebar-foot { display: none; }
   .nav-list {
     display: flex;
-    justify-content: space-around;
-    gap: 0;
+    justify-content: flex-start;
+    gap: 4px;
+    padding: 0 4px;
     overflow-x: auto;
     scrollbar-width: none;
     -webkit-overflow-scrolling: touch;
   }
   .nav-list::-webkit-scrollbar { display: none; }
   .nav-item {
-    flex: 1 1 0;
-    min-width: 52px;
-    max-width: 80px;
-    padding: 7px 2px 5px;
+    flex: 0 0 auto;
+    min-width: 58px;
+    max-width: 84px;
+    padding: 7px 6px 5px;
     display: grid;
     justify-items: center;
     gap: 3px;
@@ -543,6 +545,7 @@ button:disabled { cursor: not-allowed; opacity: .55; transform: none; }
     text-align: center;
     border-radius: 12px;
   }
+  .toast { left: 16px; right: 16px; bottom: 76px; max-width: calc(100vw - 32px); }
   .nav-item span:last-child {
     max-width: 60px;
     overflow: hidden;

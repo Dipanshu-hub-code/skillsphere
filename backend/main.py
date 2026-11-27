@@ -10535,6 +10535,7 @@ def analytics(
 @limiter.limit("5/minute")
 def forgot_password(request: Request, body: ForgotPasswordBody) -> dict[str, Any]:
     raw_token = None
+    user_info: tuple[int, str, str] | None = None
     with connect() as db:
         user_row = db.execute("SELECT id, name, email FROM users WHERE lower(email) = ?", (body.email.lower(),)).fetchone()
         if user_row:
@@ -10546,18 +10547,41 @@ def forgot_password(request: Request, body: ForgotPasswordBody) -> dict[str, Any
                 (user_row["id"], token_hash, expires_at, now()),
             )
             log_audit(db, user_row["id"], "user", "FORGOT_PASSWORD_REQUEST", "user", user_row["id"], {"email": body.email.lower()})
-            subject = "SkillSphere: Password Reset Instructions"
-            content = (
-                f"Hello {user_row['name']},\n\n"
-                f"We received a request to reset your SkillSphere password.\n"
-                f"Your reset token is: {raw_token}\n"
-                f"Use this token on the reset password screen within 1 hour.\n\n"
-                f"If you did not request this, please ignore this email."
-            )
-            try:
-                send_email_message(user_row["email"], subject, content)
-            except Exception as e:
-                logger.warning("Could not send password reset email: %s", e)
+            user_info = (user_row["id"], user_row["name"], user_row["email"])
+
+    if user_info and raw_token:
+        uid, uname, uemail = user_info
+        subject = "SkillSphere: Password Reset Instructions"
+        content = (
+            f"Hello {uname},\n\n"
+            f"We received a request to reset your SkillSphere password.\n"
+            f"Your reset token is: {raw_token}\n"
+            f"Use this token on the reset password screen within 1 hour.\n\n"
+            f"If you did not request this, please ignore this email."
+        )
+        try:
+            delivery = send_email_message(uemail, subject, content)
+        except Exception as e:
+            logger.warning("Could not send password reset email: %s", e)
+            delivery = "Failed"
+        try:
+            with connect() as db:
+                _record_email_log(
+                    db,
+                    notification_id=None,
+                    user_id=uid,
+                    recipient_email=uemail.lower(),
+                    category="password_reset",
+                    subject=subject,
+                    body_text=content,
+                    status=delivery,
+                    attempts=1,
+                    sent_at=now() if delivery in {"Sent", "Development"} else None,
+                    last_error="" if delivery != "Failed" else "Failed to send password reset email",
+                )
+        except Exception as log_exc:
+            logger.warning("Could not record password reset email log: %s", log_exc)
+
     resp: dict[str, Any] = {"ok": True, "message": "If this email is registered, you will receive password reset instructions shortly."}
     if raw_token and os.environ.get("SKILLSPHERE_ENABLE_DEMO", "true").lower() not in {"false", "0", "no"}:
         resp["dev_token"] = raw_token
@@ -10708,10 +10732,12 @@ def resend_verification(
                 status_code=429,
                 detail="Too many verification emails requested. Please wait a few minutes before trying again.",
             )
-        raw_token, otp = issue_verification_challenge(db, row["id"], row["name"], row["email"])
+        raw_token, otp = create_verification_challenge(db, row["id"], row["email"])
+        user_id_val, user_name_val, user_email_val = row["id"], row["name"], row["email"]
+    deliver_verification_email(user_id_val, user_name_val, user_email_val, raw_token, otp)
     resp: dict[str, Any] = {
         "ok": True,
-        "email": row["email"],
+        "email": user_email_val,
         "message": "Verification link and code sent to your email.",
     }
     if not IS_PRODUCTION and not (os.environ.get("RESEND_API_KEY", "").strip() or os.environ.get("SENDGRID_API_KEY", "").strip() or os.environ.get("SKILLSPHERE_SMTP_HOST", "").strip()):
@@ -10740,8 +10766,10 @@ def change_verification_email(request: Request, body: ChangeVerificationEmailBod
         if conflict:
             raise HTTPException(status_code=409, detail="An account with this new email already exists.")
         db.execute("UPDATE users SET email = ? WHERE id = ?", (new_email, row["id"]))
-        raw_token, otp = issue_verification_challenge(db, row["id"], row["name"], new_email)
+        raw_token, otp = create_verification_challenge(db, row["id"], new_email)
+        user_id_val, user_name_val = row["id"], row["name"]
         log_audit(db, row["id"], row["role"], "VERIFICATION_EMAIL_CHANGED", "user", row["id"])
+    deliver_verification_email(user_id_val, user_name_val, new_email, raw_token, otp)
     resp: dict[str, Any] = {
         "ok": True,
         "email": new_email,

@@ -2977,9 +2977,16 @@ Answer: A
         old_after_change = self.client.post("/api/auth/verify-email", json={"token": token})
         self.assertEqual(old_after_change.status_code, 400)
 
-        # 5. Resend verification works and enforces rate limit after 3 challenges in 10m
+        # 5. Resend verification works, logs email_delivery_logs without DB lock, and enforces rate limit after 3 challenges in 10m
         r1 = self.client.post("/api/auth/resend-verification", json={"email": "verify_new@example.com"})
         self.assertEqual(r1.status_code, 200, r1.text)
+        with main.connect() as db:
+            resend_logs = db.execute(
+                "SELECT * FROM email_delivery_logs WHERE recipient_email = ? AND category = 'verification' ORDER BY id DESC",
+                ("verify_new@example.com",),
+            ).fetchall()
+        self.assertGreaterEqual(len(resend_logs), 2)
+        self.assertIn(r1.json()["dev_otp"], resend_logs[0]["body_text"])
         r2 = self.client.post("/api/auth/resend-verification", json={"email": "verify_new@example.com"})
         self.assertEqual(r2.status_code, 429, r2.text)
 
